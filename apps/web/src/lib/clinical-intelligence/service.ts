@@ -49,7 +49,7 @@ export async function adviseClinical(input: ClinicalAdviceRequest): Promise<Clin
   let contradictingEvidence: string[] = []
   let missingInformation: string[] = []
   let proposedTerms: string[] = []
-  let suggestedPathwayId: string | null = suggested[0]?.id ?? null
+  let suggestedPathwayId: string | null = suggested[0]?.pathwayId ?? null
   let icd11StemHints: string[] = []
 
   let model: string | null = null
