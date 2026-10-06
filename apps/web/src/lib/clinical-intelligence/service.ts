@@ -129,7 +129,7 @@ export async function adviseClinical(input: ClinicalAdviceRequest): Promise<Clin
     provider: providerId,
     model,
     recommendation,
-    suggestedPathwayIds: suggested.map((p) => p.id),
+    suggestedPathwayIds: suggested.map((p) => p.pathwayId),
     safety: {
       canActivatePathway: false,
       canPlaceOrder: false,
