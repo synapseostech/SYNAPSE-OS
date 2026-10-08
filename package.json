@@ -24,6 +24,7 @@
     "verify:control-plane": "npm run test:control-plane",
     "preverify": "npm run test:consolidation",
     "test:consolidation": "node --test scripts/clinical-cache-security.test.mjs scripts/disposable-onboarding-target.test.mjs scripts/check-clinical-cache.test.mjs && vitest run apps/web/src/lib/hospital-lab-db.retry.test.ts apps/web/src/lib/hospital-lab-db.linkage.test.ts apps/web/src/app/api/hospital/sync/context/route.test.ts apps/web/src/app/api/opd/encounters/[id]/write-up/route.test.ts",
+    "test:clinical-intelligence": "vitest run apps/web/src/lib/clinical-intelligence apps/web/src/app/api/clinical/intelligence",
     "test:clinical-cache": "node --test scripts/check-clinical-cache.test.mjs && vitest run apps/web/src/app/api/hospital/sync/context/route.test.ts apps/web/src/app/api/opd/encounters/[id]/write-up/route.test.ts",
     "verify:lab-edge": "npm run test:lab-edge",
     "test:workflow-safety": "node --test scripts/check-workflow-safety.test.mjs scripts/release-provenance.test.mjs scripts/e2e-ci-architecture.test.mjs scripts/e2e-target.test.mjs scripts/vercel-build-gate.test.mjs scripts/e2e-acceptance-isolation.test.mjs",

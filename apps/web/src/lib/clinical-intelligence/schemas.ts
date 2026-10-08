@@ -1,4 +1,6 @@
 import type { ClinicianDecision, PatientContextPacket, StructuredRecommendation } from "@synapse/interop"
+import type { VerifiedIcd11Candidate } from "./model-output"
+import type { ProviderFailureKind } from "./provider-router"
 
 export type ClinicalProviderId = "openrouter" | "google" | "deepseek" | "nvidia" | "mock"
 
@@ -7,16 +9,28 @@ export type ClinicalAdviceRequest = {
   task?: "clinical_copilot" | "pathway_copilot" | "coding_copilot"
   /** When true, never call a live provider — unit/integration tests. */
   forceMock?: boolean
+  /** Test seams — never set from request input. */
+  fetchImpl?: typeof fetch
+  env?: NodeJS.ProcessEnv
 }
 
 export type ClinicalAdviceResponse = {
   ok: true
   advisory: true
+  /** Always an AI suggestion — never clinician documentation. */
+  origin: "ai_suggestion"
+  clinicianDocumentation: false
   humanOverrideRequired: true
   featureFlag: "CLINICAL_INTELLIGENCE_WAVE1"
   provider: ClinicalProviderId
   model: string | null
+  /** True when the provider failed or returned unusable output and a deterministic fallback was used. */
+  degraded: boolean
+  degradedReason: ProviderFailureKind | "invalid_model_output" | null
   recommendation: StructuredRecommendation
+  /** ICD-11 stems that exactly match the trusted cache; the clinician selects, AI never assigns. */
+  icd11Candidates: VerifiedIcd11Candidate[]
+  icd11HintsRejected: number
   suggestedPathwayIds: string[]
   safety: {
     canActivatePathway: false
@@ -31,6 +45,8 @@ export type ClinicalAdviceResponse = {
     generatedAt: string
   }
 }
+
+export const CLINICIAN_DECISIONS = ["ACCEPT", "MODIFY", "REJECT", "DEFER"] as const
 
 export type ClinicalOverrideInput = {
   recommendationId: string
