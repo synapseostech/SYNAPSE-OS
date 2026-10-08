@@ -11,7 +11,7 @@ import {
   isClinicalIntelligenceWave1Enabled,
   recordClinicianOverride,
 } from "../../../../../lib/clinical-intelligence"
-import { loadEncounterScope } from "../../../../../lib/clinical-intelligence/encounter-scope"
+import { loadEncounterScope, type EncounterScope } from "../../../../../lib/clinical-intelligence/encounter-scope"
 import { recordAdviceEvent } from "../../../../../lib/clinical-intelligence/provenance"
 import { CLINICIAN_DECISIONS } from "../../../../../lib/clinical-intelligence/schemas"
 import { checkRateLimit, rateLimiters } from "../../../../../lib/rate-limit"
@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = supabaseAdmin as any
 
-  let encounter: { encounterId: string; patientId: string | null } | null = null
+  let encounter: EncounterScope | null = null
   if (body.encounterId) {
     const loaded = await loadEncounterScope(db, ctx.tenantId, body.encounterId)
     if (loaded.error) {
@@ -128,7 +128,9 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  const complaint = (body.presentingComplaint ?? "").trim()
+  // Encounter-scoped context: the chief complaint recorded on the encounter is the
+  // default; an explicit complaint from the clinician takes precedence.
+  const complaint = ((body.presentingComplaint ?? "").trim() || encounter?.chiefComplaint || "").trim()
   if (!complaint) {
     return NextResponse.json({ error: "presentingComplaint is required", advisory: true }, { status: 400 })
   }
@@ -143,8 +145,8 @@ export async function POST(req: NextRequest) {
       presentingComplaint: complaint,
       vitals: body.vitals,
       laboratory: body.laboratory,
-      history: body.history,
-      examination: body.examination,
+      history: body.history ?? (encounter?.history.length ? encounter.history : undefined),
+      examination: body.examination ?? (encounter?.examination.length ? encounter.examination : undefined),
       medications: body.medications,
       allergies: body.allergies,
       previousDiagnoses: body.previousDiagnoses,

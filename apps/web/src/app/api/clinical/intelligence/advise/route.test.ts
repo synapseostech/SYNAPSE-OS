@@ -57,7 +57,7 @@ function req(body: unknown) {
   })
 }
 
-type EncounterRow = { id: string; patient_id: string; tenant_id: string }
+type EncounterRow = { id: string; patient_id: string; tenant_id: string; chief_complaint?: string; metadata?: unknown }
 
 function wireDb(opts: { encounters?: EncounterRow[]; adviceInsertError?: { code: string; message: string } | null }) {
   dbFrom.mockImplementation((table: string) => {
@@ -200,6 +200,31 @@ describe("POST /api/clinical/intelligence/advise", () => {
     vi.stubEnv("VERCEL_ENV", "preview")
     const preview = await (await POST(req({ presentingComplaint: "fever", forceMock: true }))).json()
     expect(preview.model).toBe("mock-clinical-v1")
+  })
+
+  it("encounter-scoped context: chief complaint is the default presenting complaint", async () => {
+    wireDb({
+      encounters: [
+        {
+          id: ENCOUNTER,
+          patient_id: PATIENT,
+          tenant_id: TENANT,
+          chief_complaint: "fever and rigors for 3 days",
+          metadata: { writeup: { examination: "warm peripheries, BP 84/50" } },
+        },
+      ],
+    })
+    const res = await POST(req({ encounterId: ENCOUNTER }))
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.recommendation.recommendation).toBe("fever and rigors for 3 days")
+    expect(body.recommendation.supportingEvidence).toContain("warm peripheries, BP 84/50")
+    expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ event_type: "advice", encounter_id: ENCOUNTER }))
+  })
+
+  it("no complaint and no encounter → 400", async () => {
+    const res = await POST(req({}))
+    expect(res.status).toBe(400)
   })
 
   it("rate limit is keyed per clinician, not per IP", async () => {
