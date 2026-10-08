@@ -86,8 +86,36 @@ jobs:
         with:
           version: latest
 
-      - name: Start disposable Supabase stack (applies supabase/migrations)
-        run: supabase start -x studio,imgproxy,edge-runtime,logflare,vector
+      # The historical migration archive cannot be replayed from an empty
+      # database (its first file alters public.profiles). Fresh environments use
+      # the sanctioned path: canonical schema snapshot (scripts/db-reset-fresh.sh,
+      # captured 2026-09-19) + every migration dated after that snapshot.
+      - name: Start disposable Supabase stack (no archive replay)
+        run: |
+          mkdir -p "$RUNNER_TEMP/migrations-hold"
+          mv supabase/migrations/* "$RUNNER_TEMP/migrations-hold/"
+          supabase start -x studio,imgproxy,edge-runtime,logflare,vector
+          mv "$RUNNER_TEMP/migrations-hold/"* supabase/migrations/
+
+      - name: Bootstrap canonical schema (local 127.0.0.1:54322 only)
+        run: bash scripts/db-reset-fresh.sh
+
+      - name: Apply post-snapshot migrations
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          SNAPSHOT_CUTOFF=20260919235959
+          applied=0
+          for f in $(ls supabase/migrations/[0-9]*_*.sql | sort); do
+            v="$(basename "$f" | cut -d_ -f1)"
+            if [[ "$v" > "$SNAPSHOT_CUTOFF" ]]; then
+              echo "Applying $(basename "$f")"
+              psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -v ON_ERROR_STOP=1 -q -f "$f"
+              applied=$((applied + 1))
+            fi
+          done
+          echo "Applied $applied post-snapshot migrations"
 
       - name: Export disposable database credentials
         run: |
