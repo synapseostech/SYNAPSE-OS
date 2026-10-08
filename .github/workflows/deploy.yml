@@ -10,9 +10,12 @@ on:
 # Root vercel.json is the source of truth for install/build/output — same as `npm run verify:web`.
 # Optional: set VERCEL_TOKEN and keep the deploy job below for CLI-based deploys instead of Git integration.
 
+# IDs (not secrets) of the live Vercel team "synapse-os1" and project "synapse-os".
+# The previous values pointed at a retired team/project, so the optional CLI
+# deploy below would have targeted the wrong project if it were ever enabled.
 env:
-  VERCEL_ORG_ID: team_ZHaBdLFb1hunAs68QC70HTBy
-  VERCEL_PROJECT_ID: prj_ST72DC6VkMfhon3M1yW2PL575mcd
+  VERCEL_ORG_ID: team_IfLX69fKbBxupsNAtDVzF573
+  VERCEL_PROJECT_ID: prj_k3fiiNA4tfB14Mfv0ZMcSM34MbUB
 
 jobs:
   verify:
@@ -56,12 +59,18 @@ jobs:
       - name: Lint web app
         run: npm run lint --workspace @synapse/web
 
-  # Protected-main acceptance gate. This remains fail-closed: a missing or
-  # partial database configuration must stop the release before deployment.
+  # Database acceptance gate. Fail-closed: if the disposable database cannot be
+  # started or any migration fails to apply, the release stops here.
+  #
+  # The suite writes synthetic tenants, patients, encounters, invoices and
+  # dispenses, so it must never target the production project. It runs against
+  # an ephemeral local Supabase stack built from supabase/migrations on the
+  # runner: no service-role secret is needed, nothing persists after the job,
+  # and the same gate now also runs on pull requests before merge.
   db-acceptance:
     needs: verify
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -73,28 +82,79 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Require database credentials
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # The historical migration archive cannot be replayed from an empty
+      # database (its first file alters public.profiles). Fresh environments use
+      # the sanctioned path: canonical schema snapshot (scripts/db-reset-fresh.sh,
+      # captured 2026-09-19) + every migration not already folded into it.
+      # The snapshot was later amended in-repo to fold in 20260920124500,
+      # 20260920180000 and 20260920190000 (bfcfc98, d9e3761, 01cf9eb), so the
+      # first unfolded migration is 20260920203000.
+      - name: Start disposable Supabase stack (no archive replay)
         run: |
-          if [[ -z "$SUPABASE_URL" || -z "$SUPABASE_SERVICE_ROLE_KEY" ]]; then
-            echo "Protected-main database acceptance requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
+          mkdir -p "$RUNNER_TEMP/migrations-hold"
+          mv supabase/migrations/* "$RUNNER_TEMP/migrations-hold/"
+          supabase start -x studio,imgproxy,edge-runtime,logflare,vector
+          mv "$RUNNER_TEMP/migrations-hold/"* supabase/migrations/
+
+      - name: Bootstrap canonical schema (local 127.0.0.1:54322 only)
+        run: bash scripts/db-reset-fresh.sh
+
+      - name: Apply post-snapshot migrations
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          # Last migration folded into supabase/bootstrap/canonical_public_schema.sql
+          SNAPSHOT_CUTOFF=20260920190000
+          applied=0
+          for f in $(ls supabase/migrations/[0-9]*_*.sql | sort); do
+            v="$(basename "$f" | cut -d_ -f1)"
+            if [[ "$v" > "$SNAPSHOT_CUTOFF" ]]; then
+              echo "Applying $(basename "$f")"
+              psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -v ON_ERROR_STOP=1 -q -f "$f"
+              applied=$((applied + 1))
+            fi
+          done
+          echo "Applied $applied post-snapshot migrations"
+
+      - name: Export disposable database credentials
+        run: |
+          supabase status -o env > /tmp/sb.env
+          set -a; . /tmp/sb.env; set +a
+          if [[ -z "${API_URL:-}" || -z "${SERVICE_ROLE_KEY:-}" || -z "${ANON_KEY:-}" ]]; then
+            echo "Local Supabase did not report API_URL / SERVICE_ROLE_KEY / ANON_KEY"
             exit 1
           fi
+          case "$API_URL" in
+            http://127.0.0.1:*|http://localhost:*) ;;
+            *) echo "Refusing to run acceptance against a non-local database"; exit 1 ;;
+          esac
+          echo "::add-mask::$SERVICE_ROLE_KEY"
+          echo "::add-mask::$ANON_KEY"
+          {
+            echo "SUPABASE_URL=$API_URL"
+            echo "NEXT_PUBLIC_SUPABASE_URL=$API_URL"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$ANON_KEY"
+          } >> "$GITHUB_ENV"
+          rm -f /tmp/sb.env
 
       - name: Run database-backed pharmacy acceptance
         run: npm run test --workspace @synapse/pharmacy
         env:
           CI: "true"
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           SYNAPSE_JWT_SECRET: ${{ secrets.SYNAPSE_JWT_SECRET }}
 
       - name: Verify migration and schema compatibility checks
         run: npm run db:check
+
+      - name: Stop disposable Supabase stack
+        if: always()
+        run: supabase stop --no-backup || true
 
   # Optional CLI deploy. Prefer Vercel Git integration for www/pharm production.
   # Enable with repository variable ENABLE_VERCEL_CLI_DEPLOY=true and secret VERCEL_TOKEN.
