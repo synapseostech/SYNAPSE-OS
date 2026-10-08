@@ -11,8 +11,8 @@ import {
   isClinicalIntelligenceWave1Enabled,
   recordClinicianOverride,
 } from "../../../../../lib/clinical-intelligence"
-import { loadEncounterScope } from "../../../../../lib/clinical-intelligence/encounter-scope"
-import { recordAdviceEvent } from "../../../../../lib/clinical-intelligence/provenance"
+import { loadEncounterScope, type EncounterScope } from "../../../../../lib/clinical-intelligence/encounter-scope"
+import { findAdviceEvent, recordAdviceEvent } from "../../../../../lib/clinical-intelligence/provenance"
 import { CLINICIAN_DECISIONS } from "../../../../../lib/clinical-intelligence/schemas"
 import { checkRateLimit, rateLimiters } from "../../../../../lib/rate-limit"
 
@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = supabaseAdmin as any
 
-  let encounter: { encounterId: string; patientId: string | null } | null = null
+  let encounter: EncounterScope | null = null
   if (body.encounterId) {
     const loaded = await loadEncounterScope(db, ctx.tenantId, body.encounterId)
     if (loaded.error) {
@@ -100,6 +100,28 @@ export async function POST(req: NextRequest) {
   }
 
   if (body.override) {
+    // A decision must refer to advice issued inside this tenant (and, when the
+    // advice was encounter-scoped, to the same encounter). Unknown or foreign ids
+    // are indistinguishable "not found". When the audit table is not deployed
+    // there is nothing to link against; the decision is returned unpersisted.
+    const linked = await findAdviceEvent(db, ctx.tenantId, body.override.recommendationId)
+    if (linked.status === "error") {
+      return NextResponse.json({ error: "Recommendation lookup failed", advisory: true }, { status: 500 })
+    }
+    if (linked.status === "not_found") {
+      return NextResponse.json({ error: "Recommendation not found" }, { status: 404 })
+    }
+    if (linked.status === "found") {
+      if (linked.event.encounterId && linked.event.encounterId !== (encounter?.encounterId ?? null)) {
+        return NextResponse.json({ error: "Recommendation not found" }, { status: 404 })
+      }
+      if (linked.event.availability === "unavailable") {
+        return NextResponse.json(
+          { error: "No AI recommendation was produced for this request; there is nothing to accept or reject." },
+          { status: 409 },
+        )
+      }
+    }
     const record = recordClinicianOverride({
       recommendationId: body.override.recommendationId,
       decision: body.override.decision,
@@ -115,10 +137,15 @@ export async function POST(req: NextRequest) {
       encounterId: encounter?.encounterId ?? null,
       recommendationId: record.recommendationId,
       task: body.task ?? "clinical_copilot",
-      provider: null,
-      model: null,
+      provider: linked.status === "found" ? linked.event.provider : null,
+      model: linked.status === "found" ? linked.event.model : null,
       decision: record.decision,
-      payload: { reason: record.reason, modifiedText: record.modifiedText, at: record.at },
+      payload: {
+        reason: record.reason,
+        modifiedText: record.modifiedText,
+        at: record.at,
+        adviceLinked: linked.status === "found",
+      },
     })
     return NextResponse.json({
       ok: true,
@@ -128,7 +155,9 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  const complaint = (body.presentingComplaint ?? "").trim()
+  // Encounter-scoped context: the chief complaint recorded on the encounter is the
+  // default; an explicit complaint from the clinician takes precedence.
+  const complaint = ((body.presentingComplaint ?? "").trim() || encounter?.chiefComplaint || "").trim()
   if (!complaint) {
     return NextResponse.json({ error: "presentingComplaint is required", advisory: true }, { status: 400 })
   }
@@ -143,8 +172,8 @@ export async function POST(req: NextRequest) {
       presentingComplaint: complaint,
       vitals: body.vitals,
       laboratory: body.laboratory,
-      history: body.history,
-      examination: body.examination,
+      history: body.history ?? (encounter?.history.length ? encounter.history : undefined),
+      examination: body.examination ?? (encounter?.examination.length ? encounter.examination : undefined),
       medications: body.medications,
       allergies: body.allergies,
       previousDiagnoses: body.previousDiagnoses,
