@@ -12,7 +12,7 @@ import {
   recordClinicianOverride,
 } from "../../../../../lib/clinical-intelligence"
 import { loadEncounterScope, type EncounterScope } from "../../../../../lib/clinical-intelligence/encounter-scope"
-import { recordAdviceEvent } from "../../../../../lib/clinical-intelligence/provenance"
+import { findAdviceEvent, recordAdviceEvent } from "../../../../../lib/clinical-intelligence/provenance"
 import { CLINICIAN_DECISIONS } from "../../../../../lib/clinical-intelligence/schemas"
 import { checkRateLimit, rateLimiters } from "../../../../../lib/rate-limit"
 
@@ -100,6 +100,28 @@ export async function POST(req: NextRequest) {
   }
 
   if (body.override) {
+    // A decision must refer to advice issued inside this tenant (and, when the
+    // advice was encounter-scoped, to the same encounter). Unknown or foreign ids
+    // are indistinguishable "not found". When the audit table is not deployed
+    // there is nothing to link against; the decision is returned unpersisted.
+    const linked = await findAdviceEvent(db, ctx.tenantId, body.override.recommendationId)
+    if (linked.status === "error") {
+      return NextResponse.json({ error: "Recommendation lookup failed", advisory: true }, { status: 500 })
+    }
+    if (linked.status === "not_found") {
+      return NextResponse.json({ error: "Recommendation not found" }, { status: 404 })
+    }
+    if (linked.status === "found") {
+      if (linked.event.encounterId && linked.event.encounterId !== (encounter?.encounterId ?? null)) {
+        return NextResponse.json({ error: "Recommendation not found" }, { status: 404 })
+      }
+      if (linked.event.availability === "unavailable") {
+        return NextResponse.json(
+          { error: "No AI recommendation was produced for this request; there is nothing to accept or reject." },
+          { status: 409 },
+        )
+      }
+    }
     const record = recordClinicianOverride({
       recommendationId: body.override.recommendationId,
       decision: body.override.decision,
@@ -115,10 +137,15 @@ export async function POST(req: NextRequest) {
       encounterId: encounter?.encounterId ?? null,
       recommendationId: record.recommendationId,
       task: body.task ?? "clinical_copilot",
-      provider: null,
-      model: null,
+      provider: linked.status === "found" ? linked.event.provider : null,
+      model: linked.status === "found" ? linked.event.model : null,
       decision: record.decision,
-      payload: { reason: record.reason, modifiedText: record.modifiedText, at: record.at },
+      payload: {
+        reason: record.reason,
+        modifiedText: record.modifiedText,
+        at: record.at,
+        adviceLinked: linked.status === "found",
+      },
     })
     return NextResponse.json({
       ok: true,

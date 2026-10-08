@@ -59,7 +59,22 @@ function req(body: unknown) {
 
 type EncounterRow = { id: string; patient_id: string; tenant_id: string; chief_complaint?: string; metadata?: unknown }
 
-function wireDb(opts: { encounters?: EncounterRow[]; adviceInsertError?: { code: string; message: string } | null }) {
+type AdviceEventRow = {
+  tenant_id: string
+  event_type: "advice" | "override"
+  recommendation_id: string
+  encounter_id: string | null
+  provider: string | null
+  model: string | null
+  payload: Record<string, unknown>
+}
+
+function wireDb(opts: {
+  encounters?: EncounterRow[]
+  adviceEvents?: AdviceEventRow[]
+  adviceInsertError?: { code: string; message: string } | null
+  adviceSelectError?: { code: string; message: string } | null
+}) {
   dbFrom.mockImplementation((table: string) => {
     if (table === "encounters") {
       const filters: Record<string, string> = {}
@@ -78,15 +93,40 @@ function wireDb(opts: { encounters?: EncounterRow[]; adviceInsertError?: { code:
       return chain
     }
     if (table === "clinical_ai_advice_events") {
-      return {
+      const filters: Record<string, string> = {}
+      const chain = {
         insert: async (row: unknown) => {
           insertSpy(row)
           return { error: opts.adviceInsertError ?? null }
         },
+        select: () => chain,
+        eq: (col: string, val: string) => {
+          filters[col] = val
+          return chain
+        },
+        limit: () => chain,
+        maybeSingle: async () => {
+          if (opts.adviceSelectError) return { data: null, error: opts.adviceSelectError }
+          const row = (opts.adviceEvents ?? []).find((r) =>
+            Object.entries(filters).every(([col, val]) => (r as Record<string, unknown>)[col] === val),
+          )
+          return { data: row ?? null, error: null }
+        },
       }
+      return chain
     }
     throw new Error(`unexpected table ${table}`)
   })
+}
+
+const ADVICE_R1: AdviceEventRow = {
+  tenant_id: TENANT,
+  event_type: "advice",
+  recommendation_id: "r1",
+  encounter_id: ENCOUNTER,
+  provider: "openrouter",
+  model: "google/test",
+  payload: { availability: "available" },
 }
 
 beforeEach(() => {
@@ -153,7 +193,8 @@ describe("POST /api/clinical/intelligence/advise", () => {
     expect(insertSpy).not.toHaveBeenCalled()
   })
 
-  it("clinician override is persisted with tenant + encounter scope", async () => {
+  it("clinician override is persisted with tenant + clinician + encounter + model of the linked advice", async () => {
+    wireDb({ encounters: [{ id: ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT }], adviceEvents: [ADVICE_R1] })
     const res = await POST(
       req({ encounterId: ENCOUNTER, override: { recommendationId: "r1", decision: "REJECT", reason: "does not fit" } }),
     )
@@ -164,12 +205,87 @@ describe("POST /api/clinical/intelligence/advise", () => {
     expect(insertSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         tenant_id: TENANT,
+        clinician_id: "55555555-5555-4555-8555-555555555555",
         event_type: "override",
         encounter_id: ENCOUNTER,
         patient_id: PATIENT,
+        recommendation_id: "r1",
+        provider: "openrouter",
+        model: "google/test",
         decision: "REJECT",
+        payload: expect.objectContaining({ reason: "does not fit", adviceLinked: true, at: expect.any(String) }),
       }),
     )
+  })
+
+  it("Accept and Accept-with-edits persist the decision (MODIFY keeps the clinician's edited text)", async () => {
+    wireDb({ encounters: [{ id: ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT }], adviceEvents: [ADVICE_R1] })
+    const accept = await POST(req({ encounterId: ENCOUNTER, override: { recommendationId: "r1", decision: "ACCEPT" } }))
+    expect(accept.status).toBe(200)
+    const modify = await POST(
+      req({ encounterId: ENCOUNTER, override: { recommendationId: "r1", decision: "MODIFY", modifiedText: "Viral URTI" } }),
+    )
+    expect(modify.status).toBe(200)
+    expect(insertSpy).toHaveBeenNthCalledWith(1, expect.objectContaining({ decision: "ACCEPT", event_type: "override" }))
+    expect(insertSpy).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ decision: "MODIFY", payload: expect.objectContaining({ modifiedText: "Viral URTI" }) }),
+    )
+  })
+
+  it("decision on another tenant's recommendation → 404 and nothing is written", async () => {
+    wireDb({
+      encounters: [{ id: ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT }],
+      adviceEvents: [{ ...ADVICE_R1, tenant_id: OTHER_TENANT }],
+    })
+    const res = await POST(req({ encounterId: ENCOUNTER, override: { recommendationId: "r1", decision: "ACCEPT" } }))
+    expect(res.status).toBe(404)
+    expect(insertSpy).not.toHaveBeenCalled()
+  })
+
+  it("decision against a different encounter than the advice was issued for → 404", async () => {
+    const OTHER_ENCOUNTER = "77777777-7777-4777-8777-777777777777"
+    wireDb({
+      encounters: [
+        { id: ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT },
+        { id: OTHER_ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT },
+      ],
+      adviceEvents: [ADVICE_R1],
+    })
+    const res = await POST(req({ encounterId: OTHER_ENCOUNTER, override: { recommendationId: "r1", decision: "ACCEPT" } }))
+    expect(res.status).toBe(404)
+    expect(insertSpy).not.toHaveBeenCalled()
+  })
+
+  it("decision on an 'AI unavailable' event → 409 (nothing to accept or reject)", async () => {
+    wireDb({
+      encounters: [{ id: ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT }],
+      adviceEvents: [{ ...ADVICE_R1, provider: "none", model: null, payload: { availability: "unavailable" } }],
+    })
+    const res = await POST(req({ encounterId: ENCOUNTER, override: { recommendationId: "r1", decision: "ACCEPT" } }))
+    expect(res.status).toBe(409)
+    expect(insertSpy).not.toHaveBeenCalled()
+  })
+
+  it("recommendation lookup failure → 500, nothing written", async () => {
+    wireDb({
+      encounters: [{ id: ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT }],
+      adviceSelectError: { code: "08006", message: "connection failure" },
+    })
+    const res = await POST(req({ encounterId: ENCOUNTER, override: { recommendationId: "r1", decision: "ACCEPT" } }))
+    expect(res.status).toBe(500)
+    expect(insertSpy).not.toHaveBeenCalled()
+  })
+
+  it("audit table not deployed → decision returned but explicitly unpersisted", async () => {
+    wireDb({
+      encounters: [{ id: ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT }],
+      adviceSelectError: { code: "42P01", message: 'relation "clinical_ai_advice_events" does not exist' },
+      adviceInsertError: { code: "42P01", message: 'relation "clinical_ai_advice_events" does not exist' },
+    })
+    const res = await POST(req({ encounterId: ENCOUNTER, override: { recommendationId: "r1", decision: "REJECT" } }))
+    expect(res.status).toBe(200)
+    expect((await res.json()).provenancePersisted).toBe(false)
   })
 
   it("AI unavailable → 200 degraded advisory; provenance table absent → still 200", async () => {
@@ -183,6 +299,8 @@ describe("POST /api/clinical/intelligence/advise", () => {
     expect(body.advisory).toBe(true)
     expect(body.origin).toBe("ai_suggestion")
     expect(body.degraded).toBe(true)
+    expect(body.availability).toBe("unavailable")
+    expect(body.recommendation).toBeNull()
     expect(body.provenancePersisted).toBe(false)
     expect(body.safety).toMatchObject({ canActivatePathway: false, canPlaceOrder: false, canSignDiagnosis: false })
   })
@@ -205,24 +323,61 @@ describe("POST /api/clinical/intelligence/advise", () => {
     expect(preview.model).toBe("mock-clinical-v1")
   })
 
-  it("encounter-scoped context: chief complaint is the default presenting complaint", async () => {
-    wireDb({
-      encounters: [
-        {
-          id: ENCOUNTER,
-          patient_id: PATIENT,
-          tenant_id: TENANT,
-          chief_complaint: "fever and rigors for 3 days",
-          metadata: { writeup: { examination: "warm peripheries, BP 84/50" } },
-        },
-      ],
-    })
-    const res = await POST(req({ encounterId: ENCOUNTER }))
+  it("AI unavailable is audited with tenant + clinician + encounter and availability=unavailable", async () => {
+    const res = await POST(req({ presentingComplaint: "fever", encounterId: ENCOUNTER }))
     expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.recommendation.recommendation).toBe("fever and rigors for 3 days")
-    expect(body.recommendation.supportingEvidence).toContain("warm peripheries, BP 84/50")
-    expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ event_type: "advice", encounter_id: ENCOUNTER }))
+    expect(insertSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenant_id: TENANT,
+        clinician_id: "55555555-5555-4555-8555-555555555555",
+        event_type: "advice",
+        encounter_id: ENCOUNTER,
+        provider: "none",
+        model: null,
+        payload: expect.objectContaining({ availability: "unavailable", synthetic: false, recommendation: null }),
+      }),
+    )
+  })
+
+  it("encounter-scoped context: chief complaint is sent to the live model; write-up stays on screen only", async () => {
+    vi.stubEnv("DEEPSEEK_API_KEY", "test-key")
+    const fetchSpy = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          model: "deepseek-chat",
+          choices: [{ message: { content: JSON.stringify({ recommendation: "Consider malaria RDT", confidence: 0.5 }) } }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    )
+    vi.stubGlobal("fetch", fetchSpy)
+    try {
+      wireDb({
+        encounters: [
+          {
+            id: ENCOUNTER,
+            patient_id: PATIENT,
+            tenant_id: TENANT,
+            chief_complaint: "fever and rigors for 3 days",
+            metadata: { writeup: { examination: "warm peripheries, BP 84/50" } },
+          },
+        ],
+      })
+      const res = await POST(req({ encounterId: ENCOUNTER }))
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.availability).toBe("available")
+      expect(body.synthetic).toBe(false)
+      expect(body.recommendation.recommendation).toBe("Consider malaria RDT")
+      const sent = JSON.stringify((fetchSpy.mock.calls[0] as unknown[])[1])
+      expect(sent).toContain("fever and rigors for 3 days")
+      expect(sent).not.toContain("warm peripheries")
+      expect(insertSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ event_type: "advice", encounter_id: ENCOUNTER, model: "deepseek-chat", tenant_id: TENANT }),
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it("no complaint and no encounter → 400", async () => {

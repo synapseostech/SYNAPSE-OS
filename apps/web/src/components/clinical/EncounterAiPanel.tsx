@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useState } from 'react'
-import { adviceErrorMessage, toAdviceView, type AdviceApiPayload, type AdviceView } from '@/lib/clinical-intelligence/advice-view'
+import { adviceErrorMessage, adviceUnavailableNotice, toAdviceView, type AdviceApiPayload, type AdviceView } from '@/lib/clinical-intelligence/advice-view'
 
 type Decision = 'ACCEPT' | 'MODIFY' | 'REJECT'
 
@@ -51,6 +51,7 @@ export function EncounterAiPanel({ encounterId, backHref }: { encounterId: strin
   const [vitals, setVitals] = useState<VitalsInput>(EMPTY_VITALS)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [unavailable, setUnavailable] = useState<string | null>(null)
   const [view, setView] = useState<AdviceView | null>(null)
   const [editText, setEditText] = useState('')
   const [reason, setReason] = useState('')
@@ -60,6 +61,7 @@ export function EncounterAiPanel({ encounterId, backHref }: { encounterId: strin
   async function requestSuggestion() {
     setLoading(true)
     setError(null)
+    setUnavailable(null)
     setView(null)
     setDecisionState(null)
     try {
@@ -76,7 +78,14 @@ export function EncounterAiPanel({ encounterId, backHref }: { encounterId: strin
         setError(adviceErrorMessage(res.status))
         return
       }
-      const parsed = toAdviceView((await res.json()) as AdviceApiPayload)
+      const payload = (await res.json()) as AdviceApiPayload
+      const notice = adviceUnavailableNotice(payload)
+      if (notice) {
+        // Explicit "AI unavailable": nothing to accept/reject; keep documenting.
+        setUnavailable(notice)
+        return
+      }
+      const parsed = toAdviceView(payload)
       if (!parsed) {
         setError(adviceErrorMessage(500))
         return
@@ -171,6 +180,15 @@ export function EncounterAiPanel({ encounterId, backHref }: { encounterId: strin
       {error && (
         <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600" role="alert">
           {error}{' '}
+          <Link href={`/encounter/${encounterId}/notes`} className="underline">
+            Open the write-up
+          </Link>
+        </div>
+      )}
+
+      {unavailable && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300" role="status">
+          {unavailable}{' '}
           <Link href={`/encounter/${encounterId}/notes`} className="underline">
             Open the write-up
           </Link>

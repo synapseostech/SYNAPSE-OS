@@ -9,6 +9,8 @@ export type AdviceApiPayload = {
   origin?: string
   degraded?: boolean
   degradedReason?: string | null
+  availability?: "available" | "unavailable"
+  synthetic?: boolean
   provider?: string
   model?: string | null
   provenancePersisted?: boolean
@@ -22,7 +24,7 @@ export type AdviceApiPayload = {
     confidence?: number
     cannotMiss?: boolean
     suggestedPathwayId?: string | null
-  }
+  } | null
   icd11Candidates?: Array<{ stemCode: string; title: string; verified: boolean }>
   icd11HintsRejected?: number
 }
@@ -51,18 +53,33 @@ const DEGRADED_TEXT: Record<string, string> = {
   invalid_model_output: "The AI response failed validation and was discarded.",
   auth: "The AI service rejected its credentials.",
   not_configured: "No AI provider is configured.",
+  mock_disallowed: "Test (mock) output is not permitted in this environment.",
+}
+
+/** True when the API produced no usable live recommendation. */
+function isUnavailable(payload: AdviceApiPayload): boolean {
+  return payload.availability === "unavailable" || payload.degraded === true || !payload.recommendation
+}
+
+/**
+ * Clinician-facing notice for an explicit "AI unavailable" result. There is no
+ * suggestion to accept or reject; documentation continues as normal.
+ */
+export function adviceUnavailableNotice(payload: AdviceApiPayload): string | null {
+  if (!payload.ok || !isUnavailable(payload)) return null
+  const reason = DEGRADED_TEXT[payload.degradedReason ?? ""] ?? "The AI service is unavailable."
+  return `AI unavailable — continue documenting normally. ${reason} No AI suggestion was produced.`
 }
 
 export function toAdviceView(payload: AdviceApiPayload): AdviceView | null {
   const rec = payload.recommendation
-  if (!payload.ok || !rec?.id || typeof rec.recommendation !== "string") return null
+  // Unavailable/degraded results never render as a suggestion, even if a
+  // recommendation object were present: no synthesized advice reaches the UI.
+  if (!payload.ok || isUnavailable(payload) || !rec?.id || typeof rec.recommendation !== "string") return null
 
   const warnings: string[] = []
-  if (payload.degraded) {
-    warnings.push(
-      `${DEGRADED_TEXT[payload.degradedReason ?? ""] ?? "The AI service is degraded."} ` +
-        "This is a rule-based fallback, not a model opinion. Continue documenting as normal.",
-    )
+  if (payload.synthetic) {
+    warnings.push("Synthetic test output from the mock provider — not a model opinion. Never use it for patient care.")
   }
   if (rec.cannotMiss) {
     warnings.push("Cannot-miss condition flagged: assess and escalate per protocol. The AI does not trigger any action.")
@@ -91,8 +108,8 @@ export function toAdviceView(payload: AdviceApiPayload): AdviceView | null {
       ? `Related care pathway: ${rec.suggestedPathwayId} (advisory — open it yourself if appropriate).`
       : null,
     warnings,
-    sourceNote: payload.degraded
-      ? "Source: deterministic fallback"
+    sourceNote: payload.synthetic
+      ? "Source: mock provider (synthetic test output)"
       : `Source: ${payload.provider ?? "unknown"}${payload.model ? ` · ${payload.model}` : ""}`,
   }
 }
@@ -101,7 +118,8 @@ export function adviceErrorMessage(status: number): string {
   if (status === 503) return "Clinical Intelligence is switched off for this environment."
   if (status === 401) return "Your session has expired. Sign in again."
   if (status === 403) return "Your role cannot request clinical AI suggestions."
-  if (status === 404) return "Encounter not found."
+  if (status === 404) return "Encounter or recommendation not found."
+  if (status === 409) return "There is no AI suggestion to decide on. Continue documenting as normal."
   if (status === 429) return "Too many AI requests. Wait a minute and try again."
   return "AI suggestions are unavailable right now. Continue documenting as normal."
 }
