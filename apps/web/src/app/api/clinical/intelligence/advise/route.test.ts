@@ -190,12 +190,15 @@ describe("POST /api/clinical/intelligence/advise", () => {
   it("forceMock from the request is ignored unless explicitly allowed off-production", async () => {
     const res = await POST(req({ presentingComplaint: "fever", forceMock: true }))
     const body = await res.json()
-    expect(body.model).toBe("deterministic-fallback")
+    expect(body.availability).toBe("unavailable")
+    expect(body.recommendation).toBeNull()
+    expect(body.model).toBeNull()
 
     vi.stubEnv("CLINICAL_INTELLIGENCE_ALLOW_FORCE_MOCK", "1")
     vi.stubEnv("VERCEL_ENV", "production")
     const prod = await (await POST(req({ presentingComplaint: "fever", forceMock: true }))).json()
-    expect(prod.model).toBe("deterministic-fallback")
+    expect(prod.availability).toBe("unavailable")
+    expect(prod.recommendation).toBeNull()
 
     vi.stubEnv("VERCEL_ENV", "preview")
     const preview = await (await POST(req({ presentingComplaint: "fever", forceMock: true }))).json()

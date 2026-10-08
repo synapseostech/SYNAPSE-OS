@@ -43,8 +43,6 @@ export async function adviseClinical(input: ClinicalAdviceRequest): Promise<Clin
 
   let parsed: ParsedModelAdvice | null = null
   let degradedReason: ClinicalAdviceResponse["degradedReason"] = null
-  let model: string | null = null
-  let providerId: ClinicalAdviceResponse["provider"] = "mock"
 
   if (provider.ok) {
     try {
@@ -52,30 +50,61 @@ export async function adviseClinical(input: ClinicalAdviceRequest): Promise<Clin
     } catch {
       parsed = null
     }
-    if (parsed) {
-      model = provider.model
-      providerId = provider.provider
-    } else {
-      degradedReason = "invalid_model_output"
-      model = "deterministic-fallback"
-    }
+    if (!parsed) degradedReason = "invalid_model_output"
   } else {
     degradedReason = provider.failure
-    model = "deterministic-fallback"
   }
 
-  const complaint = input.packet.presentingComplaint
-  const conditionName = parsed?.recommendation ?? complaint
-  const cantMiss = parsed?.cannotMiss ?? CANNOT_MISS_PATTERN.test(complaint)
-  const confidence = parsed?.confidence ?? FALLBACK_CONFIDENCE
-  const aiReasoning =
-    parsed?.reasoningSummary ??
-    (parsed ? "No reasoning summary returned." : "AI provider unavailable — deterministic advisory fallback. Clinician decides.")
-
   const governedPathwayIds = suggested.map((p) => p.pathwayId)
-  const suggestedPathwayId = parsed?.suggestedPathwayId ?? governedPathwayIds[0] ?? null
+  const generatedAt = new Date().toISOString()
 
-  const icd = verifyIcd11Hints(parsed?.icd11StemHints ?? [])
+  // No usable live model output: return an explicit "unavailable" result with
+  // NO recommendation. Never substitute mock or synthesized advice.
+  if (!provider.ok || !parsed) {
+    return {
+      ok: true,
+      advisory: true,
+      origin: "ai_suggestion",
+      clinicianDocumentation: false,
+      humanOverrideRequired: true,
+      featureFlag: "CLINICAL_INTELLIGENCE_WAVE1",
+      availability: "unavailable",
+      synthetic: false,
+      provider: "none",
+      model: null,
+      degraded: true,
+      degradedReason,
+      recommendation: null,
+      icd11Candidates: [],
+      icd11HintsRejected: 0,
+      suggestedPathwayIds: governedPathwayIds,
+      safety: {
+        canActivatePathway: false,
+        canPlaceOrder: false,
+        canSignDiagnosis: false,
+        forbiddenActionsBlocked: blockedForbiddenActions(),
+      },
+      provenance: {
+        promptVersion: INTELLIGENCE_PROMPT_VERSION,
+        toolVersion: WAVE1_TOOL_VERSION,
+        sources: [...governedPathwayIds],
+        generatedAt,
+      },
+    }
+  }
+
+  const model = provider.model
+  const providerId: ClinicalAdviceResponse["provider"] = provider.provider
+  const synthetic = provider.provider === "mock"
+
+  const conditionName = parsed.recommendation
+  const cantMiss = parsed.cannotMiss ?? CANNOT_MISS_PATTERN.test(input.packet.presentingComplaint)
+  const confidence = parsed.confidence ?? FALLBACK_CONFIDENCE
+  const aiReasoning = parsed.reasoningSummary ?? "No reasoning summary returned."
+
+  const suggestedPathwayId = parsed.suggestedPathwayId ?? governedPathwayIds[0] ?? null
+
+  const icd = verifyIcd11Hints(parsed.icd11StemHints ?? [])
 
   // The recommendation itself never carries a code: codes are clinician-selected
   // from the verified candidate list below.
@@ -95,10 +124,10 @@ export async function adviseClinical(input: ClinicalAdviceRequest): Promise<Clin
     model,
   })
 
-  if (parsed?.supportingEvidence.length) recommendation.supportingEvidence = parsed.supportingEvidence
-  if (parsed?.contradictingEvidence.length) recommendation.contradictingEvidence = parsed.contradictingEvidence
-  if (parsed?.missingInformation.length) recommendation.missingInformation = parsed.missingInformation
-  if (parsed?.proposedTerms.length) recommendation.proposedTerms = parsed.proposedTerms
+  if (parsed.supportingEvidence.length) recommendation.supportingEvidence = parsed.supportingEvidence
+  if (parsed.contradictingEvidence.length) recommendation.contradictingEvidence = parsed.contradictingEvidence
+  if (parsed.missingInformation.length) recommendation.missingInformation = parsed.missingInformation
+  if (parsed.proposedTerms.length) recommendation.proposedTerms = parsed.proposedTerms
   recommendation.suggestedPathwayId = suggestedPathwayId ?? recommendation.suggestedPathwayId
   recommendation.provenance = {
     ...recommendation.provenance,
@@ -121,9 +150,11 @@ export async function adviseClinical(input: ClinicalAdviceRequest): Promise<Clin
     clinicianDocumentation: false,
     humanOverrideRequired: true,
     featureFlag: "CLINICAL_INTELLIGENCE_WAVE1",
+    availability: "available",
+    synthetic,
     provider: providerId,
     model,
-    degraded: degradedReason !== null,
+    degraded: false,
     degradedReason,
     recommendation,
     icd11Candidates: icd.verified,

@@ -2,7 +2,7 @@ import type { ClinicianDecision, PatientContextPacket, StructuredRecommendation 
 import type { VerifiedIcd11Candidate } from "./model-output"
 import type { ProviderFailureKind } from "./provider-router"
 
-export type ClinicalProviderId = "openrouter" | "google" | "deepseek" | "nvidia" | "mock"
+export type ClinicalProviderId = "openrouter" | "google" | "deepseek" | "nvidia" | "mock" | "none"
 
 export type ClinicalAdviceRequest = {
   packet: PatientContextPacket
@@ -24,13 +24,23 @@ export type ClinicalAdviceResponse = {
   featureFlag: "CLINICAL_INTELLIGENCE_WAVE1"
   provider: ClinicalProviderId
   model: string | null
-  /** True when the provider failed or returned unusable output and a deterministic fallback was used. */
+  /**
+   * "unavailable" when no usable live model output exists (provider down, not
+   * configured, invalid output, or mock refused in production). In that case
+   * there is NO AI recommendation — never a mock or synthesized substitute.
+   */
+  availability: "available" | "unavailable"
+  /** True only for the offline mock provider, which is refused in production. */
+  synthetic: boolean
+  /** True whenever availability is "unavailable". */
   degraded: boolean
   degradedReason: ProviderFailureKind | "invalid_model_output" | null
-  recommendation: StructuredRecommendation
+  /** Null when availability is "unavailable". */
+  recommendation: StructuredRecommendation | null
   /** ICD-11 stems that exactly match the trusted cache; the clinician selects, AI never assigns. */
   icd11Candidates: VerifiedIcd11Candidate[]
   icd11HintsRejected: number
+  /** Rule-based (non-AI) pathway matches from the governed catalog. */
   suggestedPathwayIds: string[]
   safety: {
     canActivatePathway: false

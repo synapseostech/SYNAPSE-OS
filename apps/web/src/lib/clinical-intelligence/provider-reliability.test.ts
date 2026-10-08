@@ -108,6 +108,8 @@ describe("adviseClinical graceful degradation", () => {
     expect(advice.ok).toBe(true)
     expect(advice.degraded).toBe(true)
     expect(advice.degradedReason).toBe("not_configured")
+    expect(advice.recommendation).toBeNull()
+    expect(advice.availability).toBe("unavailable")
     expect(advice.origin).toBe("ai_suggestion")
     expect(advice.clinicianDocumentation).toBe(false)
     expect(advice.safety.canPlaceOrder).toBe(false)
@@ -119,7 +121,8 @@ describe("adviseClinical graceful degradation", () => {
     const advice = await adviseClinical({ packet: packet(), env: OPENROUTER_ONLY, fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(advice.degraded).toBe(true)
     expect(advice.degradedReason).toBe("invalid_model_output")
-    expect(advice.provider).toBe("mock")
+    expect(advice.provider).toBe("none")
+    expect(advice.recommendation).toBeNull()
     expect(advice.icd11Candidates).toEqual([])
   })
 
@@ -127,6 +130,7 @@ describe("adviseClinical graceful degradation", () => {
     const fetchImpl = vi.fn(async () => openRouterOk(JSON.stringify({ confidence: 0.9, icd11StemHints: ["1G40"] })))
     const advice = await adviseClinical({ packet: packet(), env: OPENROUTER_ONLY, fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(advice.degradedReason).toBe("invalid_model_output")
+    expect(advice.recommendation).toBeNull()
     expect(advice.icd11Candidates).toEqual([])
   })
 
@@ -150,5 +154,23 @@ describe("adviseClinical graceful degradation", () => {
     expect(Number.isFinite(advice.recommendation.confidence)).toBe(true)
     expect(advice.recommendation.suggestedPathwayId).not.toBe("pathway.invented-by-model")
     expect(advice.provenance.sources.filter((s) => s.startsWith("icd11:"))).toEqual(["icd11:1G40"])
+  })
+})
+
+describe("production never receives mock advice", () => {
+  it("forceMock and CLINICAL_INTELLIGENCE_FORCE_MOCK are refused when VERCEL_ENV=production", async () => {
+    const env = { ...OPENROUTER_ONLY, VERCEL_ENV: "production", CLINICAL_INTELLIGENCE_FORCE_MOCK: "1" } as NodeJS.ProcessEnv
+    const fetchImpl = vi.fn(async () => openRouterOk(JSON.stringify({ recommendation: "live" })))
+    const r = await routeClinicalProvider({ system: "s", user: "u", env, fetchImpl: fetchImpl as unknown as typeof fetch, forceMock: true })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.failure).toBe("mock_disallowed")
+    expect(fetchImpl).not.toHaveBeenCalled()
+
+    const advice = await adviseClinical({ packet: packet(), env, fetchImpl: fetchImpl as unknown as typeof fetch, forceMock: true })
+    expect(advice.availability).toBe("unavailable")
+    expect(advice.synthetic).toBe(false)
+    expect(advice.recommendation).toBeNull()
+    expect(advice.degradedReason).toBe("mock_disallowed")
+    expect(JSON.stringify(advice)).not.toMatch(/mock advisory/i)
   })
 })
