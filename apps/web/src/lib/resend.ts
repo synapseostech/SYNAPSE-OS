@@ -74,7 +74,26 @@ export const resend = {
 export const NOTIFY_EMAILS = ['synapseostech@gmail.com']
 export const FROM_EMAIL    = process.env.RESEND_FROM_EMAIL ?? 'noreply@synapseos.tech'
 export const FROM_NAME     = 'Synapse OS'
-export const MAILING_ADDRESS = "Ebrine's Residence; Katuuso Cresecent; Buziga"
+/**
+ * Organisation postal address for email footers, from config only
+ * (EMAIL_ORGANIZATION_POSTAL_ADDRESS). Never hardcode a personal/residential
+ * address. When unset, the footer omits the address line.
+ */
+export function organizationPostalAddress(env: NodeJS.Dict<string> = process.env): string | null {
+  const v = env.EMAIL_ORGANIZATION_POSTAL_ADDRESS?.trim()
+  return v ? v.slice(0, 300) : null
+}
+
+export function escapeEmailHtml(value: unknown): string {
+  return String(value ?? '').replace(/[&<>"']/g, (c) =>
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
+  )
+}
+
+export function organizationFooterLine(env: NodeJS.Dict<string> = process.env): string {
+  const address = organizationPostalAddress(env)
+  return `Synapse Health Technologies Ltd${address ? ` &middot; ${escapeEmailHtml(address)}` : ''}`
+}
 export const DEFAULT_UNSUBSCRIBE_URL =
   process.env.NEXT_PUBLIC_UNSUBSCRIBE_URL ?? 'https://synapseos.tech/unsubscribed'
 export const LOGO_URL = process.env.NEXT_PUBLIC_EMAIL_LOGO_URL ?? 'https://synapseos.tech/synapse-logo.png'
@@ -93,7 +112,7 @@ export function brandedEmail({
 }): string {
   const unsubscribeHref = unsubscribeUrl ?? DEFAULT_UNSUBSCRIBE_URL
   const footer = `<p style="margin:0 0 6px;font-size:12px;color:#60607A;">
-      Synapse Health Technologies Ltd &middot; ${MAILING_ADDRESS}<br/>
+      ${organizationFooterLine()}<br/>
       <a href="https://synapseos.tech" style="color:#F97316;text-decoration:none;">synapseos.tech</a>
       &nbsp;&middot;&nbsp;
       <a href="https://synapseos.tech/contact" style="color:#60607A;text-decoration:none;">Contact us</a>
@@ -251,59 +270,6 @@ export async function sendPasswordResetEmail(email: string, name: string, resetU
   })
 }
 
-export async function sendPharmacyCredentialsEmail({
-  to,
-  pharmacyName,
-  adminName,
-  tempPassword,
-}: {
-  to: string
-  pharmacyName: string
-  adminName: string
-  tempPassword: string
-}): Promise<void> {
-  const loginUrl = `${process.env.NEXT_PUBLIC_PHARMACY_APP_URL?.replace(/\/$/, '') ?? 'https://pharm.synapseos.tech'}/login`
-  const firstName = adminName.split(' ')[0] || 'there'
-  await resend.emails.send({
-    from: `Synapse Health <${FROM_EMAIL}>`,
-    to: [to],
-    subject: `Your Synapse Pharmacy account for ${pharmacyName}`,
-    html: brandedEmail({
-      subject: `Your Synapse Pharmacy account for ${pharmacyName}`,
-      body: `
-        <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#F5F5F7;">
-          Your pharmacy is ready, ${firstName}.
-        </h2>
-        <p style="font-size:14px;line-height:1.7;color:#A0A0B0;margin:0 0 20px;">
-          <strong style="color:#F5F5F7;">${pharmacyName}</strong> has been enrolled on
-          Synapse Health Technologies. Use the credentials below to sign in.
-        </p>
-        <div style="background:rgba(249,115,22,0.06);border:1px solid rgba(249,115,22,0.2);border-radius:12px;padding:20px 24px;margin-bottom:24px;">
-          <p style="margin:0 0 10px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#A0A0B0;">Login credentials</p>
-          <table style="width:100%;border-collapse:collapse;">
-            <tr>
-              <td style="font-size:13px;color:#A0A0B0;padding:4px 0;width:90px;">Username</td>
-              <td style="font-size:14px;font-weight:600;color:#F5F5F7;font-family:'IBM Plex Mono',monospace,Courier;">${to}</td>
-            </tr>
-            <tr>
-              <td style="font-size:13px;color:#A0A0B0;padding:4px 0;">Password</td>
-              <td style="font-size:14px;font-weight:700;color:#F97316;font-family:'IBM Plex Mono',monospace,Courier;letter-spacing:0.05em;">${tempPassword}</td>
-            </tr>
-          </table>
-        </div>
-        <a href="${loginUrl}"
-          style="display:inline-block;background:#F97316;color:#fff;font-weight:700;font-size:14px;padding:12px 28px;border-radius:8px;text-decoration:none;margin-bottom:20px;">
-          Sign In to Synapse Pharmacy
-        </a>
-        <p style="font-size:12px;color:#60607A;margin:0;">
-          You will be asked to set a new password when you first sign in.
-          Keep this email safe until you have changed your password.
-        </p>
-      `,
-    }),
-  })
-}
-
 export async function sendPharmacyInviteEmail({
   to,
   pharmacyName,
@@ -352,21 +318,23 @@ export async function sendHospitalStaffInviteEmail({
   hospitalName,
   staffName,
   role,
-  tempPassword,
   inviteUrl,
 }: {
   to: string
   hospitalName: string
   staffName: string
   role: string
-  tempPassword?: string
-  inviteUrl?: string
+  /** Single-use, hashed, expiring facility invitation link. Passwords are never emailed. */
+  inviteUrl: string
 }): Promise<void> {
-  const loginUrl = `${process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '') ?? 'https://synapseos.tech'}/login`
-  const setupUrl = inviteUrl || loginUrl
-  const firstName = staffName.split(' ')[0] || 'there'
-  const credentialBlock = inviteUrl
-    ? `
+  if (!inviteUrl || !/^(?:https:\/\/|http:\/\/(?:localhost|127\.0\.0\.1)(?::\d{1,5})?\/)/.test(inviteUrl)) {
+    throw new Error('invite_url_required')
+  }
+  const setupUrl = escapeEmailHtml(inviteUrl)
+  const firstName = escapeEmailHtml(staffName.split(' ')[0] || 'there')
+  const safeHospital = escapeEmailHtml(hospitalName)
+  const safeRole = escapeEmailHtml(role.replace(/_/g, ' '))
+  const credentialBlock = `
         <p style="font-size:14px;line-height:1.7;color:#A0A0B0;margin:0 0 20px;">
           Use the secure single-use link below to choose your password and activate your account.
         </p>
@@ -377,39 +345,19 @@ export async function sendHospitalStaffInviteEmail({
         <p style="font-size:12px;color:#60607A;margin:20px 0 0;">
           This link expires in 7 days and can only be used once.
         </p>`
-    : `
-        <div style="background:rgba(249,115,22,0.06);border:1px solid rgba(249,115,22,0.2);border-radius:12px;padding:20px 24px;margin-bottom:24px;">
-          <table style="width:100%;border-collapse:collapse;">
-            <tr>
-              <td style="font-size:13px;color:#A0A0B0;padding:4px 0;width:90px;">Email</td>
-              <td style="font-size:14px;font-weight:600;color:#F5F5F7;">${to}</td>
-            </tr>
-            <tr>
-              <td style="font-size:13px;color:#A0A0B0;padding:4px 0;">Password</td>
-              <td style="font-size:14px;font-weight:700;color:#F97316;font-family:monospace;">${tempPassword ?? ''}</td>
-            </tr>
-          </table>
-        </div>
-        <a href="${loginUrl}"
-          style="display:inline-block;background:#F97316;color:#fff;font-weight:700;font-size:14px;padding:12px 28px;border-radius:8px;text-decoration:none;">
-          Sign In to Synapse OS
-        </a>
-        <p style="font-size:12px;color:#60607A;margin:20px 0 0;">
-          You will be asked to change your password on first login.
-        </p>`
 
   await resend.emails.send({
     from: `Synapse Health <${FROM_EMAIL}>`,
     to: [to],
     subject: `You've been invited to ${hospitalName} on Synapse OS`,
     html: brandedEmail({
-      subject: `You've been invited to ${hospitalName}`,
+      subject: `You've been invited to ${safeHospital}`,
       body: `
         <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#F5F5F7;">
-          Welcome to ${hospitalName}, ${firstName}.
+          Welcome to ${safeHospital}, ${firstName}.
         </h2>
         <p style="font-size:14px;line-height:1.7;color:#A0A0B0;margin:0 0 20px;">
-          You have been invited as <strong style="color:#F5F5F7;">${role.replace(/_/g, ' ')}</strong>
+          You have been invited as <strong style="color:#F5F5F7;">${safeRole}</strong>
           on Synapse Health Technologies.
         </p>
         ${credentialBlock}

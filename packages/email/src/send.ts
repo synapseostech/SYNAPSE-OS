@@ -44,7 +44,6 @@ export async function sendInvite(params: {
   facilityName: string
   role: string
   inviteUrl: string
-  tempPassword?: string
 }): Promise<void> {
   await deliver({
     from: FROM_ADDRESS,

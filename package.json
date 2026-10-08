@@ -83,6 +83,7 @@
     "test:icd11": "npx vitest run packages/interop/src/terminology/icd11.test.ts",
     "test:a11y-smoke": "node scripts/check-a11y-smoke.mjs",
     "test:secrets": "node scripts/check-secrets.mjs",
+    "test:email-credential-safety": "vitest run apps/web/src/lib/email-credential-safety.test.ts packages/email/src/templates.credentials.test.ts apps/web/src/lib/platform/facility-invitations.server.test.ts && cd apps/pharmacy && vitest run lib/email.credentials.test.ts lib/secure-invite.test.ts app/api/admin/users/route.test.ts",
     "test:e2e:hospital": "playwright test e2e/hospital-golden.spec.ts e2e/os-negative.spec.ts",
     "test:e2e:hospital:smoke": "node scripts/e2e-hospital-browser.mjs",
     "test:e2e:demo": "playwright test e2e/demo-golden-journey.spec.ts e2e/demo-acceptance.spec.ts e2e/demo-intelligence.spec.ts",

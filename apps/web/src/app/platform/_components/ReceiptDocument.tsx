@@ -3,6 +3,7 @@ import {
   DEFAULT_SIGNATURE_SRC,
   DEFAULT_SIGNER_NAME,
   DEFAULT_SIGNER_TITLE,
+  ORGANIZATION_POSTAL_ADDRESS,
 } from "../receipts/_lib/document-branding";
 
 export type ReceiptViewModel = {
@@ -163,8 +164,12 @@ export function PlatformReceiptDocument({ receipt }: { receipt: ReceiptViewModel
             <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">From</p>
             <p className="mt-1 text-sm font-bold text-slate-900">Synapse Health Technologies Ltd</p>
             <p className="mt-1 text-xs leading-relaxed text-slate-500">
-              Ebrine&apos;s Residence; Katuuso Crescent; Buziga
-              <br />
+              {ORGANIZATION_POSTAL_ADDRESS ? (
+                <>
+                  {ORGANIZATION_POSTAL_ADDRESS}
+                  <br />
+                </>
+              ) : null}
               support@synapseos.tech
             </p>
           </div>
@@ -268,8 +273,8 @@ export function PlatformReceiptDocument({ receipt }: { receipt: ReceiptViewModel
       </div>
 
       <footer className="border-t border-slate-100 bg-slate-50 px-8 py-4 text-xs text-slate-500">
-        Synapse Health Technologies Ltd · support@synapseos.tech · Ebrine&apos;s Residence; Katuuso Crescent;
-        Buziga
+        Synapse Health Technologies Ltd · support@synapseos.tech
+        {ORGANIZATION_POSTAL_ADDRESS ? ` · ${ORGANIZATION_POSTAL_ADDRESS}` : null}
       </footer>
     </article>
   );

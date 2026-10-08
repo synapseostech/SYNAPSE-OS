@@ -12,7 +12,26 @@ export function getResend(): Resend {
 
 export const FROM_ADDRESS = 'Synapse Health <noreply@synapseos.tech>'
 export const SUPPORT_EMAIL = 'support@synapseos.tech'
-export const MAILING_ADDRESS = "Ebrine's Residence; Katuuso Cresecent; Buziga"
+/**
+ * Organisation postal address for email footers, from config only
+ * (EMAIL_ORGANIZATION_POSTAL_ADDRESS). Never hardcode a personal/residential
+ * address. When unset the address line is omitted.
+ */
+export function organizationPostalAddress(env: NodeJS.Dict<string> = process.env): string | null {
+  const v = env.EMAIL_ORGANIZATION_POSTAL_ADDRESS?.trim()
+  return v ? v.slice(0, 300) : null
+}
+
+function escapeFooter(value: string): string {
+  return value.replace(/[&<>"']/g, (c) =>
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
+  )
+}
+
+export function organizationFooterLine(env: NodeJS.Dict<string> = process.env): string {
+  const address = organizationPostalAddress(env)
+  return `Synapse Health Technologies Ltd${address ? ` &middot; ${escapeFooter(address)}` : ''}`
+}
 export const DEFAULT_UNSUBSCRIBE_URL =
   process.env.NEXT_PUBLIC_UNSUBSCRIBE_URL ?? 'https://synapseos.tech/unsubscribed'
 export const LOGO_URL = process.env.NEXT_PUBLIC_EMAIL_LOGO_URL ?? 'https://synapseos.tech/synapse-logo.png'
@@ -27,7 +46,7 @@ const DIM = '#60607A'
 export function brandedHtml(body: string, unsubscribeUrl?: string): string {
   const unsubscribeHref = unsubscribeUrl ?? DEFAULT_UNSUBSCRIBE_URL
   const footer = `<p style="margin:0 0 6px;font-size:12px;color:${DIM};">
-      Synapse Health Technologies Ltd &middot; ${MAILING_ADDRESS}<br/>
+      ${organizationFooterLine()}<br/>
       <a href="https://synapseos.tech" style="color:${ORANGE};text-decoration:none;">synapseos.tech</a>
       &nbsp;&middot;&nbsp;
       <a href="mailto:${SUPPORT_EMAIL}" style="color:${DIM};text-decoration:none;">${SUPPORT_EMAIL}</a>

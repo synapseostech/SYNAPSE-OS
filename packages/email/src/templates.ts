@@ -36,16 +36,8 @@ export function inviteHtml(params: {
   facilityName: string
   role: string
   inviteUrl: string
-  tempPassword?: string
 }): string {
-  const passBlock = params.tempPassword ? `
-    <p style="color:${MUTED};margin:0 0 8px;font-size:13px;">Your temporary password:</p>
-    <p style="font-family:monospace;font-size:18px;color:#E8B84B;background:#1A1A24;
-              padding:12px;border-radius:6px;margin:0 0 8px;">${params.tempPassword}</p>
-    <p style="color:#EF4444;font-size:12px;margin:0 0 16px;">
-      ⚠ Change this password immediately after first login.
-    </p>` : ''
-
+  // Invitations carry only a single-use setup link. Passwords are never emailed.
   return brandedHtml(`
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#F5F5F7;">
       You've been added to ${params.facilityName}
@@ -57,7 +49,6 @@ export function inviteHtml(params: {
     </p>
     <div style="background:#1A1A24;border:1px solid rgba(255,255,255,0.08);border-radius:10px;
                 padding:20px;margin:20px 0;">
-      ${passBlock}
       <a href="${params.inviteUrl}"
          style="display:inline-block;background:${ORANGE};color:#07070A;font-weight:700;
                 font-size:14px;padding:12px 28px;border-radius:8px;text-decoration:none;">
