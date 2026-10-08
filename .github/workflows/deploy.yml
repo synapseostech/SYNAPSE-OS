@@ -89,7 +89,10 @@ jobs:
       # The historical migration archive cannot be replayed from an empty
       # database (its first file alters public.profiles). Fresh environments use
       # the sanctioned path: canonical schema snapshot (scripts/db-reset-fresh.sh,
-      # captured 2026-09-19) + every migration dated after that snapshot.
+      # captured 2026-09-19) + every migration not already folded into it.
+      # The snapshot was later amended in-repo to fold in 20260920124500,
+      # 20260920180000 and 20260920190000 (bfcfc98, d9e3761, 01cf9eb), so the
+      # first unfolded migration is 20260920203000.
       - name: Start disposable Supabase stack (no archive replay)
         run: |
           mkdir -p "$RUNNER_TEMP/migrations-hold"
@@ -105,7 +108,8 @@ jobs:
           PGPASSWORD: postgres
         run: |
           set -euo pipefail
-          SNAPSHOT_CUTOFF=20260919235959
+          # Last migration folded into supabase/bootstrap/canonical_public_schema.sql
+          SNAPSHOT_CUTOFF=20260920190000
           applied=0
           for f in $(ls supabase/migrations/[0-9]*_*.sql | sort); do
             v="$(basename "$f" | cut -d_ -f1)"
