@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/hooks/use-toast"
 import { Loader2, Upload, X, Trash2, AlertTriangle, Printer } from "lucide-react"
 import Image from "next/image"
+import { escapeHtml, safeImageSrc } from "@/lib/html"
 
 interface Settings {
   pharmacyName: string
@@ -454,8 +455,9 @@ export default function SettingsPage() {
                   })
                   return
                 }
-                const logoHtml = logoPreview
-                  ? `<img src="${logoPreview}" alt="" style="max-height:64px;max-width:70%;display:block;margin:0 auto 8px;" />`
+                const logoSrc = safeImageSrc(logoPreview)
+                const logoHtml = logoSrc
+                  ? `<img src="${logoSrc}" alt="" style="max-height:64px;max-width:70%;display:block;margin:0 auto 8px;" />`
                   : ""
                 win.document.write(`<!doctype html><html><head><title>Receipt test</title>
                   <style>
@@ -465,13 +467,13 @@ export default function SettingsPage() {
                     hr{border:none;border-top:1px dashed #000;margin:8px 0}
                   </style></head><body><div class="w">
                   ${logoHtml}
-                  <div class="c b">${settings.pharmacyName || "Pharmacy"}</div>
-                  <div class="c">${settings.location || ""}</div>
-                  <div class="c">${settings.contact || ""}</div>
+                  <div class="c b">${escapeHtml(settings.pharmacyName || "Pharmacy")}</div>
+                  <div class="c">${escapeHtml(settings.location || "")}</div>
+                  <div class="c">${escapeHtml(settings.contact || "")}</div>
                   <hr/><div class="c b">*** TEST RECEIPT ***</div><hr/>
                   <div class="row"><span>Item</span><span>1,000</span></div>
                   <div class="row b"><span>TOTAL</span><span>1,000</span></div>
-                  <hr/><div class="c">${settings.footerText || "Thank you for your purchase!"}</div>
+                  <hr/><div class="c">${escapeHtml(settings.footerText || "Thank you for your purchase!")}</div>
                   </div>
                   <script>window.onload=function(){window.print()}</script>
                   </body></html>`)

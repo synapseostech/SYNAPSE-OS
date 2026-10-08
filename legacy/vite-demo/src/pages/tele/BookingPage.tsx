@@ -24,7 +24,8 @@ export default function BookingPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const appointmentId = Math.random().toString(36).substring(2, 15);
+    // CSPRNG id (CodeQL js/insecure-randomness #17); legacy demo, not deployed.
+    const appointmentId = crypto.randomUUID();
     navigate(`/tele/booked/${appointmentId}`);
   };
 

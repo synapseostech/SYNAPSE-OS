@@ -39,6 +39,9 @@ function mockDb(rows: BridgeRow[]) {
       api.is = vi.fn((col: string, val: unknown) => { filters.push({ kind: "is", col, val }); return api })
       api.not = vi.fn((col: string, _op: string, val: unknown) => { filters.push({ kind: "not", col, val }); return api })
       api.limit = vi.fn(self)
+      // Awaiting the builder (list query) resolves every matching row.
+      api.then = (resolve: (v: unknown) => unknown) =>
+        resolve({ data: rows.filter((row) => matches(row, filters)), error: null })
       api.maybeSingle = vi.fn(async () => {
         const found = rows.filter((row) => matches(row, filters))
         return { data: found[0] ?? null, error: found.length > 1 ? { message: "multiple" } : null }
@@ -138,6 +141,21 @@ describe("lookupLabBridge", () => {
     const { lookupLabBridgeDetailed } = await load([bothPopulated])
     expect((await lookupLabBridgeDetailed(`ref:${DEVICE}:${issuedA.prefix}`)).ok).toBe(false)
     expect((await lookupLabBridgeDetailed(issuedA.secret)).ok).toBe(true)
+  })
+
+  it("refuses legacy single-round HMAC digests with rotation_required (CodeQL #8)", async () => {
+    const legacyDigestRow: BridgeRow = { ...modern, id: "bridge-legacy-digest", api_key_hash: "f".repeat(64) }
+    const { lookupLabBridgeDetailed } = await load([legacyDigestRow])
+    expect(await lookupLabBridgeDetailed(issuedA.secret)).toEqual({ ok: false, reason: "rotation_required" })
+  })
+
+  it("only verifies candidates sharing the presented prefix and never matches another bridge's hash", async () => {
+    const other: BridgeRow = { ...modern, id: "bridge-other", api_key_hash: issuedB.hash, api_key_prefix: issuedB.prefix }
+    const { lookupLabBridgeDetailed } = await load([other])
+    expect((await lookupLabBridgeDetailed(issuedA.secret)).ok).toBe(false)
+    const forged: BridgeRow = { ...modern, id: "bridge-forged", api_key_hash: issuedB.hash, api_key_prefix: issuedA.prefix }
+    const forgedLookup = await load([forged])
+    expect((await forgedLookup.lookupLabBridgeDetailed(issuedA.secret)).ok).toBe(false)
   })
 
   it("fails closed when the HMAC secret is missing instead of using plaintext on hashed rows", async () => {

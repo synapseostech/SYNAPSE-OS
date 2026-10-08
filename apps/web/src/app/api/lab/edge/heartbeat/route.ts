@@ -25,6 +25,9 @@ export async function POST(request: Request) {
     if (lookup.reason === "hash_unavailable") {
       return NextResponse.json({ error: "Lab Edge hashed credentials unavailable" }, { status: 503 })
     }
+    if (lookup.reason === "rotation_required") {
+      return NextResponse.json({ error: "Bridge credential must be re-issued" }, { status: 401 })
+    }
     return NextResponse.json({ error: "Invalid or inactive bridge key" }, { status: 401 })
   }
   const bridge = lookup.bridge

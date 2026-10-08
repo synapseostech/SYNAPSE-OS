@@ -15,7 +15,12 @@ function b32Encode(bytes: Uint8Array): string {
 }
 
 function b32Decode(input: string): Uint8Array {
-  const str = input.toUpperCase().replace(/=+$/, '').replace(/\s/g, '')
+  // Linear trailing-padding strip instead of /=+$/ (CodeQL js/polynomial-redos #3).
+  // Same semantics: trailing '=' removed before whitespace is stripped.
+  let str = input.toUpperCase()
+  let end = str.length
+  while (end > 0 && str.charCodeAt(end - 1) === 61 /* '=' */) end--
+  str = str.slice(0, end).replace(/\s/g, '')
   const bytes: number[] = []
   let bits = 0, value = 0
   for (const ch of str) {
