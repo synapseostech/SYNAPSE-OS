@@ -12,6 +12,7 @@ export type ProviderFailureKind =
   | "invalid_response"
   | "auth"
   | "not_configured"
+  | "mock_disallowed"
 
 export type ProviderAttempt = {
   provider: ClinicalProviderId
@@ -46,6 +47,11 @@ export function classifyProviderStatus(status: number): ProviderFailureKind {
   return "unavailable"
 }
 
+/** Mock output is permitted only outside Vercel production. */
+export function mockProviderAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.VERCEL_ENV !== "production"
+}
+
 export const MOCK_CLINICAL_CONTENT = JSON.stringify({
   recommendation: "Consider infection workup; clinician must confirm.",
   reasoningSummary: "Mock advisory only — no live model called.",
@@ -78,6 +84,12 @@ export async function routeClinicalProvider(input: {
   const attempts: ProviderAttempt[] = []
 
   if (input.forceMock || env.CLINICAL_INTELLIGENCE_FORCE_MOCK === "1") {
+    // The mock provider must never answer real clinical requests in production,
+    // whatever the env/request says: fail explicitly instead.
+    if (!mockProviderAllowed(env)) {
+      attempts.push({ provider: "mock", ok: false, failure: "mock_disallowed" })
+      return { ok: false, provider: "mock", failure: "mock_disallowed", message: "mock provider refused in production", attempts }
+    }
     return { ok: true, provider: "mock", model: "mock-clinical-v1", content: MOCK_CLINICAL_CONTENT, attempts }
   }
 
