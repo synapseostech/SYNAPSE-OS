@@ -1,0 +1,50 @@
+# Vercel ignore patterns for synapse-os web app
+# Exclude build cache and temporary files
+.next/cache
+.next/trace
+.turbo
+node_modules
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Exclude test files and coverage
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+coverage
+.nyc_output
+
+# Exclude development files
+.env*.local
+.env*.development
+*.tsbuildinfo
+
+# Exclude IDE and OS files
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Exclude documentation and markdown (except in public)
+*.md
+!public/**/*.md
+
+# Exclude scripts
+scripts/
+*.mjs
+*.sh
+
+# Exclude Supabase local development
+supabase/
+**/supabase/**/migrations/*.sql
+
+# Exclude legacy and demo folders
+legacy/
+demo/
+
+# Exclude artifacts
+artifacts/

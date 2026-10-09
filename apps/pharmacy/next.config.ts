@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "node:path";
 
 const securityHeaders = [
   { key: "X-DNS-Prefetch-Control", value: "on" },
@@ -18,6 +19,7 @@ const nextConfig: NextConfig = {
     ignoreDuringBuilds: false,
   },
   output: 'standalone',
+  outputFileTracingRoot: path.join(__dirname, "../.."),
   images: {
     unoptimized: true,
     remotePatterns: [

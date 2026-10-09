@@ -1,6 +1,14 @@
 import type { NextConfig } from "next";
+import path from "node:path";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
+  outputFileTracingRoot: path.join(__dirname, "../.."),
+  experimental: {
+    serverActions: {
+      allowedOrigins: ["*.synapseos.tech", "localhost:3001", "127.0.0.1:3001"],
+    },
+  },
   transpilePackages: [
     "@synapse/auth",
     "@synapse/db",
@@ -15,11 +23,6 @@ const nextConfig: NextConfig = {
     ignoreDuringBuilds: true,
   },
   allowedDevOrigins: ["127.0.0.1", "localhost"],
-  experimental: {
-    serverActions: {
-      allowedOrigins: ["*.synapseos.tech", "localhost:3001", "127.0.0.1:3001"],
-    },
-  },
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "**.supabase.co" },

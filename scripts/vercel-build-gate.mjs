@@ -12,6 +12,7 @@
 import { pathToFileURL } from "node:url"
 
 export function vercelGitDeployDecision(env = process.env) {
+  // Production deployments (git push to main) always build
   if (env.VERCEL_ENV === "production") {
     const productionUrl = env.VERCEL_PROJECT_PRODUCTION_URL ?? ""
     const isDemoProject = productionUrl.includes("demo.synapseos.tech")
@@ -20,7 +21,23 @@ export function vercelGitDeployDecision(env = process.env) {
     }
     return { skip: false, reason: "production OS/Pharmacy git deploy to main" }
   }
-  return { skip: false, reason: "preview/dev always builds" }
+
+  // Preview deployments: only build for main branch and explicitly tagged branches
+  if (env.VERCEL_ENV === "preview") {
+    const gitBranch = env.VERCEL_GIT_COMMIT_REF ?? env.VERCEL_GITHUB_PULL_REQUEST_HEAD_REF ?? ""
+    const isMainBranch = gitBranch === "main" || gitBranch === "master"
+    const isReleaseBranch = gitBranch.startsWith("release/")
+    const isHotfixBranch = gitBranch.startsWith("hotfix/")
+    const isClinicalStaging = gitBranch.includes("clinical") || gitBranch.includes("staging")
+
+    if (isMainBranch || isReleaseBranch || isHotfixBranch || isClinicalStaging) {
+      return { skip: false, reason: `preview for ${gitBranch || "main"} branch` }
+    }
+    return { skip: true, reason: `skip preview for feature branch ${gitBranch || "unknown"}` }
+  }
+
+  // Development environment (vercel dev) always builds
+  return { skip: false, reason: "development environment" }
 }
 
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
