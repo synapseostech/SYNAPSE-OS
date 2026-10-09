@@ -159,6 +159,9 @@ jobs:
       - name: Secret scan
         run: npm run test:secrets
 
+      - name: Email credential safety (no plaintext passwords; secure invite/setup links)
+        run: npm run test:email-credential-safety
+
       - name: Dependency audit evidence
         run: |
           mkdir -p artifacts/readiness

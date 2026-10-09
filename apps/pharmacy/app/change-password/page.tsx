@@ -104,7 +104,7 @@ export default function ChangePasswordPage() {
         <CardHeader className="space-y-1">
           <CardTitle className="text-2xl font-bold">Change Password</CardTitle>
           <CardDescription className="text-zinc-400">
-            Use the temporary password from your onboarding email as the current password, then set a new one.
+            Enter your current password, then choose a new one. New staff set their first password through the secure link in their invitation email.
           </CardDescription>
         </CardHeader>
         <CardContent>
