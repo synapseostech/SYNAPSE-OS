@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useToast } from "@/hooks/use-toast"
 import { formatCurrency } from "@/lib/utils"
+import { escapeHtml } from "@/lib/html"
 import { Plus, Search, Eye, CheckCircle, XCircle, Clock, DollarSign, Truck, ShoppingBag, Printer, CreditCard, Trash2, MessageSquare, HandMetal, User, Globe } from "lucide-react"
 
 interface Order {
@@ -1070,11 +1071,11 @@ function SupplierOrderDialog({ onClose, onSuccess }: SupplierOrderDialogProps) {
       <body onload="window.print(); window.close();">
         <div class="header">
           <img src="/logo.png" alt="Logo" class="logo" onerror="this.style.display='none'" />
-          <div class="pharmacy-name">${pharmacyName}</div>
+          <div class="pharmacy-name">${escapeHtml(pharmacyName)}</div>
           <div class="pharmacy-info">
-            ${location ? `<div>${location}</div>` : ""}
-            ${contact ? `<div>Tel: ${contact}</div>` : ""}
-            ${email ? `<div>Email: ${email}</div>` : ""}
+            ${location ? `<div>${escapeHtml(location)}</div>` : ""}
+            ${contact ? `<div>Tel: ${escapeHtml(contact)}</div>` : ""}
+            ${email ? `<div>Email: ${escapeHtml(email)}</div>` : ""}
           </div>
         </div>
         
@@ -1096,8 +1097,8 @@ function SupplierOrderDialog({ onClose, onSuccess }: SupplierOrderDialogProps) {
             ${validItems.map((item, i) => `
               <tr>
                 <td>${i + 1}</td>
-                <td>${item.productName}</td>
-                <td>${item.quantity}</td>
+                <td>${escapeHtml(item.productName)}</td>
+                <td>${escapeHtml(item.quantity)}</td>
                 <td>${formatCurrency(item.unitPrice)}</td>
                 <td>${formatCurrency(item.quantity * item.unitPrice)}</td>
               </tr>
@@ -1107,7 +1108,7 @@ function SupplierOrderDialog({ onClose, onSuccess }: SupplierOrderDialogProps) {
         
         <p class="total">Estimated Total: ${formatCurrency(totalAmount)}</p>
         
-        ${notes ? `<p><strong>Notes:</strong> ${notes}</p>` : ""}
+        ${notes ? `<p><strong>Notes:</strong> ${escapeHtml(notes)}</p>` : ""}
         
         <div class="footer">
           <p>Requested by: ___________________</p>
@@ -1268,7 +1269,7 @@ function OrderDetailsDialog({ order, onClose, onStatusChange, onRefresh }: Order
       <!DOCTYPE html>
       <html>
       <head>
-        <title>Order ${order.orderNo}</title>
+        <title>Order ${escapeHtml(order.orderNo)}</title>
         <style>
           body { font-family: 'Courier New', monospace; padding: 15px; width: 350px; font-size: 12px; }
           .center { text-align: center; }
@@ -1290,29 +1291,29 @@ function OrderDetailsDialog({ order, onClose, onStatusChange, onRefresh }: Order
       <body onload="window.print(); window.close();">
         <div class="header">
           <img src="/logo.png" alt="Logo" class="logo" onerror="this.style.display='none'" />
-          <div class="pharmacy-name">${pharmacyName}</div>
+          <div class="pharmacy-name">${escapeHtml(pharmacyName)}</div>
           <div class="pharmacy-info">
-            ${location ? `<div>${location}</div>` : ""}
-            ${contact ? `<div>Tel: ${contact}</div>` : ""}
+            ${location ? `<div>${escapeHtml(location)}</div>` : ""}
+            ${contact ? `<div>Tel: ${escapeHtml(contact)}</div>` : ""}
           </div>
         </div>
         <div class="center">
           <h2 style="margin: 5px 0;">ORDER</h2>
-          <p>${order.orderNo}</p>
+          <p>${escapeHtml(order.orderNo)}</p>
           <p>${new Date(order.createdAt).toLocaleString()}</p>
         </div>
         <div class="line"></div>
         ${order.customer ? `
-          <p><strong>Customer:</strong> ${order.customer.name}</p>
-          ${order.customer.phone ? `<p><strong>Phone:</strong> ${order.customer.phone}</p>` : ""}
+          <p><strong>Customer:</strong> ${escapeHtml(order.customer.name)}</p>
+          ${order.customer.phone ? `<p><strong>Phone:</strong> ${escapeHtml(order.customer.phone)}</p>` : ""}
         ` : ""}
-        ${order.deliveryAddress ? `<p><strong>Address:</strong> ${order.deliveryAddress}</p>` : ""}
+        ${order.deliveryAddress ? `<p><strong>Address:</strong> ${escapeHtml(order.deliveryAddress)}</p>` : ""}
         <div class="line"></div>
         <table>
           ${(order.items ?? []).map(item => `
             <tr>
-              <td>${item.productName || item.product?.name}</td>
-              <td class="center">x${item.quantity}</td>
+              <td>${escapeHtml(item.productName || item.product?.name)}</td>
+              <td class="center">x${escapeHtml(item.quantity)}</td>
               <td class="right">${formatCurrency(item.totalPrice)}</td>
             </tr>
           `).join("")}
@@ -1325,11 +1326,11 @@ function OrderDetailsDialog({ order, onClose, onStatusChange, onRefresh }: Order
           </tr>
           <tr>
             <td>Payment Status</td>
-            <td class="right">${order.paymentStatus}</td>
+            <td class="right">${escapeHtml(order.paymentStatus)}</td>
           </tr>
         </table>
-        ${order.notes ? `<p><strong>Notes:</strong> ${order.notes}</p>` : ""}
-        <div class="footer-text">${footerText}</div>
+        ${order.notes ? `<p><strong>Notes:</strong> ${escapeHtml(order.notes)}</p>` : ""}
+        <div class="footer-text">${escapeHtml(footerText)}</div>
       </body>
       </html>
     `

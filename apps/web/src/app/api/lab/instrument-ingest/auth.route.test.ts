@@ -27,18 +27,17 @@ function mockFrom(rowsByTable: Record<string, Row[]>) {
     api.eq = vi.fn((col: string, val: unknown) => { filters.push({ kind: "eq", col, val }); return api })
     api.is = vi.fn((col: string, val: unknown) => { filters.push({ kind: "is", col, val }); return api })
     api.not = vi.fn((col: string, _op: string, val: unknown) => { filters.push({ kind: "not", col, val }); return api })
-    api.maybeSingle = vi.fn(async () => {
-      const found = rows.filter((row) => filters.every((filter) => {
-        const value = row[filter.col]
-        if (filter.kind === "eq") return value === filter.val
-        if (filter.kind === "is") return (value ?? null) === filter.val
-        if (filter.kind === "not" && filter.val === null) return value != null
-        return true
-      }))
-      return { data: found[0] ?? null, error: null }
-    })
+    const filtered = () => rows.filter((row) => filters.every((filter) => {
+      const value = row[filter.col]
+      if (filter.kind === "eq") return value === filter.val
+      if (filter.kind === "is") return (value ?? null) === filter.val
+      if (filter.kind === "not" && filter.val === null) return value != null
+      return true
+    }))
+    api.maybeSingle = vi.fn(async () => ({ data: filtered()[0] ?? null, error: null }))
+    // Bridge credential lookups are list queries (prefix candidates); honour filters there.
     api.then = (resolve: (value: { data: unknown; error: unknown }) => unknown, reject?: (reason: unknown) => unknown) =>
-      Promise.resolve({ data: rows, error: null }).then(resolve, reject)
+      Promise.resolve({ data: table === "lab_instrument_bridges" ? filtered() : rows, error: null }).then(resolve, reject)
     return api
   }
 }

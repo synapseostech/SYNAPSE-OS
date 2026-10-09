@@ -112,7 +112,8 @@
     "journey:mfa-step-up-live": "node scripts/mfa-step-up-live-journey.mjs",
     "journey:referral-live": "node scripts/referral-live-journey.mjs",
     "journey:facility-onboarding-live": "tsx scripts/facility-onboarding-live.ts",
-    "test:pharmacy-concurrency": "node --test scripts/db-tests/pharmacy-concurrency.local.test.mjs scripts/db-tests/auth-rate-limit.local.test.mjs scripts/db-tests/billing-expiry.local.test.mjs"
+    "test:pharmacy-concurrency": "node --test scripts/db-tests/pharmacy-concurrency.local.test.mjs scripts/db-tests/auth-rate-limit.local.test.mjs scripts/db-tests/billing-expiry.local.test.mjs",
+    "test:security-remediation": "vitest run apps/web/src/lib/secure-random.test.ts apps/web/src/lib/safe-text apps/web/src/lib/lab-bridge-auth.test.ts apps/web/src/app/api/lab/instrument-ingest packages/auth/src/totp.redos.test.ts packages/db/src/identity.encoding.test.ts packages/db/src/inventory.redos.test.ts packages/interop/src/terminology/icd11.test.ts apps/pharmacy/lib/html.test.ts apps/pharmacy/lib/custom-domain.test.ts && tsx --test packages/db/src/lab-device-intelligence.test.ts"
   },
   "devDependencies": {
     "ajv6": "npm:ajv@6.12.6",

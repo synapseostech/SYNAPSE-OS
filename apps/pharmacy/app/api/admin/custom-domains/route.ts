@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requirePlatformAdmin } from "@/lib/api-auth"
 import { supabaseAdmin } from '@/lib/supabase/admin'
+import { normalizeDomain } from '@/lib/custom-domain'
 
 // Platform-admin management of pharmacy custom domains.
 //
@@ -15,18 +16,6 @@ function isPlatformAdmin(session: { role: string }): boolean {
   return PLATFORM_ROLES.has(session.role)
 }
 
-// Accepts a bare hostname; strips scheme/path/port and lowercases.
-function normalizeDomain(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null
-  let h = raw.trim().toLowerCase()
-  if (!h) return null
-  h = h.replace(/^https?:\/\//, '').replace(/\/.*$/, '').split(':')[0]!.trim()
-  // Basic FQDN sanity: labels of [a-z0-9-] separated by dots, TLD >= 2 chars.
-  if (!/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(h)) {
-    return null
-  }
-  return h
-}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function db() { return supabaseAdmin as any }

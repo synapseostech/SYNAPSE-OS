@@ -9,8 +9,10 @@ import {
   evaluateCriticalValue,
   evaluateDeltaCheck,
   hashBridgeSecret,
+  isLegacyBridgeHash,
   issueBridgeSecret,
   isRejectedBridgeCredentialFormat,
+  verifyBridgeSecret,
   mappingCoverage,
 } from "./lab-device-intelligence.ts"
 
@@ -72,10 +74,31 @@ describe("lab device intelligence", () => {
   it("issues hashed bridge secrets without storing the presented key as the hash input identity", () => {
     const issued = issueBridgeSecret("lab-bridge-test-hmac")
     assert.match(issued.secret, /^lbk_/)
-    assert.equal(issued.hash, hashBridgeSecret(issued.secret, "lab-bridge-test-hmac"))
+    assert.match(issued.hash, /^scrypt1\$[A-Za-z0-9_-]{22}\$[A-Za-z0-9_-]{43}$/)
     assert.notEqual(issued.hash, issued.secret)
+    assert.ok(!issued.hash.includes(issued.secret))
     assert.throws(() => hashBridgeSecret(issued.secret), /LAB_BRIDGE_HASH_UNAVAILABLE/)
     assert.equal(isRejectedBridgeCredentialFormat(`ref:${issued.prefix}`), true)
     assert.equal(isRejectedBridgeCredentialFormat(issued.prefix), false)
   })
+
+  it("stores bridge tokens with salted scrypt and verifies in constant time (CodeQL #8)", async () => {
+    const pepper = "lab-bridge-test-hmac"
+    const issued = issueBridgeSecret(pepper)
+    assert.equal(await verifyBridgeSecret(issued.secret, issued.hash, pepper), true)
+    assert.equal(await verifyBridgeSecret(issued.secret + "x", issued.hash, pepper), false)
+    assert.equal(await verifyBridgeSecret(issued.secret, issued.hash, "other-pepper"), false)
+    // Per-credential salt: hashing the same token twice yields different records.
+    assert.notEqual(hashBridgeSecret(issued.secret, pepper), hashBridgeSecret(issued.secret, pepper))
+    assert.equal(await verifyBridgeSecret(issued.secret, "scrypt1$bad", pepper), false)
+    assert.equal(await verifyBridgeSecret(issued.secret, null, pepper), false)
+    await assert.rejects(() => verifyBridgeSecret(issued.secret, issued.hash, ""), /LAB_BRIDGE_HASH_UNAVAILABLE/)
+  })
+
+  it("flags legacy single-round digests for rotation instead of trusting them", () => {
+    assert.equal(isLegacyBridgeHash("a".repeat(64)), true)
+    assert.equal(isLegacyBridgeHash(issueBridgeSecret("p").hash), false)
+    assert.equal(isLegacyBridgeHash(null), false)
+  })
 })
+

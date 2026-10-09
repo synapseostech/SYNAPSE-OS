@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Bot, Send, User } from 'lucide-react'
 import { createClient } from '../../../lib/supabase/client'
+import { renderInlineBold } from '../../../lib/safe-text/inline-bold'
 
 interface Message {
   role: 'user' | 'bot'
@@ -127,10 +128,9 @@ export default function TeleIntakePage() {
                 border: m.role === 'bot' ? '1px solid var(--border-edge)' : 'none',
                 whiteSpace: 'pre-wrap',
               }}
-              dangerouslySetInnerHTML={{
-                __html: m.content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'),
-              }}
-            />
+            >
+              {renderInlineBold(m.content)}
+            </div>
             {m.role === 'user' && (
               <div
                 className="flex h-7 w-7 items-center justify-center rounded-full shrink-0 mt-1"
