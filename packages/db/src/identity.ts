@@ -120,12 +120,19 @@ export function isValidSynapseId(value: string): boolean {
 
 function encodeCrockford40(bytes: Uint8Array): string {
   if (bytes.length < 5) throw new Error("need 5 bytes")
-  let n = 0
-  for (let i = 0; i < 5; i++) n = n * 256 + (bytes[i] ?? 0)
+  // 40 bits -> exactly 8 base32 symbols, most significant first. Extract
+  // 5-bit groups with shifts/masks: every symbol is uniform and there is no
+  // division or modulo on CSPRNG output (CodeQL js/biased-cryptographic-random #7).
+  const hi = bytes[0] ?? 0 // top 8 bits
+  const lo = (((bytes[1] ?? 0) << 24) | ((bytes[2] ?? 0) << 16) | ((bytes[3] ?? 0) << 8) | (bytes[4] ?? 0)) >>> 0
   let body = ""
-  for (let i = 0; i < 8; i++) {
-    body = SYNAPSE_ID_ALPHABET[n % 32] + body
-    n = Math.floor(n / 32)
+  for (let i = 7; i >= 0; i--) {
+    const shift = i * 5 // bit offset of this symbol within the 40-bit value
+    let sym: number
+    if (shift >= 32) sym = (hi >>> (shift - 32)) & 0x1f
+    else if (shift + 5 <= 32) sym = (lo >>> shift) & 0x1f
+    else sym = ((lo >>> shift) | (hi << (32 - shift))) & 0x1f
+    body += SYNAPSE_ID_ALPHABET[sym]
   }
   return body
 }

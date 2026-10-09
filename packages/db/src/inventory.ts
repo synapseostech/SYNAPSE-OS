@@ -406,9 +406,14 @@ export function buildStockError(params: {
 export function parseRpcStockError(
   message: string,
 ): { reasonCode: StockReasonCode | null; shortBy: number | null; productName: string | null } {
-  const code = message.match(/^([A-Z_]+):/)?.[1] ?? null;
-  const shortMatch = message.match(/short by (\d+)/i);
-  const nameMatch = message.match(/:\s*(.+?)\s+short by/i);
+  // Linear parsing (CodeQL js/polynomial-redos #4): RPC messages are short,
+  // cap them, then locate markers with indexOf instead of lazy regex groups.
+  const msg = String(message ?? "").slice(0, 2000);
+  const code = msg.match(/^([A-Z_]{1,64}):/)?.[1] ?? null;
+  const shortMatch = msg.match(/short by (\d{1,12})/i);
+  const colon = msg.indexOf(":");
+  const shortAt = msg.toLowerCase().indexOf("short by", colon + 1);
+  const rawName = colon !== -1 && shortAt > colon ? msg.slice(colon + 1, shortAt).trim() : "";
   const reasonCode: StockReasonCode | null =
     code === "INSUFFICIENT_STOCK" ||
     code === "NO_SELLABLE_BATCHES" ||
@@ -422,6 +427,6 @@ export function parseRpcStockError(
   return {
     reasonCode,
     shortBy: shortMatch?.[1] != null ? Number(shortMatch[1]) : null,
-    productName: nameMatch?.[1] ?? null,
+    productName: rawName || null,
   };
 }

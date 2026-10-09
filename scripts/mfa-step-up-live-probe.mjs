@@ -129,7 +129,9 @@ Provide a 6-digit code from an enrolled platform admin authenticator to exercise
 `,
 )
 
-console.log(JSON.stringify(report, null, 2))
+// Console gets a non-sensitive summary only (CodeQL js/clear-text-logging #5);
+// the full report lives in the evidence artifact written above.
+console.log(`mfa-step-up-live-probe: ${report.ok ? "PASS" : "FAIL"} (schema readiness)`)
 console.log(`wrote ${jsonPath}`)
 console.log(`wrote ${mdPath}`)
 process.exit(report.ok ? 0 : 1)

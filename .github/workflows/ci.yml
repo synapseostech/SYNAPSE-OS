@@ -147,6 +147,9 @@ jobs:
       - name: ICD-11 outage survival
         run: npm run test:icd11
 
+      - name: CodeQL high-severity remediation regressions (XSS, ReDoS, randomness, bridge hashing)
+        run: npm run test:security-remediation
+
       - name: Clinical AI policy
         run: npm run test:ai-governance
 

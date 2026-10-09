@@ -30,6 +30,29 @@ export type VerifiedIcd11Coding = Icd11Entity & {
 
 export type Icd11SearchHit = Icd11Entity & { score: number }
 
+const ICD11_TITLE_MAX = 512
+const BASIC_ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&apos;": "'" }
+
+/**
+ * WHO search titles carry highlight markup (e.g. `<em class='found'>malaria</em>`).
+ * Convert to plain terminology text: drop every tag with a linear scan (no
+ * regex backtracking), decode the few basic entities WHO emits, then remove any
+ * remaining angle brackets so the result can never form an HTML element even if
+ * a consumer later renders it as HTML. Clinical wording is otherwise preserved.
+ */
+export function icd11TitleToPlainText(raw: unknown): string {
+  const src = String(raw ?? "").slice(0, ICD11_TITLE_MAX * 4)
+  let out = ""
+  let inTag = false
+  for (const ch of src) {
+    if (ch === "<") { inTag = true; continue }
+    if (ch === ">") { if (inTag) { inTag = false; continue } continue }
+    if (!inTag) out += ch
+  }
+  out = out.replace(/&(?:amp|lt|gt|quot|#39|apos);/g, (e) => BASIC_ENTITIES[e] ?? "")
+  return out.replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, ICD11_TITLE_MAX)
+}
+
 /** Curated 2026-01 MMS subset for tests and WHO-API outage fallback. */
 export const ICD11_SEED_CACHE: Icd11Entity[] = [
   entity("1G40", "Sepsis without septic shock", "1435254666"),
@@ -176,7 +199,7 @@ export async function searchWhoIcd11(
       .slice(0, 10)
       .map((row, index) => ({
         stemCode: String(row.theCode),
-        title: String(row.title ?? "").replace(/<[^>]+>/g, ""),
+        title: icd11TitleToPlainText(row.title),
         foundationUri: String(row.stemId ?? row.id ?? ""),
         linearizationUri: String(row.id ?? `${ICD11_API_BASE}/${row.theCode}`),
         classification: ICD11_CLASSIFICATION,

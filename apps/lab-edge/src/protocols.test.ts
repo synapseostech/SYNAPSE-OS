@@ -52,3 +52,18 @@ describe("Lab Edge protocol foundation", () => {
     assert.equal(rest[0]?.value, "13.4")
   })
 })
+describe("ASTM parsing robustness (CodeQL js/polynomial-redos #1)", () => {
+  it("drops the frame trailer after FS (0x1c) exactly as before", () => {
+    const msg = "H|\\^&|||SIM\r\nO|1|ACC-1||^^^WBC\r\nR|1|^^^WBC|7.2|10^9/L||N||F\x1cTRAILER|junk\r\nL|1|N"
+    const results = parseAstmResults(msg, "raw-fs")
+    assert.equal(results.length, 1)
+    assert.equal(results[0]?.accessionNumber, "ACC-1")
+  })
+
+  it("is linear on adversarial separator floods", () => {
+    const start = Date.now()
+    parseAstmResults("\\^\\".repeat(100_000) + "\x1c".repeat(50_000), "raw-flood")
+    parseAstmResults("R|" + "\x1c".repeat(200_000), "raw-flood-2")
+    assert.ok(Date.now() - start < 1000)
+  })
+})

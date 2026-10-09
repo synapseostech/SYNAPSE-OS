@@ -7,6 +7,7 @@ import { demoHref } from "../../lib/demo/paths";
 import { applyStationSession, enterStation } from "../../lib/demo/stations";
 import { DemoMast } from "../../components/demo/DemoMast";
 import { DemoThemeControl } from "../../components/demo/DemoThemeControl";
+import { secureRandomPick } from "../../lib/secure-random";
 
 type Differential = {
   condition: string;
@@ -129,7 +130,7 @@ export default function DemoPage() {
   const showPregnancy = sex === "female" || sex === "unknown";
 
   function loadExample() {
-    const ex = EXAMPLE_CASES[Math.floor(Math.random() * EXAMPLE_CASES.length)];
+    const ex = secureRandomPick(EXAMPLE_CASES);
     if (!ex) return;
     setComplaint(ex.complaint);
     setDuration(ex.duration);

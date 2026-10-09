@@ -1,8 +1,11 @@
 import { supabaseAdmin } from "@synapse/db/admin"
 import {
-  hashBridgeSecret,
+  BRIDGE_PREFIX_LENGTH,
+  bridgeSecretPrefix,
+  isLegacyBridgeHash,
   isRejectedBridgeCredentialFormat,
   resolveLabBridgeHashSecret,
+  verifyBridgeSecret,
 } from "@synapse/db/lab-device-intelligence"
 
 export type LabBridgeRow = {
@@ -17,10 +20,12 @@ export type LabBridgeRow = {
 
 export type LabBridgeLookup =
   | { ok: true; bridge: LabBridgeRow }
-  | { ok: false; reason: "invalid" | "hash_unavailable" }
+  | { ok: false; reason: "invalid" | "hash_unavailable" | "rotation_required" }
 
 /**
- * Modern Lab Edge credentials authenticate only by HMAC digest.
+ * Modern Lab Edge credentials authenticate by prefix lookup + constant-time
+ * scrypt verification (see hashBridgeSecret). Rows still holding a legacy
+ * single-round HMAC digest are refused with reason "rotation_required".
  * Legacy plaintext api_key is used only when api_key_hash is NULL.
  * A hashed row never authenticates through api_key, even if both columns are populated.
  */
@@ -37,17 +42,25 @@ export async function lookupLabBridgeDetailed(presented: string): Promise<LabBri
   const db = supabaseAdmin as any
   const hashingSecret = resolveLabBridgeHashSecret()
 
-  if (hashingSecret) {
-    const digest = hashBridgeSecret(apiKey, hashingSecret)
-    const hashed = await db
+  if (hashingSecret && apiKey.length > BRIDGE_PREFIX_LENGTH) {
+    const candidates = await db
       .from("lab_instrument_bridges")
       .select("id, tenant_id, name, is_active, device_id, revoked_at, api_key_hash")
-      .eq("api_key_hash", digest)
+      .eq("api_key_prefix", bridgeSecretPrefix(apiKey))
       .eq("is_active", true)
       .is("revoked_at", null)
       .not("api_key_hash", "is", null)
-      .maybeSingle()
-    if (hashed.data?.api_key_hash) return { ok: true, bridge: hashed.data as LabBridgeRow }
+      .limit(5)
+    const rows = (candidates.data ?? []) as LabBridgeRow[]
+    let legacyFormatSeen = false
+    for (const row of rows) {
+      if (isLegacyBridgeHash(row.api_key_hash)) {
+        legacyFormatSeen = true
+        continue
+      }
+      if (await verifyBridgeSecret(apiKey, row.api_key_hash, hashingSecret)) return { ok: true, bridge: row }
+    }
+    if (legacyFormatSeen) return { ok: false, reason: "rotation_required" }
   }
 
   const legacy = await db
