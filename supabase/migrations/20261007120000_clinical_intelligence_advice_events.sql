@@ -102,8 +102,10 @@ alter table public.clinical_ai_advice_events enable row level security;
 
 -- No anon/authenticated policies: service-role server routes only for Wave 1.
 revoke all on table public.clinical_ai_advice_events from public, anon, authenticated;
+-- Start from zero (Supabase default privileges grant ALL to API roles), then allow
+-- exactly SELECT + INSERT for the server-side service role.
+revoke all on table public.clinical_ai_advice_events from service_role;
 grant select, insert on table public.clinical_ai_advice_events to service_role;
-revoke update, delete, truncate on table public.clinical_ai_advice_events from service_role;
 
 comment on table public.clinical_ai_advice_events is
   'Wave 1 clinical AI advisory/override audit (append-only, tenant-scoped). AI never writes diagnoses or orders here.';
