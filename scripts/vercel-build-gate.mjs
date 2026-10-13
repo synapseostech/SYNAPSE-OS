@@ -28,12 +28,15 @@ export function vercelGitDeployDecision(env = process.env) {
     const isMainBranch = gitBranch === "main" || gitBranch === "master"
     const isReleaseBranch = gitBranch.startsWith("release/")
     const isHotfixBranch = gitBranch.startsWith("hotfix/")
-    const isClinicalStaging = gitBranch.includes("clinical") || gitBranch.includes("staging")
+    const isClinicalStaging = gitBranch.startsWith("clinical/") || gitBranch.startsWith("staging/")
+    const isIntegrationBranch = gitBranch.startsWith("integration/")
+    const isFixBranch = gitBranch.startsWith("fix/")
+    const isFeatureBranch = gitBranch.startsWith("feat/")
 
-    if (isMainBranch || isReleaseBranch || isHotfixBranch || isClinicalStaging) {
+    if (isMainBranch || isReleaseBranch || isHotfixBranch || isClinicalStaging || isIntegrationBranch || isFixBranch || isFeatureBranch) {
       return { skip: false, reason: `preview for ${gitBranch || "main"} branch` }
     }
-    return { skip: true, reason: `skip preview for feature branch ${gitBranch || "unknown"}` }
+    return { skip: true, reason: `skip preview for unrecognized branch ${gitBranch || "unknown"}` }
   }
 
   // Development environment (vercel dev) always builds

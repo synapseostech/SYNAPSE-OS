@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server"
 import { assertCallerCannotSupplyTenant } from "@synapse/interop"
 import { getCurrentUser } from "../../../../../lib/auth/getCurrentUser"
+import { supabaseAdmin } from "@synapse/db/admin"
+import type { Database } from "@synapse/db/types"
 import {
   adviseClinical,
   buildClinicalContext,
   clinicalIntelligenceDisabledResponse,
   isClinicalIntelligenceWave1Enabled,
+  isClinicalIntelligenceWave1EnabledForTenant,
   recordClinicianOverride,
 } from "../../../../../lib/clinical-intelligence"
 import { checkRateLimit, rateLimiters } from "../../../../../lib/rate-limit"
@@ -15,16 +18,31 @@ export const dynamic = "force-dynamic"
 /**
  * Clinical Intelligence Wave 1 advise endpoint.
  * Feature-flagged OFF by default. Advisory only — never activates pathways or places orders.
+ * Supports both global env flag (for staging) and tenant-scoped feature_flags table (for production allowlist).
  */
-export async function POST(req: NextRequest) {
-  if (!isClinicalIntelligenceWave1Enabled()) {
-    return NextResponse.json(clinicalIntelligenceDisabledResponse(), { status: 503 })
-  }
+async function checkTenantClinicalIntelligenceEnabled(tenantId: string): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from("feature_flags")
+    .select("is_enabled")
+    .eq("tenant_id", tenantId)
+    .eq("feature_key", "clinical_intelligence_wave1")
+    .maybeSingle()
+  return data?.is_enabled === true
+}
 
+export async function POST(req: NextRequest) {
   const user = await getCurrentUser()
   if (!user) return NextResponse.json({ error: "Unauthorized", advisory: true }, { status: 401 })
   if (!user.tenantId) {
     return NextResponse.json({ error: "Tenant context required", advisory: true }, { status: 403 })
+  }
+
+  // Check feature flag: global env OR tenant-scoped feature_flags table
+  const globalEnabled = isClinicalIntelligenceWave1Enabled()
+  const tenantEnabled = globalEnabled ? true : await checkTenantClinicalIntelligenceEnabled(user.tenantId)
+
+  if (!globalEnabled && !tenantEnabled) {
+    return NextResponse.json(clinicalIntelligenceDisabledResponse(), { status: 503 })
   }
 
   const ip = req.headers.get("x-forwarded-for") ?? "unknown"
