@@ -105,6 +105,18 @@ export async function POST(request: NextRequest) {
     const { session, tenantId } = auth
 
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
+    const paymentMethod = typeof body.paymentMethod === "string" ? body.paymentMethod.trim().toLowerCase() : ""
+    const amountPaid = Number(body.amountPaid ?? 0)
+    if (!Number.isFinite(amountPaid) || amountPaid < 0 ||
+      Math.abs(amountPaid * 100 - Math.round(amountPaid * 100)) > 0.000001) {
+      return NextResponse.json({ error: "Amount paid must be a non-negative amount with at most two decimal places." }, { status: 400 })
+    }
+    if (paymentMethod && !["cash", "mobile_money", "mobile money", "card", "bank_transfer", "bank transfer"].includes(paymentMethod)) {
+      return NextResponse.json({ error: "Choose a supported payment method." }, { status: 400 })
+    }
+    if (amountPaid > 0 && !paymentMethod) {
+      return NextResponse.json({ error: "Select a payment method when recording an amount paid." }, { status: 400 })
+    }
     const scoped = requireStoreScope(
       { ...auth, storeId: session.storeId ?? null },
       (body.storeId as string | null) ?? session.storeId ?? null,
@@ -142,9 +154,9 @@ export async function POST(request: NextRequest) {
       purchaseDate: (body.purchaseDate as string | null) ?? null,
       receivedDate: (body.receivedDate as string | null) ?? null,
       paymentStatus: (body.paymentStatus as string | null) ?? null,
-      paymentMethod: (body.paymentMethod as string | null) ?? null,
+      paymentMethod: paymentMethod || null,
       currency: (body.currency as string | null) ?? null,
-      amountPaid: body.amountPaid != null ? Number(body.amountPaid) : 0,
+      amountPaid,
       tax: body.tax != null ? Number(body.tax) : 0,
       discount: body.discount != null ? Number(body.discount) : 0,
       otherCost: body.otherCost != null ? Number(body.otherCost) : 0,

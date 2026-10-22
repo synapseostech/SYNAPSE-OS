@@ -47,6 +47,9 @@ type Purchase = {
   paymentStatus: string
   supplierInvoiceNo: string | null
   total: number
+  amountPaid: number
+  balance: number
+  paymentMethod: string | null
   purchaseDate: string | null
   receivedByName: string | null
   createdByName: string
@@ -81,6 +84,9 @@ export default function PurchasesPage() {
   const [matches, setMatches] = useState<Match[]>([])
   const [searching, setSearching] = useState(false)
   const [selected, setSelected] = useState<Purchase | null>(null)
+  const [supplierPaymentTotal, setSupplierPaymentTotal] = useState("")
+  const [supplierPaymentMethod, setSupplierPaymentMethod] = useState("cash")
+  const [savingSupplierPayment, setSavingSupplierPayment] = useState(false)
   const [createProduct, setCreateProduct] = useState(false)
   const [dupes, setDupes] = useState<Match[]>([])
   const [supplierId, setSupplierId] = useState("")
@@ -349,6 +355,35 @@ export default function PurchasesPage() {
       setSection("history")
     } finally {
       setSaving(false)
+    }
+  }
+
+  const recordSupplierPayment = async () => {
+    if (!selected) return
+    const newTotalPaid = Number(supplierPaymentTotal)
+    if (!Number.isFinite(newTotalPaid) || newTotalPaid <= selected.amountPaid || newTotalPaid > selected.total) {
+      toast({ variant: "destructive", title: `Enter a new paid total above ${selected.amountPaid} and no more than ${selected.total}` })
+      return
+    }
+    setSavingSupplierPayment(true)
+    try {
+      const response = await fetch(`/api/admin/purchases/${selected.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amountPaid: newTotalPaid, paymentMethod: supplierPaymentMethod }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error ?? "Could not record supplier payment.")
+      toast({ title: `Supplier payment recorded. Remaining balance: ${formatCurrency(data.balance)}` })
+      const refreshed = await fetch("/api/admin/purchases").then((r) => r.json())
+      const nextPurchases = Array.isArray(refreshed.purchases) ? refreshed.purchases : []
+      setPurchases(nextPurchases)
+      setSelected(nextPurchases.find((purchase: Purchase) => purchase.id === selected.id) ?? null)
+      setSupplierPaymentTotal("")
+    } catch (error) {
+      toast({ variant: "destructive", title: error instanceof Error ? error.message : "Could not record supplier payment." })
+    } finally {
+      setSavingSupplierPayment(false)
     }
   }
 
@@ -621,7 +656,18 @@ export default function PurchasesPage() {
                 </div>
                 <div>
                   <Label htmlFor="purchase-pay-method">Payment method</Label>
-                  <Input id="purchase-pay-method" placeholder="Cash, Mobile Money, Bank…" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} />
+                  <select
+                    id="purchase-pay-method"
+                    className="w-full h-10 rounded-md border bg-background px-3 text-sm"
+                    value={paymentMethod}
+                    onChange={(e) => setPaymentMethod(e.target.value)}
+                  >
+                    <option value="">Select method</option>
+                    <option value="cash">Cash</option>
+                    <option value="mobile_money">Mobile money</option>
+                    <option value="card">Card</option>
+                    <option value="bank_transfer">Bank transfer</option>
+                  </select>
                 </div>
                 <div>
                   <Label htmlFor="purchase-notes">Notes</Label>
@@ -714,7 +760,11 @@ export default function PurchasesPage() {
                       <TableCell>{p.receivedByName ?? "—"}</TableCell>
                       <TableCell>{p.status}</TableCell>
                       <TableCell>
-                        <Button size="sm" variant="outline" onClick={() => setSelected(p)}>
+                        <Button size="sm" variant="outline" onClick={() => {
+                          setSelected(p)
+                          setSupplierPaymentTotal("")
+                          setSupplierPaymentMethod(p.paymentMethod ?? "cash")
+                        }}>
                           <Eye className="h-4 w-4" />
                         </Button>
                       </TableCell>
@@ -781,7 +831,41 @@ export default function PurchasesPage() {
               <p>Invoice: {selected.supplierInvoiceNo ?? "—"}</p>
               <p>Dates: {selected.purchaseDate ?? "—"}</p>
               <p>Payment: {selected.paymentStatus} · Status: {selected.status}</p>
+              <p>Paid: {formatCurrency(selected.amountPaid)} · Balance: {formatCurrency(selected.balance)}</p>
               <p>Created by {selected.createdByName} · Received by {selected.receivedByName ?? "—"}</p>
+              {selected.status === "RECEIVED" && selected.balance > 0 && (
+                <div className="grid gap-3 rounded-md border p-3 sm:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="supplier-payment-total">New total paid</Label>
+                    <Input
+                      id="supplier-payment-total"
+                      type="number"
+                      min={selected.amountPaid + 0.01}
+                      max={selected.total}
+                      step="0.01"
+                      value={supplierPaymentTotal}
+                      onChange={(event) => setSupplierPaymentTotal(event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="supplier-payment-method">Payment method</Label>
+                    <select
+                      id="supplier-payment-method"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      value={supplierPaymentMethod}
+                      onChange={(event) => setSupplierPaymentMethod(event.target.value)}
+                    >
+                      <option value="cash">Cash</option>
+                      <option value="mobile_money">Mobile money</option>
+                      <option value="card">Card</option>
+                      <option value="bank_transfer">Bank transfer</option>
+                    </select>
+                  </div>
+                  <Button type="button" className="self-end" disabled={savingSupplierPayment} onClick={() => void recordSupplierPayment()}>
+                    {savingSupplierPayment ? <Loader2 className="h-4 w-4 animate-spin" /> : "Record payment"}
+                  </Button>
+                </div>
+              )}
               <Table>
                 <TableHeader>
                   <TableRow>
