@@ -262,7 +262,11 @@ export default function DemoPage() {
         <section className="demo-hero demo-home-hero mb-8">
           <div>
             <p className="demo-home-eyebrow">SYNAPSE OS · INTERACTIVE PRODUCT DEMO</p>
-            <h1 className="demo-home-title">One connected care journey.</h1>
+            <p className="demo-home-eyebrow">SYNTHETIC TEST DRIVE</p>
+            <h1 className="demo-home-title">SYNAPSE Test Drive</h1>
+            <p className="mt-3 text-xl font-semibold tracking-tight sm:text-2xl">
+              One connected care journey.
+            </p>
             <p className="demo-home-description">
               See how hospital teams work together, from a patient&apos;s first visit through diagnosis,
               treatment and billing.
@@ -270,7 +274,7 @@ export default function DemoPage() {
 
             <div className="demo-home-actions">
               <a className="demo-btn-primary" href={demoHref("login")}>
-                Start interactive demo <span aria-hidden="true">→</span>
+                Start Test Drive <span aria-hidden="true">→</span>
               </a>
               <button
                 type="button"
@@ -339,7 +343,7 @@ export default function DemoPage() {
           <div className="demo-ai-heading mb-6">
             <div>
               <h2 id="ai-demo-heading" className="font-display mb-2 text-2xl font-bold" style={{ color: "var(--text-primary)", letterSpacing: "-0.02em" }}>
-                Explore clinical AI
+                Try Clinical AI
               </h2>
               <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
                 Optional and educational. The care journey does not require AI.
@@ -350,7 +354,7 @@ export default function DemoPage() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <a className="demo-btn-secondary" href={demoHref("intelligence")}>Open AI playground</a>
-              <button type="button" className="demo-btn-secondary" onClick={resetPlayground}>Reset playground</button>
+              <button type="button" className="demo-btn-secondary" onClick={resetPlayground}>Reset Playground</button>
             </div>
           </div>
 
