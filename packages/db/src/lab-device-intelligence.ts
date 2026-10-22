@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto"
+import { randomBytes, scrypt as scryptCb, scryptSync, timingSafeEqual, type ScryptOptions } from "node:crypto"
 
 export const LAB_CONNECTION_TYPES = [
   "SERIAL_RS232",
@@ -193,18 +193,68 @@ export function isRejectedBridgeCredentialFormat(presented: string): boolean {
 }
 
 /**
- * HMAC-SHA-256 of a high-entropy Lab Edge bearer token, keyed by LAB_BRIDGE_HASH_SECRET.
- * This is not a user-password hash. The token is randomBytes(24); Lab Edge never receives the HMAC key.
+ * Lab Edge bearer-token storage: scrypt (memory-hard KDF) with a per-credential
+ * random salt, peppered with LAB_BRIDGE_HASH_SECRET (never sent to Lab Edge).
+ * Format: `scrypt1$<salt b64url>$<derived key b64url>`.
+ *
+ * Replaces the previous single-round HMAC-SHA-256 digest (CodeQL
+ * js/insufficient-password-hash #8). Lookup uses the non-secret 12-char
+ * api_key_prefix; the hash is then verified in constant time.
+ *
+ * Legacy HMAC digests (64 hex chars) are NOT re-verified: they must be
+ * re-issued. Production had 0 lab_instrument_bridges rows when this changed.
  */
+export const BRIDGE_HASH_SCHEME = "scrypt1"
+export const BRIDGE_PREFIX_LENGTH = 12
+const BRIDGE_KDF: ScryptOptions = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }
+const BRIDGE_KEYLEN = 32
+
+function bridgeKdfSalt(salt: string, pepper: string): string {
+  return `${salt}:${pepper}`
+}
+
+function scryptAsync(secret: string, salt: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scryptCb(secret, salt, BRIDGE_KEYLEN, BRIDGE_KDF, (err, key) => (err ? reject(err) : resolve(key)))
+  })
+}
+
 export function hashBridgeSecret(secret: string, hashingSecret?: string | null): string {
-  const key = hashingSecret ?? resolveLabBridgeHashSecret()
-  if (!key) throw new LabBridgeHashSecretMissingError()
-  return createHmac("sha256", key).update(secret).digest("hex")
+  const pepper = hashingSecret ?? resolveLabBridgeHashSecret()
+  if (!pepper) throw new LabBridgeHashSecretMissingError()
+  const salt = randomBytes(16).toString("base64url")
+  const dk = scryptSync(secret, bridgeKdfSalt(salt, pepper), BRIDGE_KEYLEN, BRIDGE_KDF)
+  return `${BRIDGE_HASH_SCHEME}$${salt}$${dk.toString("base64url")}`
+}
+
+export function isLegacyBridgeHash(stored: string | null | undefined): boolean {
+  return typeof stored === "string" && stored.length > 0 && !stored.startsWith(`${BRIDGE_HASH_SCHEME}$`)
+}
+
+/** Constant-time verification of a presented token against a stored scrypt1 hash. */
+export async function verifyBridgeSecret(
+  presented: string,
+  stored: string | null | undefined,
+  hashingSecret?: string | null,
+): Promise<boolean> {
+  const pepper = hashingSecret ?? resolveLabBridgeHashSecret()
+  if (!pepper) throw new LabBridgeHashSecretMissingError()
+  if (typeof stored !== "string") return false
+  const parts = stored.split("$")
+  if (parts.length !== 3 || parts[0] !== BRIDGE_HASH_SCHEME || !parts[1] || !parts[2]) return false
+  const expected = Buffer.from(parts[2], "base64url")
+  if (expected.length !== BRIDGE_KEYLEN) return false
+  const actual = await scryptAsync(presented, bridgeKdfSalt(parts[1], pepper))
+  return timingSafeEqual(actual, expected)
+}
+
+export function bridgeSecretPrefix(secret: string): string {
+  return secret.slice(0, BRIDGE_PREFIX_LENGTH)
 }
 
 export function issueBridgeSecret(hashingSecret?: string | null): { secret: string; hash: string; prefix: string } {
   const secret = `lbk_${randomBytes(24).toString("base64url")}`
-  return { secret, hash: hashBridgeSecret(secret, hashingSecret), prefix: secret.slice(0, 12) }
+  return { secret, hash: hashBridgeSecret(secret, hashingSecret), prefix: bridgeSecretPrefix(secret) }
 }
 
 export function serialConfig(input: {

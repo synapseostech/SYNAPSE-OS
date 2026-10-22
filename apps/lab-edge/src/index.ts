@@ -187,12 +187,22 @@ function cleanField(value: string | undefined): string {
   return (value ?? "").trim()
 }
 
+/** Drop everything from the first ASTM FS (0x1c) separator; linear, no regex backtracking. */
+function stripAstmFrameTrailer(line: string): string {
+  const fs = line.indexOf("\x1c")
+  return fs === -1 ? line : line.slice(0, fs)
+}
+
+/** Upper bound on one analyzer message; real ASTM transmissions are a few KB. */
+export const MAX_ASTM_MESSAGE_CHARS = 1_000_000
+
 /** Parse common ASTM H/P/O/R/L records into staging-safe normalized results. */
 export function parseAstmResults(raw: string, rawMessageRef: string = crypto.randomUUID()): NormalizedAnalyzerResult[] {
   const records = raw
+    .slice(0, MAX_ASTM_MESSAGE_CHARS)
     .replace(/[\u0002\u0003]/g, "")
     .split(/[\r\n]+/)
-    .map((line) => line.replace(/^\d/, "").replace(/\x1c.*$/, "").trim())
+    .map((line) => stripAstmFrameTrailer(line.replace(/^\d/, "")).trim())
     .filter(Boolean)
   let accessionNumber: string | undefined
   let runAt: string | undefined

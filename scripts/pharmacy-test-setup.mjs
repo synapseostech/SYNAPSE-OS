@@ -148,7 +148,8 @@ async function provision({ name, email, password }) {
   const adminEmail = (email || `pharmacy.test+${Date.now()}@synapseos.tech`).toLowerCase();
   const slug = `pharm-${slugify(pharmacyName)}`;
   const tenantId = crypto.randomUUID();
-  const tempPassword = password || `Test${randomBytes(2).toString("hex").toUpperCase()}1234!`;
+  // Generated passwords are high-entropy and never shown; the admin uses Forgot password.
+  const tempPassword = password || randomBytes(24).toString("base64url");
   const passwordHash = await bcrypt.hash(tempPassword, 12);
   const defaultDomain = `https://pharm.synapseos.tech/${slug.replace(/^pharm-/, "")}`;
 
@@ -268,7 +269,10 @@ async function provision({ name, email, password }) {
         loginUrl: "https://pharm.synapseos.tech/login",
         defaultDomain,
         adminEmail,
-        tempPassword,
+        // Never print credentials (CodeQL js/clear-text-logging #6). An operator-supplied
+        // --password is already known to the operator; a generated one is discarded and
+        // the admin sets their own via https://pharm.synapseos.tech/forgot-password.
+        passwordSource: password ? "provided via --password (not echoed)" : "generated and discarded — use Forgot password",
         note: "Login requires email OTP sent to adminEmail",
       },
       null,
