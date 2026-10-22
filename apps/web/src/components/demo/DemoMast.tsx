@@ -4,7 +4,7 @@ import type { ReactNode } from "react"
 import { SynapseLogo } from "../SynapseLogo"
 
 export function DemoMast({
-  badge = "SYNTHETIC CHART",
+  badge = "PRODUCT DEMO",
   children,
 }: {
   badge?: string
