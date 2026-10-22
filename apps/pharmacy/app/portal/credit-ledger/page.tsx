@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { AlertTriangle, CreditCard, Plus, WalletCards } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -45,7 +45,9 @@ export default function CreditLedgerPage() {
   const [payload, setPayload] = useState<LedgerPayload | null>(null)
   const [customers, setCustomers] = useState<CustomerOption[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [form, setForm] = useState({ customerId: "", type: "repayment", amount: "", dueDate: "", notes: "" })
+  const [savingEntry, setSavingEntry] = useState(false)
+  const [form, setForm] = useState({ customerId: "", type: "repayment", amount: "", dueDate: "", notes: "", paymentMethod: "cash" })
+  const idempotencyKey = useRef<{ fingerprint: string; key: string } | null>(null)
 
   async function loadCustomers() {
     const response = await fetch("/api/admin/customers")
@@ -68,18 +70,32 @@ export default function CreditLedgerPage() {
 
   async function createEntry(event: React.FormEvent) {
     event.preventDefault()
-    const response = await fetch("/api/admin/credit-ledger", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
-    })
-    if (!response.ok) {
-      toast({ variant: "destructive", title: "Ledger entry failed" })
-      return
+    const body = JSON.stringify(form)
+    const fingerprint = body
+    if (idempotencyKey.current?.fingerprint !== fingerprint) {
+      idempotencyKey.current = { fingerprint, key: crypto.randomUUID() }
     }
-    setForm({ customerId: "", type: "repayment", amount: "", dueDate: "", notes: "" })
-    toast({ title: "Ledger entry recorded" })
-    loadLedger()
+    setSavingEntry(true)
+    try {
+      const response = await fetch("/api/admin/credit-ledger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey.current.key },
+        body,
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        toast({ variant: "destructive", title: "Ledger entry failed", description: data.error ?? "Could not record the entry." })
+        return
+      }
+      idempotencyKey.current = null
+      setForm({ customerId: "", type: "repayment", amount: "", dueDate: "", notes: "", paymentMethod: "cash" })
+      toast({ title: "Ledger entry recorded" })
+      await loadLedger()
+    } catch {
+      toast({ variant: "destructive", title: "Ledger entry failed", description: "Check your connection and retry without changing the entry." })
+    } finally {
+      setSavingEntry(false)
+    }
   }
 
   const summary = payload?.summary ?? { totalOutstanding: 0, overdueOutstanding: 0, creditCustomers: 0, overdueCustomers: 0 }
@@ -103,7 +119,7 @@ export default function CreditLedgerPage() {
           <CardTitle className="flex items-center gap-2"><Plus className="h-5 w-5 text-primary" /> Record credit or repayment</CardTitle>
         </CardHeader>
         <CardContent>
-          <form onSubmit={createEntry} className="grid gap-4 md:grid-cols-6">
+          <form onSubmit={createEntry} className="grid gap-4 md:grid-cols-7">
             <div className="space-y-1.5">
               <Label>Customer</Label>
               <select
@@ -134,6 +150,20 @@ export default function CreditLedgerPage() {
               <Input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} required />
             </div>
             <div className="space-y-1.5">
+              <Label>Payment method</Label>
+              <select
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={form.paymentMethod}
+                onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}
+                aria-label="Payment method"
+              >
+                <option value="cash">Cash</option>
+                <option value="mobile_money">Mobile money</option>
+                <option value="card">Card</option>
+                <option value="bank_transfer">Bank transfer</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
               <Label>Due date</Label>
               <Input type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
             </div>
@@ -141,7 +171,7 @@ export default function CreditLedgerPage() {
               <Label>Notes</Label>
               <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
             </div>
-            <Button type="submit" className="md:col-start-6">Record</Button>
+            <Button type="submit" className="md:col-start-7" disabled={savingEntry}>{savingEntry ? "Recording…" : "Record"}</Button>
           </form>
         </CardContent>
       </Card>

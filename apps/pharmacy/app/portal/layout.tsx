@@ -9,6 +9,7 @@ import {
   MessageSquare, Activity, Truck, FileText, BarChart3,
   RotateCcw, Wifi, WifiOff, CalendarClock, WalletCards, BrainCircuit,
   CreditCard, UserCircle, Building2, ShoppingBag,
+  BookOpen,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { NotificationBell } from "@/components/ui/notification-bell"
@@ -61,6 +62,7 @@ const NAV_GROUPS = [
       { name: 'Billing',         href: '/portal/billing',       icon: CreditCard,    adminOnly: true },
       { name: 'Transactions',  href: '/portal/transactions',  icon: DollarSign,  permission: 'VIEW_TRANSACTIONS' },
       { name: 'Credit Ledger', href: '/portal/credit-ledger', icon: WalletCards, permission: 'VIEW_TRANSACTIONS' },
+      { name: 'Accounting', href: '/portal/accounting', icon: BookOpen, permission: 'reports.financial' },
       { name: 'Refunds',       href: '/portal/refunds',       icon: RotateCcw,   permission: 'MANAGE_TRANSACTIONS' },
       { name: 'Reports',       href: '/portal/reports',       icon: BarChart3,   permission: 'VIEW_REPORTS' },
     ],

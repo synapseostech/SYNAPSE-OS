@@ -9,6 +9,7 @@ type CreditEntryParams = {
   dueDate?: string | null
   notes?: string | null
   createdBy: string
+  paymentMethod?: string | null
 }
 
 export async function findOrCreateCreditCustomer(
@@ -54,7 +55,7 @@ export async function findOrCreateCreditCustomer(
 }
 
 export class CreditLedgerError extends Error {
-  code: "OVERPAYMENT" | "CUSTOMER_NOT_FOUND" | "INVALID_AMOUNT" | "UNKNOWN"
+  code: "OVERPAYMENT" | "CUSTOMER_NOT_FOUND" | "INVALID_AMOUNT" | "IDEMPOTENCY_CONFLICT" | "UNKNOWN"
   balance: number | null
   constructor(code: CreditLedgerError["code"], message: string, balance: number | null = null) {
     super(message)
@@ -79,6 +80,7 @@ export async function postCreditLedgerEntry(params: CreditEntryParams & { idempo
     p_notes: params.notes ?? null,
     p_created_by: params.createdBy,
     p_idempotency_key: params.idempotencyKey ?? null,
+    p_payment_method: params.paymentMethod ?? "cash",
   })
   if (error) {
     const msg = String(error.message ?? "")
@@ -88,6 +90,9 @@ export async function postCreditLedgerEntry(params: CreditEntryParams & { idempo
     }
     if (msg.startsWith("CUSTOMER_NOT_FOUND")) throw new CreditLedgerError("CUSTOMER_NOT_FOUND", "Customer not found")
     if (msg.startsWith("INVALID_AMOUNT")) throw new CreditLedgerError("INVALID_AMOUNT", "Amount must be greater than zero")
+    if (msg.startsWith("IDEMPOTENCY_CONFLICT")) {
+      throw new CreditLedgerError("IDEMPOTENCY_CONFLICT", "This idempotency key was already used for a different ledger entry.")
+    }
     throw new CreditLedgerError("UNKNOWN", "Failed to post credit ledger entry")
   }
   return data as { id: string; balance_after: number; replayed: boolean } & Record<string, unknown>

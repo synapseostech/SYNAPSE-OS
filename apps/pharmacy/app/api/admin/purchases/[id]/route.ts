@@ -113,6 +113,14 @@ export async function PATCH(
   const amountPaid =
     body.amountPaid != null ? Number(body.amountPaid) : Number(purchase.amount_paid ?? 0)
   const total = Number(purchase.total ?? 0)
+  const currentAmountPaid = Number(purchase.amount_paid ?? 0)
+  if (!Number.isFinite(amountPaid) || amountPaid < currentAmountPaid || amountPaid > total ||
+    Math.abs(amountPaid * 100 - Math.round(amountPaid * 100)) > 0.000001) {
+    return NextResponse.json(
+      { error: `Amount paid must be between ${currentAmountPaid} and ${total}.` },
+      { status: 400 },
+    )
+  }
   const paymentStatus = derivePaymentStatus({
     total,
     amountPaid,
@@ -124,7 +132,13 @@ export async function PATCH(
     payment_status: paymentStatus,
     updated_at: new Date().toISOString(),
   }
-  if (typeof body.paymentMethod === "string") update.payment_method = body.paymentMethod
+  if (typeof body.paymentMethod === "string") {
+    const paymentMethod = body.paymentMethod.trim().toLowerCase()
+    if (paymentMethod && !["cash", "mobile_money", "mobile money", "card", "bank_transfer", "bank transfer"].includes(paymentMethod)) {
+      return NextResponse.json({ error: "Choose a supported payment method." }, { status: 400 })
+    }
+    if (paymentMethod) update.payment_method = paymentMethod
+  }
   if (typeof body.notes === "string") update.notes = body.notes
 
   const { error: updateError } = await db()
@@ -132,7 +146,17 @@ export async function PATCH(
     .update(update)
     .eq("id", id)
     .eq("tenant_id", tenantId)
-  if (updateError) return NextResponse.json({ error: updateError.message }, { status: 500 })
+  if (updateError) {
+    const message = String(updateError.message ?? "")
+    if (message.includes("ACCOUNTING_PERIOD_CLOSED")) {
+      return NextResponse.json({ error: "The payment could not be posted because its accounting period is closed." }, { status: 409 })
+    }
+    if (message.includes("ACCOUNTING_SUPPLIER_PAYMENT_AMOUNT_INVALID")) {
+      return NextResponse.json({ error: "The supplier payment amount is invalid." }, { status: 400 })
+    }
+    console.error("Update purchase payment error:", updateError)
+    return NextResponse.json({ error: "Failed to record supplier payment." }, { status: 500 })
+  }
 
   await db().from("pharmacy_audit_logs").insert({
     tenant_id: tenantId,
