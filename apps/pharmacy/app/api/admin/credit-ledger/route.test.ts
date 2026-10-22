@@ -41,13 +41,13 @@ beforeEach(() => {
 
 describe("credit ledger repayments (atomic RPC)", () => {
   it("accepts a repayment up to the outstanding balance", async () => {
-    const r = await post({ customerId: "c-1", type: "repayment", amount: 30000 })
+    const r = await post({ customerId: "c-1", type: "repayment", amount: 30000 }, { "Idempotency-Key": "rep-full" })
     expect(r.status).toBe(201)
     expect(m.rows[0].balance_after).toBe(0)
     expect(m.calls[0].args.p_tenant_id).toBe("tenant-1")
   })
   it("rejects an overpayment instead of silently clamping the balance to 0", async () => {
-    const r = await post({ customerId: "c-1", type: "repayment", amount: 30001 })
+    const r = await post({ customerId: "c-1", type: "repayment", amount: 30001 }, { "Idempotency-Key": "rep-over" })
     expect(r.status).toBe(400)
     expect(r.body.code).toBe("OVERPAYMENT")
     expect(r.body.balance).toBe(30000)
@@ -55,7 +55,7 @@ describe("credit ledger repayments (atomic RPC)", () => {
   })
   it("rejects a repayment when nothing is owed", async () => {
     m.balance = 0
-    const r = await post({ customerId: "c-1", type: "repayment", amount: 1 })
+    const r = await post({ customerId: "c-1", type: "repayment", amount: 1 }, { "Idempotency-Key": "rep-empty" })
     expect(r.status).toBe(400)
     expect(m.rows).toEqual([])
   })
