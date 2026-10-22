@@ -258,76 +258,101 @@ export default function DemoPage() {
         </a>
       </DemoMast>
 
-      <div className="mx-auto max-w-6xl px-4 py-8 sm:py-10">
-        <section className="demo-hero mb-8">
-          <p className="font-mono text-[10px] font-bold uppercase tracking-[0.28em]" style={{ color: "var(--text-muted)" }}>
-            SYNTHETIC TEST DRIVE
-          </p>
-          <h1 className="font-display mt-2 text-3xl font-bold tracking-tight sm:text-5xl">SYNAPSE Test Drive</h1>
-          <p className="mt-3 max-w-2xl text-base" style={{ color: "var(--text-secondary)" }}>
-            Run one synthetic patient through Reception, Triage, Doctor, Lab, Pharmacy and Billing.
-          </p>
-          <p className="mt-2 text-sm font-medium" style={{ color: "var(--brand-orange)" }}>
-            DO NOT ENTER REAL PATIENT DATA
-          </p>
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-12">
+        <section className="demo-hero demo-home-hero mb-8">
+          <div>
+            <p className="demo-home-eyebrow">SYNAPSE OS · INTERACTIVE PRODUCT DEMO</p>
+            <h1 className="demo-home-title">One connected care journey.</h1>
+            <p className="demo-home-description">
+              See how hospital teams work together, from a patient&apos;s first visit through diagnosis,
+              treatment and billing.
+            </p>
 
-          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-            <a className="demo-btn-primary" href={demoHref("login")}>
-              Start Test Drive
-            </a>
-            <button
-              type="button"
-              className="demo-btn-secondary"
-              onClick={() => {
-                applyStationSession("reception")
-                window.location.assign(demoHref("reception"))
-              }}
-            >
-              Start Golden Journey
-            </button>
-            <button type="button" className="demo-btn-secondary" onClick={() => window.location.assign(demoHref("guide"))}>
-              View Guide
-            </button>
-            <a className="demo-btn-secondary" href={demoHref("intelligence")}>
-              Open Intelligence Playground
-            </a>
-            <button type="button" className="demo-btn-secondary" onClick={resetPlayground}>
-              Reset Playground
-            </button>
+            <div className="demo-home-actions">
+              <a className="demo-btn-primary" href={demoHref("login")}>
+                Start interactive demo <span aria-hidden="true">→</span>
+              </a>
+              <button
+                type="button"
+                className="demo-btn-secondary"
+                onClick={() => {
+                  applyStationSession("reception")
+                  window.location.assign(demoHref("reception"))
+                }}
+              >
+                Explore guided journey
+              </button>
+            </div>
+
+            <p className="demo-home-note">
+              For demonstration only. Use synthetic data; do not enter real patient information.
+            </p>
           </div>
 
-          <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <aside className="demo-home-journey" aria-label="Care journey preview">
+            <div className="demo-home-journey-heading">
+              <h2 className="text-sm font-bold">A connected care journey</h2>
+              <span className="text-xs" style={{ color: "var(--text-muted)" }}>6 workspaces</span>
+            </div>
+            <ol className="demo-home-journey-list">
+              {["Reception", "Triage", "Doctor", "Laboratory", "Pharmacy", "Billing"].map((station, index) => (
+                <li className="demo-home-journey-step" key={station}>
+                  <span className="demo-home-journey-number">{String(index + 1).padStart(2, "0")}</span>
+                  {station}
+                </li>
+              ))}
+            </ol>
+            <p className="demo-home-journey-foot">
+              One synthetic patient record moves with the care team at every step.
+            </p>
+          </aside>
+        </section>
+
+        <section className="demo-home-shortcuts" aria-labelledby="demo-workspaces-heading">
+          <div className="demo-home-shortcuts-heading">
+            <h2 id="demo-workspaces-heading" className="text-xl font-bold tracking-tight">Jump into a workspace</h2>
+            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Choose a preloaded demo experience.</p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {[
-              { label: "Demo Hospital", station: "reception" as const },
-              { label: "Demo Lab", station: "lab" as const },
-              { label: "Demo Pharmacy", station: "pharmacist" as const },
-              { label: "Amina Demo", station: "reception" as const },
-            ].map((item) => (
-              <button key={item.label} type="button" className="demo-card p-3 text-left text-sm font-semibold" onClick={() => enterStation(item.station)}>
-                {item.label}
+              { label: "Hospital workspace", detail: "Reception and care teams", station: "reception" as const },
+              { label: "Laboratory", detail: "Orders, results and verification", station: "lab" as const },
+              { label: "Pharmacy", detail: "Prescriptions and dispensing", station: "pharmacist" as const },
+              { label: "Amina's journey", detail: "Follow a synthetic patient", station: "reception" as const },
+            ].map((item, index) => (
+              <button
+                key={item.label}
+                type="button"
+                className="demo-card demo-home-station"
+                onClick={() => enterStation(item.station)}
+              >
+                <span className="demo-home-station-number">0{index + 1} / WORKSPACE</span>
+                <span className="font-semibold">{item.label}</span>
+                <span className="demo-home-station-detail">{item.detail}</span>
               </button>
             ))}
           </div>
-
-          <ol className="mt-6 grid gap-3 text-sm sm:grid-cols-4">
-            <li className="demo-card p-3"><span className="font-mono text-[10px] font-bold" style={{ color: "var(--brand-orange)" }}>01</span><br />Register</li>
-            <li className="demo-card p-3"><span className="font-mono text-[10px] font-bold" style={{ color: "var(--brand-orange)" }}>02</span><br />Assess</li>
-            <li className="demo-card p-3"><span className="font-mono text-[10px] font-bold" style={{ color: "var(--brand-orange)" }}>03</span><br />Investigate</li>
-            <li className="demo-card p-3"><span className="font-mono text-[10px] font-bold" style={{ color: "var(--brand-orange)" }}>04</span><br />Treat & Close</li>
-          </ol>
         </section>
 
         {/* Clinical AI Demo (preserved) */}
         <section className="demo-frame p-6 sm:p-8" aria-labelledby="ai-demo-heading">
-          <h2 id="ai-demo-heading" className="font-display font-bold text-2xl mb-2" style={{ color: "var(--text-primary)", letterSpacing: "-0.02em" }}>
-            Try Clinical AI
-          </h2>
-          <p className="text-sm mb-3" style={{ color: "var(--text-secondary)" }}>
-            Optional and educational. The Test Drive above does not require AI. For governed kernel output, open the Intelligence playground.
-          </p>
-          <p className="text-xs mb-6" style={{ color: "var(--brand-orange)" }}>
-            Synthetic/de-identified clinical context may be sent to the configured AI provider.
-          </p>
+          <div className="demo-ai-heading mb-6">
+            <div>
+              <h2 id="ai-demo-heading" className="font-display mb-2 text-2xl font-bold" style={{ color: "var(--text-primary)", letterSpacing: "-0.02em" }}>
+                Explore clinical AI
+              </h2>
+              <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                Optional and educational. The care journey does not require AI.
+              </p>
+              <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>
+                Synthetic or de-identified clinical context may be sent to the configured AI provider.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <a className="demo-btn-secondary" href={demoHref("intelligence")}>Open AI playground</a>
+              <button type="button" className="demo-btn-secondary" onClick={resetPlayground}>Reset playground</button>
+            </div>
+          </div>
 
           <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div className="space-y-5">
