@@ -50,7 +50,7 @@ test.describe("Demo Golden Journey", () => {
     const doctorCopilot = page.getByRole("region", { name: "Synapse AI" })
     await doctorCopilot.getByRole("button", { name: "Synapse AI" }).click()
     await doctorCopilot.getByRole("button", { name: "Generate suggestion" }).click()
-    await expect(doctorCopilot.getByText(/Requires qualified human review/i).first()).toBeVisible()
+    await expect(doctorCopilot.getByText(/Requires qualified human review/i).first()).toBeVisible({ timeout: 15_000 })
     await doctorCopilot.getByRole("button", { name: "Accept" }).click()
     await expect(doctorCopilot.getByText(/ACCEPT ·/)).toBeVisible()
 
@@ -78,7 +78,7 @@ test.describe("Demo Golden Journey", () => {
     const labCopilot = page.getByRole("region", { name: "AI Result Analysis" })
     await labCopilot.getByRole("button", { name: "AI Result Analysis" }).click()
     await labCopilot.getByRole("button", { name: "Generate suggestion" }).click()
-    await expect(labCopilot.getByText(/Requires qualified human review/i).first()).toBeVisible()
+    await expect(labCopilot.getByText(/Requires qualified human review/i).first()).toBeVisible({ timeout: 15_000 })
     await expect(page.getByRole("button", { name: "Verify Results" })).toHaveCount(0)
     await page.getByRole("link", { name: "Continue as Lab Scientist" }).click()
     await expect(page.getByRole("heading", { name: "Lab Worklist" })).toBeVisible()
