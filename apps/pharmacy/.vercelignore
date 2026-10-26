@@ -1,50 +1,48 @@
 # Vercel ignore patterns for synapse-pharmacy app
-# Exclude build cache and temporary files
+#
+# Vercel applies this file from the repository root, where a bare directory
+# name matches at any depth. "supabase/", "scripts/" and "demo/" therefore
+# removed apps/pharmacy/lib/supabase, the build gate and the /demo routes.
+# Every path pattern below is anchored so it can only match what it names.
+
+# Build cache and temporary files
 .next/cache
 .next/trace
 .turbo
 node_modules
+coverage
+.nyc_output
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Exclude test files and coverage
+# Tests are never imported by a production build
 **/*.test.ts
 **/*.test.tsx
 **/*.spec.ts
 **/*.spec.tsx
-coverage
-.nyc_output
 
-# Exclude development files
+# Development files
 .env*.local
 .env*.development
 *.tsbuildinfo
 
-# Exclude IDE and OS files
+# IDE and OS files
 .vscode
 .idea
 .DS_Store
 Thumbs.db
 
-# Exclude documentation and markdown (except in public)
+# Documentation
 *.md
-!public/**/*.md
 
-# Exclude scripts
-scripts/
-*.mjs
-*.sh
-
-# Exclude Supabase local development
-supabase/
+# Local Supabase CLI state. The app's own clients live in lib/supabase and
+# must be uploaded.
+/supabase/migrations/
 **/supabase/**/migrations/*.sql
 
-# Exclude legacy and demo folders
-legacy/
-demo/
-
-# Exclude artifacts
-artifacts/
+# Legacy tree and CI-produced readiness artifacts
+/legacy/
+/artifacts/
