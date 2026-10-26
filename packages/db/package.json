@@ -10,6 +10,13 @@
     "./inventory": "./src/inventory.ts",
     "./import-validation": "./src/import-validation.ts",
     "./inventory-rpc": "./src/inventory-rpc.ts",
+    "./tally-xml-rows": "./src/tally-xml-rows.ts",
+    "./tally-map": "./src/tally-map.ts",
+    "./tally-normalise": "./src/tally-normalise.ts",
+    "./accounting-voucher-types": "./src/accounting-voucher-types.ts",
+    "./accounting-close-readiness": "./src/accounting-close-readiness.ts",
+    "./accounting-ageing": "./src/accounting-ageing.ts",
+    "./accounting-bank-statement": "./src/accounting-bank-statement.ts",
     "./receipt": "./src/receipt.ts",
     "./identity": "./src/identity.ts",
     "./identity-persist": "./src/identity-persist.ts",
@@ -80,11 +87,16 @@
     "./commercial-pricing": "./src/commercial-pricing.ts",
     "./commercial-crm": "./src/commercial-crm.ts",
     "./html-escape": "./src/html-escape.ts",
-    "./encounter-diagnosis": "./src/encounter-diagnosis.ts"
+    "./encounter-diagnosis": "./src/encounter-diagnosis.ts",
+    "./domain-event-outbox-store": "./src/domain-event-outbox-store.ts",
+    "./supabase-event-delivery": "./src/supabase-event-delivery.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.43.4",
     "@supabase/ssr": "^0.5.0",
     "@synapse/interop": "*"
+  },
+  "scripts": {
+    "lint": "eslint . --max-warnings 0"
   }
 }

@@ -1,15 +1,29 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { AlertTriangle, BookOpen, Plus, RefreshCw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { DayBookTab } from "@/components/accounting/day-book-tab"
+import { LedgerTab } from "@/components/accounting/ledger-tab"
+import { OutstandingTab } from "@/components/accounting/outstanding-tab"
+import {
+  VOUCHER_KIND_LABELS,
+  VOUCHER_TYPES,
+  VOUCHER_TYPE_HELP,
+  VOUCHER_TYPE_LABELS,
+  isVoucherType,
+  voucherKindFromSource,
+  type VoucherType,
+} from "@/lib/accounting/voucher-types"
 import { formatCurrency } from "@/lib/utils"
 import { summarizeCurrencies, type AccountBalance } from "@/lib/accounting/reporting"
-import { parseBankStatementCsv, type BankStatementRow } from "@/lib/accounting/bank-statement"
+import { exactBankCandidates, parseBankStatementCsv, type BankStatementRow } from "@/lib/accounting/bank-statement"
 import { usePharmacySession } from "@/hooks/use-pharmacy-session"
 import { sessionHasCapability } from "@/lib/capabilities"
 
@@ -20,6 +34,7 @@ type JournalEntry = {
   entry_no: string
   entry_date: string
   source_type: string
+  source_id: string
   description: string
   currency: string
   total_debit: number
@@ -51,12 +66,43 @@ type AccountingPayload = {
   periods: AccountingPeriod[]
 }
 
+type PeriodCloseSnapshot = {
+  salesCount?: number | null
+  salesTotal?: number | null
+  journalEntries?: number | null
+  openTillSessions?: number | null
+  unmatchedBankLines?: number | null
+}
+
 type AccountingPeriod = {
   id: string
   period_start: string
   period_end: string
   status: "open" | "closed"
   closed_at: string | null
+  close_snapshot: PeriodCloseSnapshot | null
+}
+
+type ReadinessIssue = {
+  code: string
+  severity: "blocker" | "warning"
+  message: string
+  value?: number
+}
+
+type CloseReadinessPayload = {
+  readiness: {
+    ready: boolean
+    issues: ReadinessIssue[]
+    blockers: ReadinessIssue[]
+    warnings: ReadinessIssue[]
+  }
+  snapshot: {
+    openTillSessions: number
+    journalEntries: number
+    salesCount: number
+    unmatchedBankLines: number
+  }
 }
 
 type BankStatementLine = Omit<BankStatementRow, "date" | "lineNumber"> & {
@@ -100,6 +146,12 @@ export default function AccountingPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [journalDate, setJournalDate] = useState(today)
+  const searchParams = useSearchParams()
+  const requestedVoucher = searchParams.get("voucher")
+  const [voucherType, setVoucherType] = useState<VoucherType>(
+    isVoucherType(requestedVoucher) ? requestedVoucher : "journal",
+  )
+  const [activeTab, setActiveTab] = useState("overview")
   const [journalDescription, setJournalDescription] = useState("")
   const [journalLines, setJournalLines] = useState([
     { accountId: "", debit: "", credit: "", description: "" },
@@ -112,6 +164,9 @@ export default function AccountingPage() {
   const [periodEnd, setPeriodEnd] = useState("")
   const [periodError, setPeriodError] = useState<string | null>(null)
   const [periodMessage, setPeriodMessage] = useState<string | null>(null)
+  const [readiness, setReadiness] = useState<CloseReadinessPayload | null>(null)
+  const [readinessError, setReadinessError] = useState<string | null>(null)
+  const [checkingReadiness, setCheckingReadiness] = useState(false)
   const [bankReconciliation, setBankReconciliation] = useState<BankReconciliationPayload | null>(null)
   const [bankFile, setBankFile] = useState<File | null>(null)
   const [bankError, setBankError] = useState<string | null>(null)
@@ -153,6 +208,48 @@ export default function AccountingPage() {
     void loadAccounting()
   }, [loadAccounting])
 
+  // F4–F7 land here with the voucher already chosen; show the form, not the tabs.
+  useEffect(() => {
+    if (!isVoucherType(requestedVoucher)) return
+    setVoucherType(requestedVoucher)
+    setActiveTab("overview")
+  }, [requestedVoucher])
+
+  // Closing a period is irreversible and used to be blind. Ask the server what it
+  // would refuse before the button becomes available.
+  const readinessKey = canClosePeriods && periodStart && periodEnd && periodStart <= periodEnd
+    ? `${periodStart}:${periodEnd}`
+    : ""
+  useEffect(() => {
+    if (!readinessKey) {
+      setReadiness(null)
+      setReadinessError(null)
+      return
+    }
+    const controller = new AbortController()
+    const [start, end] = readinessKey.split(":")
+    setCheckingReadiness(true)
+    setReadinessError(null)
+    void (async () => {
+      try {
+        const params = new URLSearchParams({ start, end })
+        const response = await fetch(`/api/admin/accounting/periods/readiness?${params}`, {
+          signal: controller.signal,
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error ?? "Could not check close readiness.")
+        setReadiness(data as CloseReadinessPayload)
+      } catch (cause) {
+        if (controller.signal.aborted) return
+        setReadiness(null)
+        setReadinessError(cause instanceof Error ? cause.message : "Could not check close readiness.")
+      } finally {
+        if (!controller.signal.aborted) setCheckingReadiness(false)
+      }
+    })()
+    return () => controller.abort()
+  }, [readinessKey])
+
   const summaries = useMemo(
     () => summarizeCurrencies(payload?.trialBalance ?? [], payload?.periodActivity ?? []),
     [payload],
@@ -172,6 +269,7 @@ export default function AccountingPage() {
         },
         body: JSON.stringify({
           entryDate: journalDate,
+          voucherType,
           description: journalDescription,
           lines: journalLines.map((line) => ({
             accountId: line.accountId,
@@ -188,7 +286,7 @@ export default function AccountingPage() {
         { accountId: "", debit: "", credit: "", description: "" },
         { accountId: "", debit: "", credit: "", description: "" },
       ])
-      setPostingMessage(`Posted journal ${data.entry?.entry_no ?? ""}.`)
+      setPostingMessage(`Posted ${VOUCHER_TYPE_LABELS[voucherType].toLowerCase()} ${data.entry?.entry_no ?? ""}.`)
       await loadAccounting()
     } catch (cause) {
       setPostingError(cause instanceof Error ? cause.message : "Could not post journal entry.")
@@ -325,25 +423,49 @@ export default function AccountingPage() {
 
       {error && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
 
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="day-book">Day book</TabsTrigger>
+          <TabsTrigger value="ledger">General ledger</TabsTrigger>
+          <TabsTrigger value="outstanding">Outstanding</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview">
       <Card>
         <CardHeader>
-          <CardTitle>New journal voucher</CardTitle>
+          <CardTitle>New voucher</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Record a balanced adjustment in {payload?.currency ?? "the pharmacy currency"}. Posted entries are immutable.
+            Record a balanced entry in {payload?.currency ?? "the pharmacy currency"} using the same voucher types as Tally.
+            Posted entries are immutable.
           </p>
         </CardHeader>
         <CardContent>
           <form onSubmit={postJournal} className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-4">
               <div className="space-y-1.5">
                 <Label htmlFor="journal-date">Entry date</Label>
                 <Input id="journal-date" type="date" max={today} value={journalDate} onChange={(event) => setJournalDate(event.target.value)} required />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="journal-voucher-type">Voucher type</Label>
+                <select
+                  id="journal-voucher-type"
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={voucherType}
+                  onChange={(event) => setVoucherType(event.target.value as VoucherType)}
+                >
+                  {VOUCHER_TYPES.map((option) => (
+                    <option key={option} value={option}>{VOUCHER_TYPE_LABELS[option]}</option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-1.5 sm:col-span-2">
                 <Label htmlFor="journal-description">Description</Label>
                 <Input id="journal-description" value={journalDescription} maxLength={500} onChange={(event) => setJournalDescription(event.target.value)} required />
               </div>
             </div>
+            <p className="text-sm text-muted-foreground">{VOUCHER_TYPE_HELP[voucherType]}</p>
             <div className="space-y-3">
               {journalLines.map((line, index) => (
                 <div key={index} className="grid gap-3 rounded-lg border p-3 sm:grid-cols-[minmax(12rem,2fr)_minmax(6rem,1fr)_minmax(6rem,1fr)_minmax(10rem,1.5fr)_auto]">
@@ -387,7 +509,7 @@ export default function AccountingPage() {
                 <Plus className="mr-2 h-4 w-4" aria-hidden="true" /> Add line
               </Button>
               <Button type="submit" disabled={posting || !payload?.accounts.length}>
-                {posting ? "Posting…" : "Post journal"}
+                {posting ? "Posting…" : `Post ${VOUCHER_TYPE_LABELS[voucherType].toLowerCase()}`}
               </Button>
             </div>
             {postingError && <p role="alert" className="text-sm text-destructive">{postingError}</p>}
@@ -478,9 +600,7 @@ export default function AccountingPage() {
                 </TableHeader>
                 <TableBody>
                   {bankReconciliation.lines.map((line) => {
-                    const exactCandidates = bankReconciliation.candidates.filter((candidate) =>
-                      candidate.currency === line.currency && Number(candidate.amount) === Number(line.amount),
-                    )
+                    const exactCandidates = exactBankCandidates(line, bankReconciliation.candidates)
                     return (
                       <TableRow key={line.id}>
                         <TableCell>{line.statement_date}</TableCell>
@@ -611,7 +731,7 @@ export default function AccountingPage() {
                             <TableCell>{new Date(`${entry.entry_date}T00:00:00`).toLocaleDateString("en-GB")}</TableCell>
                             <TableCell className="font-mono">{entry.entry_no}</TableCell>
                             <TableCell>{entry.description}</TableCell>
-                            <TableCell className="capitalize">{entry.source_type}</TableCell>
+                            <TableCell>{VOUCHER_KIND_LABELS[voucherKindFromSource(entry.source_type, entry.source_id)]}</TableCell>
                             <TableCell className="text-right">{formatCurrency(Number(entry.total_debit), entry.currency)}</TableCell>
                             <TableCell className="text-right">{formatCurrency(Number(entry.total_credit), entry.currency)}</TableCell>
                           </TableRow>
@@ -674,17 +794,60 @@ export default function AccountingPage() {
         </CardHeader>
         <CardContent className="space-y-5">
           {canClosePeriods && (
-            <form onSubmit={closePeriod} className="flex flex-wrap items-end gap-3 rounded-lg border p-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="close-period-start">Period starts</Label>
-                <Input id="close-period-start" type="date" value={periodStart} max={periodEnd || today} onChange={(event) => setPeriodStart(event.target.value)} required />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="close-period-end">Period ends</Label>
-                <Input id="close-period-end" type="date" value={periodEnd} min={periodStart} max={today} onChange={(event) => setPeriodEnd(event.target.value)} required />
-              </div>
-              <Button type="submit">Close period</Button>
-            </form>
+            <div className="space-y-3">
+              <form onSubmit={closePeriod} className="flex flex-wrap items-end gap-3 rounded-lg border p-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="close-period-start">Period starts</Label>
+                  <Input id="close-period-start" type="date" value={periodStart} max={periodEnd || today} onChange={(event) => setPeriodStart(event.target.value)} required />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="close-period-end">Period ends</Label>
+                  <Input id="close-period-end" type="date" value={periodEnd} min={periodStart} max={today} onChange={(event) => setPeriodEnd(event.target.value)} required />
+                </div>
+                <Button
+                  type="submit"
+                  // Fail closed: with both dates set, the close stays unavailable
+                  // until a readiness check has actually said yes. An unanswered
+                  // check is not a pass.
+                  disabled={checkingReadiness || (readinessKey !== "" && (readiness === null || !readiness.readiness.ready))}
+                >
+                  Close period
+                </Button>
+              </form>
+              {checkingReadiness && <p className="text-sm text-muted-foreground">Checking whether this period can be closed…</p>}
+              {readinessError && <p role="alert" className="text-sm text-destructive">{readinessError}</p>}
+              {readiness && readiness.readiness.blockers.length > 0 && (
+                <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+                  <p className="flex items-center gap-2 text-sm font-medium text-destructive">
+                    <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+                    This period cannot be closed yet
+                  </p>
+                  <ul className="mt-2 space-y-1 text-sm text-destructive">
+                    {readiness.readiness.blockers.map((issue) => (
+                      <li key={issue.code}>{issue.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {readiness && readiness.readiness.ready && (
+                <div className="rounded-lg border p-3">
+                  <p className="text-sm font-medium">
+                    Ready to close {periodStart} through {periodEnd}
+                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {readiness.snapshot.salesCount} sale{readiness.snapshot.salesCount === 1 ? "" : "s"},{" "}
+                    {readiness.snapshot.journalEntries} journal entr{readiness.snapshot.journalEntries === 1 ? "y" : "ies"}.
+                    These figures are recorded with the close.
+                  </p>
+                  {readiness.readiness.warnings.map((issue) => (
+                    <p key={issue.code} className="mt-1 flex items-start gap-2 text-sm text-amber-700">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                      {issue.message}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
           {periodError && <p role="alert" className="text-sm text-destructive">{periodError}</p>}
           {periodMessage && <p role="status" className="text-sm text-emerald-600">{periodMessage}</p>}
@@ -692,7 +855,7 @@ export default function AccountingPage() {
             <p className="text-sm text-muted-foreground">No accounting periods have been closed.</p>
           ) : (
             <Table>
-              <TableHeader><TableRow><TableHead>From</TableHead><TableHead>Through</TableHead><TableHead>Status</TableHead><TableHead>Closed on</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead>From</TableHead><TableHead>Through</TableHead><TableHead>Status</TableHead><TableHead>Closed on</TableHead><TableHead>Recorded at close</TableHead></TableRow></TableHeader>
               <TableBody>
                 {(payload?.periods ?? []).map((period) => (
                   <TableRow key={period.id}>
@@ -700,6 +863,21 @@ export default function AccountingPage() {
                     <TableCell>{period.period_end}</TableCell>
                     <TableCell className="capitalize">{period.status}</TableCell>
                     <TableCell>{period.closed_at ? new Date(period.closed_at).toLocaleString("en-GB") : "—"}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {period.close_snapshot ? (
+                        <div className="space-y-0.5">
+                          <p>
+                            {Number(period.close_snapshot.salesCount ?? 0)} sale{Number(period.close_snapshot.salesCount ?? 0) === 1 ? "" : "s"} ·{" "}
+                            {formatCurrency(Number(period.close_snapshot.salesTotal ?? 0), payload?.currency ?? "UGX")}
+                          </p>
+                          <p>
+                            {Number(period.close_snapshot.journalEntries ?? 0)} journal entr{Number(period.close_snapshot.journalEntries ?? 0) === 1 ? "y" : "ies"} ·{" "}
+                            {Number(period.close_snapshot.openTillSessions ?? 0)} open till{Number(period.close_snapshot.openTillSessions ?? 0) === 1 ? "" : "s"} ·{" "}
+                            {Number(period.close_snapshot.unmatchedBankLines ?? 0)} unmatched bank line{Number(period.close_snapshot.unmatchedBankLines ?? 0) === 1 ? "" : "s"}
+                          </p>
+                        </div>
+                      ) : "—"}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -707,6 +885,20 @@ export default function AccountingPage() {
           )}
         </CardContent>
       </Card>
+        </TabsContent>
+
+        <TabsContent value="day-book">
+          <DayBookTab from={startDate} to={endDate} accounts={payload?.accounts ?? []} />
+        </TabsContent>
+
+        <TabsContent value="ledger">
+          <LedgerTab from={startDate} to={endDate} accounts={payload?.accounts ?? []} />
+        </TabsContent>
+
+        <TabsContent value="outstanding">
+          <OutstandingTab asOf={endDate} />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

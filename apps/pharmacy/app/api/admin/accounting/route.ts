@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requirePharmacyPermission } from "@/lib/api-auth"
 import { supabaseAdmin } from "@/lib/supabase/admin"
+import {
+  VOUCHER_TYPES,
+  isVoucherType,
+  manualVoucherSourceId,
+  validateVoucher,
+  type VoucherAccount,
+} from "@/lib/accounting/voucher-types"
 
 export const dynamic = "force-dynamic"
 
@@ -55,7 +62,7 @@ export async function GET(request: NextRequest) {
       db
         .from("pharmacy_accounting_journal_entries")
         .select(`
-          id, entry_no, entry_date, source_type, description, currency, total_debit, total_credit,
+          id, entry_no, entry_date, source_type, source_id, description, currency, total_debit, total_credit,
           lines:pharmacy_accounting_journal_lines(
             debit, credit, account:pharmacy_accounting_accounts(code, name)
           )
@@ -109,6 +116,14 @@ export async function POST(request: NextRequest) {
       request.headers.get("idempotency-key")?.trim() ||
       (typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "")
     const lines = Array.isArray(body.lines) ? body.lines : []
+    const rawVoucherType = body.voucherType ?? "journal"
+    if (!isVoucherType(rawVoucherType)) {
+      return NextResponse.json(
+        { error: `Voucher type must be one of: ${VOUCHER_TYPES.join(", ")}.` },
+        { status: 400 },
+      )
+    }
+    const voucherType = rawVoucherType
 
     if (!description || description.length > 500 || !isIsoDate(entryDate)) {
       return NextResponse.json({ error: "A description (up to 500 characters) and valid entry date are required." }, { status: 400 })
@@ -140,17 +155,42 @@ export async function POST(request: NextRequest) {
     }
 
     const db = supabaseAdmin as any
-    const { data: settings, error: settingsError } = await db
-      .from("pharmacy_settings")
-      .select("currency")
-      .eq("tenant_id", tenantId)
-      .maybeSingle()
+    const accountIds: string[] = [
+      ...new Set<string>(normalizedLines.map((line: { account_id: string }) => line.account_id)),
+    ]
+
+    const [{ data: settings, error: settingsError }, { data: accountRows, error: accountsError }] =
+      await Promise.all([
+        db.from("pharmacy_settings").select("currency").eq("tenant_id", tenantId).maybeSingle(),
+        db
+          .from("pharmacy_accounting_accounts")
+          .select("id, code, name, system_key")
+          .eq("tenant_id", tenantId)
+          .eq("is_active", true)
+          .in("id", accountIds),
+      ])
     if (settingsError) throw settingsError
+    if (accountsError) throw accountsError
+
+    const accounts = new Map<string, VoucherAccount>(
+      ((accountRows ?? []) as VoucherAccount[]).map((account) => [account.id.toLowerCase(), account]),
+    )
+    if (accountIds.some((id: string) => !accounts.has(id.toLowerCase()))) {
+      return NextResponse.json(
+        { error: "One of the selected accounts is not in this pharmacy's chart of accounts." },
+        { status: 400 },
+      )
+    }
+
+    const voucherCheck = validateVoucher(voucherType, normalizedLines, accounts)
+    if (!voucherCheck.ok) {
+      return NextResponse.json({ error: voucherCheck.error }, { status: 400 })
+    }
 
     const { data, error } = await db.rpc("post_pharmacy_accounting_journal", {
       p_tenant_id: tenantId,
       p_source_type: "manual",
-      p_source_id: idempotencyKey,
+      p_source_id: manualVoucherSourceId(voucherType, idempotencyKey),
       p_entry_date: entryDate,
       p_description: description,
       p_currency: settings?.currency ?? "UGX",
@@ -169,7 +209,10 @@ export async function POST(request: NextRequest) {
       throw error
     }
 
-    return NextResponse.json({ ok: true, entry: data }, { status: data?.replayed ? 200 : 201 })
+    return NextResponse.json(
+      { ok: true, voucherType, entry: data },
+      { status: data?.replayed ? 200 : 201 },
+    )
   } catch (error) {
     console.error("Pharmacy accounting POST error:", error)
     return NextResponse.json({ error: "Failed to post accounting journal entry" }, { status: 500 })
