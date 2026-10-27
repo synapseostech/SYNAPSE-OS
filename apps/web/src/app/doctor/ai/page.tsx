@@ -27,7 +27,8 @@ export default function DoctorAiPage() {
         )}
         {enabled && (
           <p className="text-sm text-muted-color mt-2">
-            Sepsis pathway suggestions are advisory only (
+            Open an encounter and go to <code className="text-xs">/encounter/&lt;id&gt;/ai</code> to request
+            an advisory suggestion for that encounter. Sepsis pathway suggestions are advisory only (
             <code className="text-xs">pathway.adult-sepsis</code>). Clinician confirmation is required
             before any clinical action.
           </p>
