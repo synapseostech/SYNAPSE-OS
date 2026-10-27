@@ -16,6 +16,8 @@
  * comes from `ISDEEMEDPOSITIVE` when present, else from the sign of `AMOUNT`.
  */
 
+import { stripDelimited } from "./tally-xml"
+
 const MAX_BYTES = 25 * 1024 * 1024
 const MAX_TAGS = 2_000_000
 const MAX_RECORDS = 250_000
@@ -527,14 +529,14 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
     throw new Error("MIGRATION_XML_NOT_UTF8")
   }
 
-  const withoutComments = raw.replace(/<!--[\s\S]*?-->/g, "")
+  const withoutComments = stripDelimited(raw, "<!--", "-->")
   if (/<!/.test(withoutComments)) throw new Error("MIGRATION_XML_ENTITIES_REJECTED")
   if (!withoutComments.includes("<")) throw new Error("MIGRATION_XML_MALFORMED")
 
   const tagCount = withoutComments.match(/<[A-Za-z/]/g)?.length ?? 0
   if (tagCount > MAX_TAGS) throw new Error("MIGRATION_XML_TOO_COMPLEX")
 
-  const text = withoutComments.replace(/<\?[\s\S]*?\?>/g, "")
+  const text = stripDelimited(withoutComments, "<?", "?>")
   const warnings: TallyXmlRowWarning[] = []
   const document: TallyXmlDocument = {
     financialPeriod: {},

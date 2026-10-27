@@ -107,6 +107,15 @@ describe("TallyXmlAdapter", () => {
       assert.equal(discovery.counts.STOCKITEM, 1)
     })
 
+    // Stripping comments used to be `<!--[\s\S]*?-->` under a global flag, which
+    // rescans to the end of the document from every start marker.
+    it("strips adversarial comments in linear time (CodeQL js/polynomial-redos)", () => {
+      const unclosed = enc("<!--".repeat(50_000) + "<ENVELOPE/>")
+      const started = Date.now()
+      assert.throws(() => new TallyXmlAdapter().analyse(unclosed, "e.xml"), /MIGRATION_XML_ENTITIES_REJECTED/)
+      assert.ok(Date.now() - started < 200, "stripping 50k comment markers must not be quadratic")
+    })
+
     it("refuses an empty file", () => {
       assert.throws(() => new TallyXmlAdapter().analyse(new Uint8Array(), "e.xml"), /MIGRATION_EMPTY_FILE/)
     })

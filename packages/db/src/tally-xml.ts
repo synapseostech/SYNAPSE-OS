@@ -49,6 +49,29 @@ function decodePredefined(raw: string): string {
   return raw.replace(/&(amp|lt|gt|quot|apos);/g, (match) => PREDEFINED[match] ?? match)
 }
 
+/**
+ * Removes every `open ... close` span in one linear pass.
+ *
+ * The obvious regular expression, `open[\s\S]*?close` under a global flag,
+ * rescans to the end of the document from each `open` marker, so a body of
+ * repeated `<!--` costs quadratic time before any size limit is consulted.
+ * An unterminated `open` is left in place, which keeps it visible to the `<!`
+ * check that rejects DOCTYPE and ENTITY declarations.
+ */
+export function stripDelimited(text: string, open: string, close: string): string {
+  let kept = ""
+  let index = 0
+  while (index < text.length) {
+    const start = text.indexOf(open, index)
+    if (start === -1) break
+    const end = text.indexOf(close, start + open.length)
+    if (end === -1) break
+    kept += text.slice(index, start)
+    index = end + close.length
+  }
+  return kept + text.slice(index)
+}
+
 function countMatches(text: string, pattern: RegExp): number {
   const matches = text.match(pattern)
   return matches ? matches.length : 0
@@ -87,7 +110,8 @@ export class TallyXmlAdapter implements MigrationSourceAdapter {
     }
 
     // Rule 1: no DTD, therefore no entities beyond the five predefined ones.
-    if (/<!/.test(text.replace(/<!--[\s\S]*?-->/g, ""))) {
+    const body = stripDelimited(text, "<!--", "-->")
+    if (/<!/.test(body)) {
       throw new Error("MIGRATION_XML_ENTITIES_REJECTED")
     }
     if (!text.includes("<")) throw new Error("MIGRATION_XML_MALFORMED")
@@ -95,7 +119,6 @@ export class TallyXmlAdapter implements MigrationSourceAdapter {
     const tagCount = countMatches(text, /<[A-Za-z/]/g)
     if (tagCount > MAX_TAGS) throw new Error("MIGRATION_XML_TOO_COMPLEX")
 
-    const body = text.replace(/<!--[\s\S]*?-->/g, "")
     const warnings: string[] = []
 
     const messages = countMatches(body, /<TALLYMESSAGE\b/g)

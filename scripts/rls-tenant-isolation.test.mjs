@@ -142,7 +142,7 @@ test("the alterations and the self-check are one statement, so a failure rolls t
     "the repair must be a single DO block, which is atomic under every applier",
   )
   // Explicit transaction control would end early the transaction that
-  // `supabase db push` already wraps around each migration file.
+  // the Supabase CLI already wraps around each migration file.
   assert.doesNotMatch(code, /^\s*(begin|commit|rollback)\s*;/im)
 })
 
@@ -282,7 +282,7 @@ test("no workflow applies the repair to a remote or production database", () => 
   // false statement about a security control.
   const deploy = read("deploy.yml")
   assert.match(deploy, /psql -h 127\.0\.0\.1 -p 54322/)
-  assert.doesNotMatch(deploy, /supabase db push/)
+  assert.doesNotMatch(deploy, /supabase\s+db\s+push/)
   assert.doesNotMatch(deploy, /--linked/)
   assert.doesNotMatch(deploy, /SUPABASE_DB_URL/)
 })
@@ -322,7 +322,7 @@ test("the admin-policy migration scopes every policy to authenticated and curren
 test("the staff-policy migration is HELD, lives outside the applied chain, and keeps ALTER inside its DO block", () => {
   // It must NOT sit in supabase/migrations: deploy.yml applies every
   // supabase/migrations/[0-9]*_*.sql above the snapshot cutoff on push to main,
-  // and `supabase db push` applies the whole directory — a HELD file there is
+  // and the Supabase CLI applies the whole directory — a HELD file there is
   // documentation, not a control.
   assert.ok(
     existsSync(join(root, "supabase/held/scope_staff_intake_policies_to_tenant.sql")),
