@@ -1,6 +1,6 @@
-import { Tabs } from 'expo-router'
+import { Tabs, useRouter } from 'expo-router'
 import { Ionicons } from '@expo/vector-icons'
-import { Platform, StyleSheet } from 'react-native'
+import { Platform, Pressable, StyleSheet } from 'react-native'
 import { tabBarHeight, useTheme } from '@/lib/theme'
 
 type IoniconsName = React.ComponentProps<typeof Ionicons>['name']
@@ -8,6 +8,23 @@ type IoniconsName = React.ComponentProps<typeof Ionicons>['name']
 function TabIcon({ name, focused }: { name: IoniconsName; focused: boolean }) {
   const { colors } = useTheme()
   return <Ionicons name={name} size={22} color={focused ? colors.primary : colors.textMuted} />
+}
+
+/** Screens reachable from Today but not shown in the tab bar. */
+function BackToToday() {
+  const router = useRouter()
+  const { colors } = useTheme()
+  return (
+    <Pressable
+      onPress={() => (router.canGoBack() ? router.back() : router.replace('/(personal)/today' as never))}
+      hitSlop={12}
+      style={styles.backBtn}
+      accessibilityRole="button"
+      accessibilityLabel="Back"
+    >
+      <Ionicons name="chevron-back" size={22} color={colors.primary} />
+    </Pressable>
+  )
 }
 
 export default function PersonalLayout() {
@@ -93,11 +110,39 @@ export default function PersonalLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="medical-id"
+        options={{
+          title: 'Medical ID',
+          headerTitle: 'Medical ID',
+          href: null,
+          headerLeft: () => <BackToToday />,
+        }}
+      />
+      <Tabs.Screen
+        name="medications"
+        options={{
+          title: 'Medicines',
+          headerTitle: 'Medicines',
+          href: null,
+          headerLeft: () => <BackToToday />,
+        }}
+      />
+      <Tabs.Screen
+        name="journal"
+        options={{
+          title: 'Journal',
+          headerTitle: 'Health journal',
+          href: null,
+          headerLeft: () => <BackToToday />,
+        }}
+      />
     </Tabs>
   )
 }
 
 const styles = StyleSheet.create({
+  backBtn: { paddingHorizontal: 8 },
   tabLabel: {
     fontSize: 11,
     fontWeight: '600',
