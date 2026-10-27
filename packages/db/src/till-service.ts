@@ -11,8 +11,36 @@ import {
 } from "./cashier-session"
 import { toPharmacyAuditInsert } from "./audit-contract"
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const db = supabaseAdmin as any
+type PgError = { message: string }
+
+/**
+ * `pharmacy_cashier_sessions` and `pharmacy_till_record_cash` are not in the
+ * generated `Database` type. This describes only the calls this module makes;
+ * the row shape is supplied at each call site, so the cast stays narrower than
+ * `any`.
+ */
+type PgQuery<T> = {
+  select: (columns: string) => PgQuery<T>
+  eq: (column: string, value: unknown) => PgQuery<T>
+  in: (column: string, values: unknown[]) => PgQuery<T>
+  order: (column: string, options: { ascending: boolean }) => PgQuery<T>
+  limit: (count: number) => PgQuery<T>
+  insert: (values: Record<string, unknown>) => PgQuery<T>
+  update: (values: Record<string, unknown>) => PgQuery<T>
+  single: () => PromiseLike<{ data: T; error: PgError | null }>
+  maybeSingle: () => PromiseLike<{ data: T | null; error: PgError | null }>
+  then: <R>(onfulfilled: (value: { data: T | null; error: PgError | null }) => R) => Promise<R>
+}
+
+type TillDb = {
+  from: <T>(table: string) => PgQuery<T>
+  rpc: (
+    fn: string,
+    args: Record<string, unknown>,
+  ) => PromiseLike<{ data: unknown; error: PgError | null }>
+}
+
+const db = supabaseAdmin as unknown as TillDb
 
 export type TillSessionRow = {
   id: string
@@ -113,7 +141,7 @@ export async function openTill(params: {
   }
 
   const { data, error } = await db
-    .from("pharmacy_cashier_sessions")
+    .from<TillSessionRow>("pharmacy_cashier_sessions")
     .insert({
       tenant_id: params.tenantId,
       cashier_id: params.cashierId,
@@ -299,7 +327,7 @@ export async function closeTill(params: {
   }
 
   const { data, error } = await db
-    .from("pharmacy_cashier_sessions")
+    .from<TillSessionRow>("pharmacy_cashier_sessions")
     .update({
       status: "closed",
       closed_at: new Date().toISOString(),
@@ -346,7 +374,7 @@ async function getSessionForCashier(params: {
   allowOtherCashier?: boolean
 }): Promise<{ ok: true; session: TillSessionRow } | { ok: false; error: PharmacyDomainError }> {
   const { data } = await db
-    .from("pharmacy_cashier_sessions")
+    .from<TillSessionRow>("pharmacy_cashier_sessions")
     .select("*")
     .eq("id", params.sessionId)
     .eq("tenant_id", params.tenantId)

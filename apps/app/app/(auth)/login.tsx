@@ -58,7 +58,8 @@ export default function LoginScreen() {
     setError(null)
     try {
       await verifyLoginOtp(email.trim().toLowerCase(), otp)
-      router.replace('/(main)/home')
+      // The root gate picks the area for this account (clinical, pharmacy or personal).
+      router.replace('/')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Verification failed.')
     } finally {
@@ -157,6 +158,19 @@ export default function LoginScreen() {
             </View>
           </Card>
 
+          {step === 'credentials' ? (
+            <Pressable
+              onPress={() => router.push('/(auth)/signup' as never)}
+              style={styles.createBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Create an account"
+            >
+              <Text style={styles.createText}>
+                New to Synapse? <Text style={styles.createLink}>Create an account</Text>
+              </Text>
+            </Pressable>
+          ) : null}
+
           <Text style={styles.footer}>Synapse Health Technologies</Text>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -222,6 +236,16 @@ const styles = StyleSheet.create({
   backBtn: { marginTop: spacing.lg, alignItems: 'center' },
   backText: {
     ...typography.bodyMedium,
+    color: colors.primary,
+    fontFamily: 'DMSans_500Medium',
+  },
+  createBtn: { alignItems: 'center' },
+  createText: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    fontFamily: 'DMSans_400Regular',
+  },
+  createLink: {
     color: colors.primary,
     fontFamily: 'DMSans_500Medium',
   },

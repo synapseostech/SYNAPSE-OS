@@ -132,6 +132,15 @@ jobs:
       - name: Route and link integrity
         run: npm run test:routes
 
+      - name: Forward-looking security gates (RLS, EXECUTE grants, profiles columns, browser writes)
+        run: npm run test:security-gates
+
+      - name: Evidence drift guard
+        run: npm run test:evidence-drift
+
+      - name: Hardening regressions (import authz, telemedicine intake, insurance scoping, lab notify, POS patient scoping)
+        run: npm run test:hardening
+
       - name: Database ACL static inventory
         run: npm run test:db-acl
 

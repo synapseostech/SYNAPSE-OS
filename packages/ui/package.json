@@ -6,6 +6,9 @@
     ".": "./src/index.ts",
     "./*": "./src/*.tsx"
   },
+  "scripts": {
+    "lint": "eslint . --max-warnings 0"
+  },
   "dependencies": {
     "@synapse/config": "*",
     "class-variance-authority": "^0.7.0",

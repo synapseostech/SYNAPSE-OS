@@ -7,11 +7,17 @@ import {
   isPlausibleFacilityInviteToken,
 } from "./facility-invite-token"
 
+type FakeQuery = {
+  select: () => FakeQuery
+  eq: (column: string, value: unknown) => FakeQuery
+  maybeSingle: () => Promise<{ data: Record<string, unknown> | null; error: null }>
+}
+
 function fakeDb(rows: Array<Record<string, unknown>>) {
   return {
     from: () => {
       const filters: Array<[string, unknown]> = []
-      const q: any = {
+      const q: FakeQuery = {
         select: () => q,
         eq: (c: string, v: unknown) => (filters.push([c, v]), q),
         maybeSingle: async () => ({ data: rows.find((r) => filters.every(([c, v]) => r[c] === v)) ?? null, error: null }),

@@ -17,7 +17,6 @@ import {
   writeupCompleteness,
 } from "./clinical-writeup"
 import { evaluateEncounterCloseGate } from "./encounter-close-gate"
-import { LabWorkflow } from "./lab-workflow"
 import {
   dispensePrescription,
   verifyPrescription,

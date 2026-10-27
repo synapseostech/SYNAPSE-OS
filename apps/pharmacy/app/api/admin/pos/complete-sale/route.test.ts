@@ -57,6 +57,18 @@ vi.mock("@/lib/supabase/admin", () => ({
           }),
         }
       }
+      if (table === "patients") {
+        const filters: Record<string, unknown> = {}
+        const q: any = {
+          select: () => q,
+          eq: (k: string, v: unknown) => ((filters[k] = v), q),
+          maybeSingle: async () => ({
+            data: filters.id === "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa" && filters.tenant_id === "tenant-1" ? { id: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa" } : null,
+            error: null,
+          }),
+        }
+        return q
+      }
       if (table === "pharmacy_customers") {
         const filters: Record<string, unknown> = {}
         const q: any = {
@@ -367,5 +379,36 @@ describe("POST /api/admin/pos/complete-sale", () => {
     expect(res.status).toBe(200)
     const credit = rpc.mock.calls.find((c) => c[0] === "post_pharmacy_credit_entry")
     expect(credit?.[1]).toMatchObject({ p_idempotency_key: "pos-sale:s2", p_type: "credit", p_amount: 3000 })
+  })
+
+  describe("patient reference (cross-tenant)", () => {
+    it("rejects a patientId that does not belong to the caller's tenant", async () => {
+      const res = await POST(
+        makeRequest({
+          items: [{ productId: "p1", quantity: 1, unitPrice: 1000 }],
+          paymentMethod: "cash",
+          patientId: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+        }),
+      )
+      expect(res.status).toBe(404)
+      expect((await res.json()).code).toBe("PATIENT_NOT_FOUND")
+      expect(rpc).not.toHaveBeenCalled()
+    })
+
+    it("passes an owned patientId through to the sale RPC", async () => {
+      rpc.mockResolvedValue({ data: { sale_id: "s3", receipt_number: "R-3" }, error: null })
+      const res = await POST(
+        makeRequest({
+          items: [{ productId: "p1", quantity: 1, unitPrice: 1000 }],
+          paymentMethod: "cash",
+          patientId: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+        }),
+      )
+      expect(res.status).toBe(200)
+      expect(rpc).toHaveBeenCalledWith(
+        "complete_pharmacy_sale",
+        expect.objectContaining({ p_patient_id: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa" }),
+      )
+    })
   })
 })

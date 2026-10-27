@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { resolvePosShortcut } from "./keyboard"
+import { fieldOwnsKeystroke, resolvePosShortcut } from "./keyboard"
 
 function key(
   key: string,
@@ -44,5 +44,20 @@ describe("resolvePosShortcut (Tally parity)", () => {
 
   it("ignores unrelated keys", () => {
     expect(resolvePosShortcut(key("x"))).toBeNull()
+  })
+})
+
+describe("fieldOwnsKeystroke", () => {
+  it("leaves character and command bindings to a focused field", () => {
+    expect(fieldOwnsKeystroke({ key: "a" })).toBe(true)
+    expect(fieldOwnsKeystroke({ key: "Enter" })).toBe(true)
+    expect(fieldOwnsKeystroke({ key: "Backspace" })).toBe(true)
+  })
+
+  it("keeps function keys and Escape live while typing", () => {
+    expect(fieldOwnsKeystroke({ key: "F5" })).toBe(false)
+    expect(fieldOwnsKeystroke({ key: "F8" })).toBe(false)
+    expect(fieldOwnsKeystroke({ key: "F10" })).toBe(false)
+    expect(fieldOwnsKeystroke({ key: "Escape" })).toBe(false)
   })
 })

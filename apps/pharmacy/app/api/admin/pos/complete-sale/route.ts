@@ -65,6 +65,18 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // A client-supplied patient id is a foreign key written under the service
+  // role, so it must be proven to belong to this tenant before the sale
+  // references it. Reported as not-found so other tenants' ids cannot be probed.
+  const patientId =
+    typeof body.patientId === "string" && body.patientId.length > 0 ? body.patientId : null
+  if (patientId && !(await tenantOwnsRecord("patients", tenantId, patientId))) {
+    return NextResponse.json(
+      { error: "Patient not found", code: "PATIENT_NOT_FOUND" },
+      { status: 404 },
+    )
+  }
+
   const itemsIn = Array.isArray(body.items) ? (body.items as SaleLineInput[]) : []
   if (itemsIn.length === 0) {
     return NextResponse.json({ error: "Cart is empty" }, { status: 400 })
@@ -214,7 +226,7 @@ export async function POST(request: NextRequest) {
     p_payment_ref: paymentRef,
     p_discount_total: 0,
     p_tax_amount: taxAmount,
-    p_patient_id: body.patientId || null,
+    p_patient_id: patientId,
     p_confirmed_by: session.userId,
     // Always named: an older 11-argument overload still exists, so omitting it is ambiguous.
     p_idempotency_key: idempotencyKey ?? null,

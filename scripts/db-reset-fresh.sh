@@ -30,7 +30,17 @@ GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
 GRANT ALL ON SCHEMA public TO postgres, service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;
+-- Do NOT grant FUNCTIONS to anon here: the canonical snapshot revokes PUBLIC and
+-- grants specific roles (authenticated/service_role) on each function, and an anon
+-- default-privilege entry would silently survive the snapshot's REVOKE ... FROM
+-- PUBLIC, leaving anon able to EXECUTE every function the snapshot creates —
+-- including service_role-only RPCs such as adjust_pharmacy_batch_stock. Functions
+-- that must be anon-callable carry an explicit GRANT ... TO "anon" in the snapshot.
+--
+-- REVOKE first: ALTER DEFAULT PRIVILEGES ... GRANT is additive, so on a reused
+-- volume a previous (pre-fix) `anon` default entry persists unless it is revoked.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM anon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO postgres, authenticated, service_role;
 CREATE EXTENSION IF NOT EXISTS "pg_trgm" WITH SCHEMA public;
 CREATE EXTENSION IF NOT EXISTS "vector" WITH SCHEMA public;
 CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA extensions;
@@ -41,6 +51,12 @@ echo "Applying canonical public schema from $SCHEMA_FILE"
 psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 -q -f "$SCHEMA_FILE"
 
 psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 <<'SQL'
+-- The canonical snapshot is a pg_dump of production, which itself carries
+-- `ALTER DEFAULT PRIVILEGES ... GRANT ALL ON FUNCTIONS TO anon`
+-- (canonical_public_schema.sql:26325). Apply it here: re-revoke anon so the
+-- post-snapshot migration chain does not inherit the production default.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM anon;
+
 DO $$
 DECLARE
   required text[] := ARRAY[

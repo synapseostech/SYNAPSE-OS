@@ -2,9 +2,25 @@ import { describe, it, expect } from 'vitest'
 import { provisionFacility, resumeFacilityProvision } from './facility-provision'
 import { hashFacilityInviteToken } from './facility-invite-token'
 
+type Row = Record<string, unknown>
+type FakeResult = { data: unknown; error: { message: string } | null }
+type FakeQuery = {
+  select: () => FakeQuery
+  eq: (column: string, value: unknown) => FakeQuery
+  in: (column: string, values: unknown[]) => FakeQuery
+  order: () => FakeQuery
+  limit: (count: number) => FakeQuery
+  maybeSingle: () => FakeQuery
+  single: () => FakeQuery
+  insert: (values: unknown) => FakeQuery
+  update: (values: unknown) => FakeQuery
+  upsert: (values: unknown, options?: { onConflict?: string }) => FakeQuery
+  then: (resolve: (value: FakeResult) => void) => Promise<void>
+}
+
 // In-memory PostgREST adapter: exercises the real orchestration and persisted effects.
 function database() {
-  const tables: Record<string, any[]> = {
+  const tables: Record<string, Row[]> = {
     subscription_plans: [
       { id: 'os-basic', slug: 'synapse_os_basic_annual', facility_type: 'hospital', is_active: true },
       { id: 'os-lab', slug: 'synapse_os_lab_addon_annual', facility_type: 'hospital', is_active: true },
@@ -22,27 +38,28 @@ function database() {
     failAt(table: string) { failure = table },
     from(table: string) {
       const rows = tables[table] ??= []
-      const filters: Array<(r: any) => boolean> = []
-      let mode = 'select', payload: any, conflict = '', single = false, max = Infinity
-      const q: any = {
+      const filters: Array<(row: Row) => boolean> = []
+      let mode = 'select', payload: unknown, conflict = '', single = false, max = Infinity
+      const q: FakeQuery = {
         select() { return q }, eq(k: string, v: unknown) { filters.push(r => r[k] === v); return q },
         in(k: string, v: unknown[]) { filters.push(r => v.includes(r[k])); return q },
         order() { return q }, limit(n: number) { max = n; return q },
         maybeSingle() { single = true; return q }, single() { single = true; return q },
-        insert(v: any) { mode = 'insert'; payload = v; return q },
-        update(v: any) { mode = 'update'; payload = v; return q },
-        upsert(v: any, opts: any = {}) { mode = 'upsert'; payload = v; conflict = opts.onConflict ?? 'id'; return q },
-        then(resolve: (v: any) => void) {
+        insert(v: unknown) { mode = 'insert'; payload = v; return q },
+        update(v: unknown) { mode = 'update'; payload = v; return q },
+        upsert(v: unknown, opts: { onConflict?: string } = {}) { mode = 'upsert'; payload = v; conflict = opts.onConflict ?? 'id'; return q },
+        then(resolve: (value: FakeResult) => void) {
           if (failure === table && mode !== 'select') return Promise.resolve({ data: null, error: { message: 'Synthetic injected failure' } }).then(resolve)
           let result = rows.filter(r => filters.every(f => f(r)))
           if (mode === 'insert' || mode === 'upsert') {
-            result = (Array.isArray(payload) ? payload : [payload]).map(v => {
+            const batch = (Array.isArray(payload) ? payload : [payload]) as Row[]
+            result = batch.map(v => {
               const existing = mode === 'upsert' && rows.find(r => conflict.split(',').every(k => r[k] === v[k]))
               if (existing) return Object.assign(existing, v)
               const row = { id: crypto.randomUUID(), created_at: new Date().toISOString(), ...v }
               rows.push(row); return row
             })
-          } else if (mode === 'update') result.forEach(r => Object.assign(r, payload))
+          } else if (mode === 'update') result.forEach(r => Object.assign(r, payload as Row))
           result = result.slice(0, max)
           return Promise.resolve({ data: single ? result[0] ?? null : result, error: null }).then(resolve)
         },
@@ -95,7 +112,7 @@ describe('facility orchestration with persisted effects', () => {
     const db = database()
     const result = await provisionFacility(db, input('laboratory'))
     expect(result.ok).toBe(true)
-    expect(db.tables.hospitals[0].settings.tenant_id).toBe(result.tenantId)
+    expect((db.tables.hospitals[0].settings as { tenant_id?: unknown }).tenant_id).toBe(result.tenantId)
     expect(db.tables.hospitals[0].facility_kind).toBe('laboratory')
     expect(db.tables.hospital_modules.map(r => r.module_key).sort()).toEqual(['billing', 'core', 'lab', 'registration', 'reports'])
     expect(db.tables.profiles).toHaveLength(1)
@@ -147,10 +164,10 @@ describe('facility orchestration with persisted effects', () => {
   })
   it('pharmacy provisioning never falls back to a legacy plan when the annual plan is missing', async () => {
     const db = database()
-    db.tables.subscription_plans = db.tables.subscription_plans.filter((p: any) => p.slug !== 'synapse_pharmacy_annual')
+    db.tables.subscription_plans = db.tables.subscription_plans.filter((p: Row) => p.slug !== 'synapse_pharmacy_annual')
     const result = await provisionFacility(db, input('pharmacy'))
     expect(result.ok).toBe(false)
     expect(db.tables.tenant_subscriptions ?? []).toHaveLength(0)
-    expect(result.steps.find((s: any) => s.step === 'subscription')?.errorCode).toBe('PHARMACY_PLAN_MISSING')
+    expect(result.steps.find(s => s.step === 'subscription')?.errorCode).toBe('PHARMACY_PLAN_MISSING')
   })
 })

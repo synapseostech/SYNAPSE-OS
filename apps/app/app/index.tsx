@@ -11,6 +11,7 @@ export default function Index() {
   const [pharmTarget, setPharmTarget] = useState<string | null>(null)
 
   const isPharmacy = user?.dashboardKind === 'pharmacy'
+  const isPersonal = user?.dashboardKind === 'patient'
   const needsPasswordChange = Boolean(user?.mustChangePassword)
 
   useEffect(() => {
@@ -42,6 +43,8 @@ export default function Index() {
 
   if (!user) return <Redirect href="/(auth)/login" />
   if (needsPasswordChange) return <Redirect href="/change-password" />
+
+  if (isPersonal) return <Redirect href="/(personal)/today" />
 
   if (isPharmacy) {
     if (!pharmTarget) {

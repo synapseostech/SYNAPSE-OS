@@ -26,6 +26,9 @@ export * from "./prescription-bridge";
 export * from "./identity-crosswalk";
 export * from "./edge-architecture";
 export * from "./tally-migration";
+export * from "./tally-xml-rows";
+export * from "./tally-map";
+export * from "./tally-normalise";
 export * from "./facility-lifecycle";
 export * from "./identifiers";
 export { logAudit, logPHIAccess } from './audit'

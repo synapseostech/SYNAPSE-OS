@@ -43,6 +43,12 @@ export const prescriptionCreateSchema = z.object({
   care_plan_id: z.string().uuid().optional(),
   person_id: z.string().uuid().optional(),
   pharmacy_tenant_id: z.string().uuid().optional(),
+  /**
+   * Present only when a prescriber is deliberately proceeding past a clinical
+   * safety block. A short reason is rejected: an override that says "ok" is not
+   * a record of a clinical decision.
+   */
+  safety_override_reason: z.string().trim().min(8).max(500).optional(),
 })
 
 export const hospitalDispenseSchema = z.object({
@@ -50,6 +56,8 @@ export const hospitalDispenseSchema = z.object({
   product_id: z.string().uuid(),
   pharmacy_tenant_id: z.string().uuid(),
   payment_method: z.string().min(1).max(40).default('cash'),
+  /** See `safety_override_reason` on `prescriptionCreateSchema`. */
+  safety_override_reason: z.string().trim().min(8).max(500).optional(),
 })
 
 export const admissionCreateSchema = z.object({

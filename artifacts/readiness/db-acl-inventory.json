@@ -1,10 +1,93 @@
 {
-  "generated_at": "2026-09-29T08:47:10.795Z",
-  "security_definer_count": 41,
+  "generated_at": "2026-10-26T14:18:30.737Z",
+  "security_definer_count": 68,
   "public_or_anon_execute_grants": [],
   "unexpected_public_execute": [],
+  "possible_implicit_public_exec": [
+    {
+      "fn": "public.custom_access_token_hook",
+      "file": "20260604163152_custom_jwt_tenant_hook.sql"
+    },
+    {
+      "fn": "fn_sync_network_inventory",
+      "file": "20260611141915_pharmacy_network_inventory_trigger.sql"
+    },
+    {
+      "fn": "has_feature",
+      "file": "20260612230655_subscriptions_and_feature_gates.sql"
+    },
+    {
+      "fn": "has_capability",
+      "file": "20260613072631_has_capability_function.sql"
+    },
+    {
+      "fn": "billing_grace_days",
+      "file": "20260620223902_subscription_billing_flutterwave.sql"
+    },
+    {
+      "fn": "has_feature",
+      "file": "20260620223902_subscription_billing_flutterwave.sql"
+    },
+    {
+      "fn": "advance_subscription_state",
+      "file": "20260620223902_subscription_billing_flutterwave.sql"
+    },
+    {
+      "fn": "advance_all_subscriptions",
+      "file": "20260620223902_subscription_billing_flutterwave.sql"
+    },
+    {
+      "fn": "activate_subscription_payment",
+      "file": "20260620223902_subscription_billing_flutterwave.sql"
+    },
+    {
+      "fn": "public.report_unbatched_positive_stock",
+      "file": "20260810093356_pharmacy_inventory_authority.sql"
+    },
+    {
+      "fn": "public.receive_pharmacy_stock",
+      "file": "20260810093356_pharmacy_inventory_authority.sql"
+    },
+    {
+      "fn": "public.recompute_pharmacy_product_quantity",
+      "file": "20260810093436_pharmacy_stock_authority_and_perms.sql"
+    },
+    {
+      "fn": "public.adjust_pharmacy_stock",
+      "file": "20260810093436_pharmacy_stock_authority_and_perms.sql"
+    },
+    {
+      "fn": "public.current_staff_site_ids",
+      "file": "20260817120000_synapse_network_identity_foundations.sql"
+    },
+    {
+      "fn": "public.current_staff_site_ids",
+      "file": "20260817165015_synapse_network_identity_foundations_rls.sql"
+    },
+    {
+      "fn": "public.ship_pharmacy_stock_transfer",
+      "file": "20260823105821_pharmacy_stock_transfer_rpcs.sql"
+    },
+    {
+      "fn": "public.receive_pharmacy_stock_transfer",
+      "file": "20260823105844_pharmacy_stock_transfer_receive_rpc.sql"
+    },
+    {
+      "fn": "public.is_platform_operator",
+      "file": "20260828174832_platform_control_plane_core.sql"
+    },
+    {
+      "fn": "public.guard_signed_encounter_update",
+      "file": "20260830115410_encounter_amendments_and_guards.sql"
+    },
+    {
+      "fn": "public.receive_pharmacy_stock",
+      "file": "20261002120000_pharmacy_receive_stock_tenant_refs.sql"
+    }
+  ],
   "status": "PASS",
   "live_check": "SKIPPED_NO_DATABASE_ACL_URL",
+  "strict_live": false,
   "functions": [
     {
       "file": "20260410211144_dduka_dash_schema_v2.sql",
@@ -169,6 +252,114 @@
     {
       "file": "20260924120000_pharmacy_physical_stock_negative.sql",
       "fn": "public.complete_pharmacy_sale"
+    },
+    {
+      "file": "20261002120000_pharmacy_receive_stock_tenant_refs.sql",
+      "fn": "public.receive_pharmacy_stock"
+    },
+    {
+      "file": "20261002130000_pharmacy_sale_deny_negative_stock.sql",
+      "fn": "public.complete_pharmacy_sale"
+    },
+    {
+      "file": "20261002140000_pharmacy_atomic_credit_and_till.sql",
+      "fn": "public.post_pharmacy_credit_entry"
+    },
+    {
+      "file": "20261002140000_pharmacy_atomic_credit_and_till.sql",
+      "fn": "public.pharmacy_till_record_cash"
+    },
+    {
+      "file": "20261002160000_auth_rate_limit_buckets.sql",
+      "fn": "public.consume_auth_rate_limit"
+    },
+    {
+      "file": "20261002160000_auth_rate_limit_buckets.sql",
+      "fn": "public.auth_rate_limit_status"
+    },
+    {
+      "file": "20261002160000_auth_rate_limit_buckets.sql",
+      "fn": "public.reset_auth_rate_limit"
+    },
+    {
+      "file": "20261003160000_profiles_privileged_columns_guard.sql",
+      "fn": "public.profiles_guard_privileged_columns"
+    },
+    {
+      "file": "20261003160000_profiles_privileged_columns_guard.sql",
+      "fn": "public.handle_new_user"
+    },
+    {
+      "file": "20261003160000_profiles_privileged_columns_guard.sql",
+      "fn": "public.handle_new_user_profile"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.seed_pharmacy_accounting_accounts"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.post_pharmacy_accounting_journal"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.pharmacy_accounting_trial_balance"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.close_pharmacy_accounting_period"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.reject_pharmacy_accounting_mutation"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.post_pharmacy_purchase_to_ledger"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.post_pharmacy_credit_repayment_to_ledger"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.post_pharmacy_supplier_payment_to_ledger"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.post_pharmacy_sale_reversal_to_ledger"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.import_pharmacy_bank_statement"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.pharmacy_accounting_bank_match_candidates"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.match_pharmacy_bank_statement_line"
+    },
+    {
+      "file": "20261022160000_pharmacy_accounting_ledger.sql",
+      "fn": "public.post_pharmacy_credit_entry"
+    },
+    {
+      "file": "20261026120000_telemedicine_intake_tenant_ownership.sql",
+      "fn": "public.set_intake_case_tenant_from_owner"
+    },
+    {
+      "file": "20261026120000_telemedicine_intake_tenant_ownership.sql",
+      "fn": "public.set_intake_message_tenant_from_case"
+    },
+    {
+      "file": "20261026190000_pharmacy_period_close_integrity.sql",
+      "fn": "public.pharmacy_accounting_close_readiness"
+    },
+    {
+      "file": "20261026190000_pharmacy_period_close_integrity.sql",
+      "fn": "public.close_pharmacy_accounting_period"
     }
   ]
 }

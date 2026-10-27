@@ -4,11 +4,9 @@
  */
 
 import {
-  HOSPITAL_CANONICAL_SLUG,
   HOSPITAL_DEPARTMENTS,
   HOSPITAL_STAFF_ROLES,
   HOSPITAL_TEST_PATIENTS,
-  getHospitalSeed,
   seedHospital,
   type HospitalSeedSnapshot,
 } from "./hospital-seed"
@@ -128,8 +126,7 @@ function classificationToStatus(c: string): AcceptanceStatus {
   return "NOT_IMPLEMENTED"
 }
 
-export function buildDepartmentMatrix(snapshot?: HospitalSeedSnapshot): DepartmentAcceptanceRow[] {
-  const hospital = snapshot ?? getHospitalSeed(HOSPITAL_CANONICAL_SLUG)
+export function buildDepartmentMatrix(_snapshot?: HospitalSeedSnapshot): DepartmentAcceptanceRow[] {
   const staffByDept = new Map<string, number>()
   for (const s of HOSPITAL_STAFF_ROLES) {
     staffByDept.set(s.departmentCode, (staffByDept.get(s.departmentCode) ?? 0) + 1)

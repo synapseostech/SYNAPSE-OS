@@ -16,6 +16,9 @@
     "./company": "./src/company.ts",
     "./typography.css": "./typography.css"
   },
+  "scripts": {
+    "lint": "eslint . --max-warnings 0"
+  },
   "devDependencies": {
     "tailwindcss": "^3.4.0"
   }

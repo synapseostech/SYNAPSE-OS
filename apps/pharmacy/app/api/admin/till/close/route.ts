@@ -29,13 +29,9 @@ export async function POST(request: NextRequest) {
     closerId: auth.session.userId,
   })
   if (!result.ok) {
-    if (
-      result.error.code === "TILL_VARIANCE_REQUIRES_REASON" &&
-      !sessionHasCapability(auth.session, "shift.approve_variance") &&
-      varianceReason
-    ) {
-      // Cashiers may close with a reason; managers review later. No extra gate.
-    }
+    // A cashier may close with a variance reason; a supervisor reviews it later.
+    // That is a deliberate policy, not a missing check, so there is no extra gate
+    // here — the reason is required by closeTill and recorded with the session.
     return NextResponse.json(result.error, { status: httpStatusForPharmacyError(result.error.code) })
   }
   return NextResponse.json({ ok: true, session: result.session })

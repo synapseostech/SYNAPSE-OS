@@ -21,6 +21,27 @@ function isMissingRelation(error: { message?: string; code?: string } | null): b
   )
 }
 
+type PgError = { code?: string; message: string }
+
+/**
+ * `persons`, `person_identifiers`, `person_contacts` and
+ * `identity_match_candidates` are not in the generated `Database` type yet.
+ * These describe only the calls this module makes, so the cast stays narrower
+ * than `any` and each result carries the row shape it actually reads.
+ */
+type PgQuery<T> = {
+  insert: (values: unknown) => PgQuery<T>
+  select: (columns?: string) => PgQuery<T>
+  eq: (column: string, value: unknown) => PgQuery<T>
+  ilike: (column: string, value: string) => PgQuery<T>
+  limit: (count: number) => PgQuery<T>
+  single: () => PromiseLike<{ data: T; error: PgError | null }>
+  maybeSingle: () => PromiseLike<{ data: T | null; error: PgError | null }>
+  then: <R>(onfulfilled: (value: { data: T[] | null; error: PgError | null }) => R) => Promise<R>
+}
+
+type UntypedDb = { from: <T>(table: string) => PgQuery<T> }
+
 export type LinkedPerson = {
   id: string
   synapseId: string
@@ -53,10 +74,10 @@ export async function registerPersonForFacility(params: {
   })
   const names = splitPersonName(built.fullName)
   const synapseId = generateSynapseId(built.countryCode)
-  const db = supabaseAdmin as any
+  const db = supabaseAdmin as unknown as UntypedDb
 
   const { data: person, error } = await db
-    .from("persons")
+    .from<{ id: string; synapse_id: string; full_name: string }>("persons")
     .insert({
       synapse_id: synapseId,
       given_name: params.demographics.givenName ?? names.givenName,
@@ -133,9 +154,12 @@ export async function resolvePersonByIdentifier(params: {
   facilityId?: string | null
   organizationId?: string | null
 }): Promise<LinkedPerson | null> {
-  const db = supabaseAdmin as any
+  const db = supabaseAdmin as unknown as UntypedDb
   let q = db
-    .from("person_identifiers")
+    .from<{
+      person_id: string
+      persons: { id: string; synapse_id: string; full_name: string }
+    }>("person_identifiers")
     .select("person_id, persons!inner(id, synapse_id, full_name)")
     .ilike("identifier_value", params.value.trim())
     .eq("status", "active")
@@ -157,9 +181,9 @@ export async function resolvePersonByIdentifier(params: {
 }
 
 export async function publishTimelineEvent(event: TimelineEventInput): Promise<string | null> {
-  const db = supabaseAdmin as any
+  const db = supabaseAdmin as unknown as UntypedDb
   const { data, error } = await db
-    .from("patient_timeline_events")
+    .from<{ id: string }>("patient_timeline_events")
     .insert(toTimelineInsert(event))
     .select("id")
     .maybeSingle()
@@ -174,8 +198,8 @@ export async function publishTimelineEvent(event: TimelineEventInput): Promise<s
 export async function queueIdentityReview(left: MpiPerson, right: MpiPerson): Promise<void> {
   const match = scoreIdentityMatch(left, right)
   if (match.recommendation === "ignore" || match.recommendation === "distinct") return
-  const db = supabaseAdmin as any
-  const { error } = await db.from("identity_match_candidates").insert({
+  const db = supabaseAdmin as unknown as UntypedDb
+  const { error } = await db.from<{ id: string }>("identity_match_candidates").insert({
     person_id: left.id,
     candidate_person_id: right.id,
     confidence: match.confidence,

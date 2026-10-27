@@ -1,6 +1,7 @@
 export {
   CLINICAL_INTELLIGENCE_WAVE1_FLAG,
   isClinicalIntelligenceWave1Enabled,
+  isClinicalIntelligenceWave1EnabledForTenant,
   clinicalIntelligenceDisabledResponse,
 } from "./feature-flag"
 export { buildClinicalContext, summarizeContextForPrompt } from "./context-engine"

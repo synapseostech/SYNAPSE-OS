@@ -10,7 +10,10 @@ import type { DepartmentTask } from "./work-queue"
 
 export type DbClient = {
   from(table: string): {
-    upsert(row: Record<string, unknown> | Record<string, unknown>[], options?: { onConflict?: string }): PromiseLike<{ error: { message?: string } | null }>
+    upsert(
+      row: Record<string, unknown> | Record<string, unknown>[],
+      options?: { onConflict?: string; ignoreDuplicates?: boolean },
+    ): PromiseLike<{ error: { message?: string } | null }>
   }
 }
 
@@ -109,8 +112,16 @@ export async function persistDomainEventsBestEffort(
   if (events.length === 0) return { ok: true, inserted: 0 }
   try {
     const rows = events.map((event) => toDomainEventInsert(event))
+    // `ignoreDuplicates` is load-bearing, not an optimisation. `toDomainEventInsert`
+    // carries `status`, `retry_count`, `last_error` and `published_at`, which are
+    // delivery state owned by the relay — this function is only an emitter. A plain
+    // upsert would therefore let a re-emitted idempotency key reset an already
+    // published row back to `pending`, and the relay would deliver it again. With
+    // duplicates ignored, a replay is a no-op and the table's own defaults
+    // ('pending', 0, null, null) describe every newly inserted event.
     const { error } = await db.from("synapse_domain_events").upsert(rows, {
       onConflict: "idempotency_key",
+      ignoreDuplicates: true,
     })
     if (error) {
       // Idempotent replays may hit unique idempotency_key — treat as soft success for journey continuity.

@@ -5,7 +5,7 @@ import {
   adviseClinical,
   buildClinicalContext,
   clinicalIntelligenceDisabledResponse,
-  isClinicalIntelligenceWave1Enabled,
+  isClinicalIntelligenceWave1EnabledForTenant,
   recordClinicianOverride,
 } from "../../../../../lib/clinical-intelligence"
 import { checkRateLimit, rateLimiters } from "../../../../../lib/rate-limit"
@@ -15,16 +15,18 @@ export const dynamic = "force-dynamic"
 /**
  * Clinical Intelligence Wave 1 advise endpoint.
  * Feature-flagged OFF by default. Advisory only — never activates pathways or places orders.
+ * The gate is the shared helper: global env flag for staging, or the tenant's
+ * feature_flags row for a production allowlist.
  */
 export async function POST(req: NextRequest) {
-  if (!isClinicalIntelligenceWave1Enabled()) {
-    return NextResponse.json(clinicalIntelligenceDisabledResponse(), { status: 503 })
-  }
-
   const user = await getCurrentUser()
   if (!user) return NextResponse.json({ error: "Unauthorized", advisory: true }, { status: 401 })
   if (!user.tenantId) {
     return NextResponse.json({ error: "Tenant context required", advisory: true }, { status: 403 })
+  }
+
+  if (!(await isClinicalIntelligenceWave1EnabledForTenant(user.tenantId))) {
+    return NextResponse.json(clinicalIntelligenceDisabledResponse(), { status: 503 })
   }
 
   const ip = req.headers.get("x-forwarded-for") ?? "unknown"

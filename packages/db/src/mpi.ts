@@ -148,7 +148,7 @@ export function scoreIdentityMatch(left: MpiPerson, right: MpiPerson): IdentityM
   }
 }
 
-export function shouldAutoMerge(match: IdentityMatch): boolean {
+export function shouldAutoMerge(_match: IdentityMatch): boolean {
   return false
 }
 

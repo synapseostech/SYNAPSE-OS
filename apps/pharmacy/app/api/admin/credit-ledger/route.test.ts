@@ -40,14 +40,16 @@ beforeEach(() => {
 })
 
 describe("credit ledger repayments (atomic RPC)", () => {
+  // Repayments require an Idempotency-Key (see the contract test below); the
+  // portal always sends one, so these pass it too.
   it("accepts a repayment up to the outstanding balance", async () => {
-    const r = await post({ customerId: "c-1", type: "repayment", amount: 30000 })
+    const r = await post({ customerId: "c-1", type: "repayment", amount: 30000 }, { "Idempotency-Key": "rep-ok" })
     expect(r.status).toBe(201)
     expect(m.rows[0].balance_after).toBe(0)
     expect(m.calls[0].args.p_tenant_id).toBe("tenant-1")
   })
   it("rejects an overpayment instead of silently clamping the balance to 0", async () => {
-    const r = await post({ customerId: "c-1", type: "repayment", amount: 30001 })
+    const r = await post({ customerId: "c-1", type: "repayment", amount: 30001 }, { "Idempotency-Key": "rep-over" })
     expect(r.status).toBe(400)
     expect(r.body.code).toBe("OVERPAYMENT")
     expect(r.body.balance).toBe(30000)
@@ -55,9 +57,23 @@ describe("credit ledger repayments (atomic RPC)", () => {
   })
   it("rejects a repayment when nothing is owed", async () => {
     m.balance = 0
-    const r = await post({ customerId: "c-1", type: "repayment", amount: 1 })
+    const r = await post({ customerId: "c-1", type: "repayment", amount: 1 }, { "Idempotency-Key": "rep-zero" })
     expect(r.status).toBe(400)
+    expect(r.body.code).toBe("OVERPAYMENT")
     expect(m.rows).toEqual([])
+  })
+  it("refuses a repayment with no idempotency key before touching the ledger", async () => {
+    const r = await post({ customerId: "c-1", type: "repayment", amount: 100 })
+    expect(r.status).toBe(400)
+    expect(r.body.error).toMatch(/idempotency key is required/i)
+    expect(m.calls).toEqual([])
+    expect(m.rows).toEqual([])
+    expect(m.balance).toBe(30000)
+  })
+  it("accepts an idempotency key supplied in the body as well as the header", async () => {
+    const r = await post({ customerId: "c-1", type: "repayment", amount: 100, idempotencyKey: "rep-body" })
+    expect(r.status).toBe(201)
+    expect(m.calls[0].args.p_idempotency_key).toBe("rep-body")
   })
   it("credit entries still add to the balance", async () => {
     const r = await post({ customerId: "c-1", type: "credit", amount: 500 })

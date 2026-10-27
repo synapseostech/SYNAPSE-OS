@@ -3715,6 +3715,57 @@ export type Database = {
           },
         ]
       }
+      feature_flags: {
+        Row: {
+          created_at: string
+          enabled_at: string | null
+          enabled_by: string | null
+          feature_key: string
+          id: string
+          is_enabled: boolean
+          notes: string | null
+          tenant_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          enabled_at?: string | null
+          enabled_by?: string | null
+          feature_key: string
+          id?: string
+          is_enabled?: boolean
+          notes?: string | null
+          tenant_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          enabled_at?: string | null
+          enabled_by?: string | null
+          feature_key?: string
+          id?: string
+          is_enabled?: boolean
+          notes?: string | null
+          tenant_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "feature_flags_enabled_by_fkey"
+            columns: ["enabled_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "feature_flags_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       gas_cylinders: {
         Row: {
           created_at: string | null
@@ -7940,6 +7991,57 @@ export type Database = {
           },
         ]
       }
+      pharmacy_accounting_periods: {
+        Row: {
+          close_snapshot: Json
+          closed_at: string | null
+          closed_by: string | null
+          created_at: string
+          id: string
+          period_end: string
+          period_start: string
+          status: string
+          tenant_id: string
+        }
+        Insert: {
+          close_snapshot?: Json
+          closed_at?: string | null
+          closed_by?: string | null
+          created_at?: string
+          id?: string
+          period_end: string
+          period_start: string
+          status?: string
+          tenant_id: string
+        }
+        Update: {
+          close_snapshot?: Json
+          closed_at?: string | null
+          closed_by?: string | null
+          created_at?: string
+          id?: string
+          period_end?: string
+          period_start?: string
+          status?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pharmacy_accounting_periods_closed_by_fkey"
+            columns: ["closed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pharmacy_accounting_periods_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       pharmacy_audit_logs: {
         Row: {
           action: string
@@ -11425,6 +11527,95 @@ export type Database = {
           travel_location?: string | null
         }
         Relationships: []
+      }
+      synapse_domain_events: {
+        Row: {
+          actor_id: string | null
+          causation_id: string | null
+          correlation_id: string
+          created_at: string
+          encounter_id: string | null
+          event_id: string
+          event_type: string
+          facility_id: string | null
+          idempotency_key: string
+          is_synthetic: boolean
+          last_error: string | null
+          locked_until: string | null
+          next_attempt_at: string | null
+          occurred_at: string
+          patient_id: string | null
+          payload: Json
+          person_id: string | null
+          published_at: string | null
+          retry_count: number
+          simulation_run_id: string | null
+          source: string
+          status: string
+          tenant_id: string
+          version: string
+        }
+        Insert: {
+          actor_id?: string | null
+          causation_id?: string | null
+          correlation_id: string
+          created_at?: string
+          encounter_id?: string | null
+          event_id?: string
+          event_type: string
+          facility_id?: string | null
+          idempotency_key: string
+          is_synthetic?: boolean
+          last_error?: string | null
+          locked_until?: string | null
+          next_attempt_at?: string | null
+          occurred_at?: string
+          patient_id?: string | null
+          payload?: Json
+          person_id?: string | null
+          published_at?: string | null
+          retry_count?: number
+          simulation_run_id?: string | null
+          source: string
+          status?: string
+          tenant_id: string
+          version?: string
+        }
+        Update: {
+          actor_id?: string | null
+          causation_id?: string | null
+          correlation_id?: string
+          created_at?: string
+          encounter_id?: string | null
+          event_id?: string
+          event_type?: string
+          facility_id?: string | null
+          idempotency_key?: string
+          is_synthetic?: boolean
+          last_error?: string | null
+          locked_until?: string | null
+          next_attempt_at?: string | null
+          occurred_at?: string
+          patient_id?: string | null
+          payload?: Json
+          person_id?: string | null
+          published_at?: string | null
+          retry_count?: number
+          simulation_run_id?: string | null
+          source?: string
+          status?: string
+          tenant_id?: string
+          version?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "synapse_domain_events_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       synapse_sessions: {
         Row: {

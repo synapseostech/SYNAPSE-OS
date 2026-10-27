@@ -8,7 +8,6 @@ import {
   hashPayload,
   resolveSyncConflict,
   type SyncCommand,
-  type SyncConflict,
   type SyncOutboxStatus,
 } from "./sync-contract"
 import {

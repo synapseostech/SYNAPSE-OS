@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '@synapse/db/admin'
 import { resolveEffectiveSubscription, type EffectiveSubscription, type ManualGrantInput } from './entitlement'
 import { initFlutterwavePayment, verifyFlutterwaveTransaction } from './flutterwave'
-import { evaluateEntitlement, type EntitlementResult } from './entitlement'
+import { type EntitlementResult } from './entitlement'
 
 // ── Kampala time + billing-cycle helpers ─────────────────────────────────────
 // Kampala is UTC+3 year-round (no DST), so a fixed offset is safe.

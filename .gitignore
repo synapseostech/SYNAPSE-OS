@@ -31,6 +31,7 @@ supabase/.temp/
 !/artifacts/readiness/web-route-manifest.json
 !/artifacts/readiness/route-integrity.json
 !/artifacts/readiness/db-acl-inventory.json
+!/artifacts/readiness/evidence.json
 !/artifacts/readiness/PRODUCTION_DB_RECONCILIATION.json
 !/artifacts/readiness/CORE_OS_GREEN.json
 !/artifacts/readiness/FINAL_GREEN_RELEASE.json
@@ -52,4 +53,16 @@ scripts/_tmp_*
 
 # Foglamp scan lock (editToken is a secret)
 .foglamp/
+
+# Personal shell configuration and local tool state — never part of the product
+.bash_profile
+.bashrc
+.zprofile
+.zshrc
+.profile
+.ripgreprc
+.gitconfig
+.idea
+.freebuff/
+supabase/.branches/
 

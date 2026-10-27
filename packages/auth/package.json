@@ -21,6 +21,9 @@
     "./tenant-guard": "./src/tenant-guard.server.ts",
     "./mobile-push": "./src/mobile-push.ts"
   },
+  "scripts": {
+    "lint": "eslint . --max-warnings 0"
+  },
   "dependencies": {
     "@synapse/config": "*",
     "@synapse/db": "*",

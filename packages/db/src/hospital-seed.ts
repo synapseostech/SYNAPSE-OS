@@ -337,7 +337,7 @@ export function seedHospital(options: SeedHospitalOptions): HospitalSeedSnapshot
   const tenantId = uuidFromRng(rng)
   const hospitalId = uuidFromRng(rng)
   const organizationId = uuidFromRng(rng)
-  const simulationRunId = uuidFromRng(rng)
+  const _simulationRunId = uuidFromRng(rng)
   const now = new Date().toISOString()
 
   const departments: SeededDepartment[] = HOSPITAL_DEPARTMENTS.map((d) => ({

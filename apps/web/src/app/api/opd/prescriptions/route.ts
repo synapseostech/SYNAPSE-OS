@@ -7,6 +7,7 @@ import { publishTimelineEvent } from '@synapse/db/identity-persist'
 import { persistWorkQueueArtifactsBestEffort } from '@synapse/db/work-queue-persist'
 import { isContextError, requireHospitalCapability, gateHospitalModule, logHospitalAudit } from '@/lib/hospital-shared'
 import { requireHospitalStaffContext, prescriptionCreateSchema } from '@/lib/hospital-dept'
+import { runClinicalSafetyCheck } from '@/lib/clinical-safety'
 
 export const dynamic = 'force-dynamic'
 
@@ -69,6 +70,7 @@ export async function POST(req: NextRequest) {
     care_plan_id,
     person_id,
     pharmacy_tenant_id,
+    safety_override_reason,
   } = parsed.data
 
   if (pharmacy_tenant_id && pharmacy_tenant_id !== ctx.tenantId) {
@@ -88,6 +90,36 @@ export async function POST(req: NextRequest) {
   if (!encounter) return NextResponse.json({ error: 'Encounter not found' }, { status: 404 })
   if (encounter.patient_id !== patient_id) {
     return NextResponse.json({ error: 'Patient does not match encounter' }, { status: 400 })
+  }
+
+  // Clinical safety runs before anything is written. A block means no
+  // prescription row, no pharmacy task and no timeline event are created.
+  const safety = await runClinicalSafetyCheck({
+    db,
+    tenantId: ctx.tenantId,
+    hospitalId: ctx.hospitalId,
+    patientId: patient_id,
+    encounterId: encounter_id,
+    actorId: ctx.userId,
+    stage: 'prescribe',
+    newDrugs: [{ label: medication_display, aliases: [], role: 'new' }],
+    overrideReason: safety_override_reason ?? null,
+  })
+
+  if (safety.decision.decision === 'block') {
+    const overridden = typeof safety_override_reason === 'string' && safety_override_reason.trim().length > 0
+    if (!overridden) {
+      return NextResponse.json(
+        {
+          error: 'clinical_safety_block',
+          message:
+            'This prescription was stopped by a clinical safety check. Supply safety_override_reason to proceed deliberately.',
+          safety: safety.payload,
+          safetyAuditRecordId: safety.auditRecordId ?? null,
+        },
+        { status: 409 },
+      )
+    }
   }
 
   let journeyWarnings: string[] = []
@@ -162,12 +194,18 @@ export async function POST(req: NextRequest) {
     pharmacyTaskId?: string
     correlationId: string
     journeyWarnings?: string[]
+    safety: typeof safety.payload
+    safetyAuditRecordId?: string
+    safetyAuditError?: string
   } = {
     prescriptionId,
     correlationId,
+    safety: safety.payload,
   }
   if (pharmacyTaskId) response.pharmacyTaskId = pharmacyTaskId
   if (journeyWarnings.length) response.journeyWarnings = journeyWarnings
+  if (safety.auditRecordId) response.safetyAuditRecordId = safety.auditRecordId
+  if (safety.auditError) response.safetyAuditError = safety.auditError
 
   return NextResponse.json(response, { status: 201 })
 }

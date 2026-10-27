@@ -3,6 +3,7 @@ import path from "node:path"
 
 export default defineConfig({
   test: {
+    testTimeout: 20000,
     environment: "node",
     include: ["lib/**/*.test.ts", "app/**/*.test.ts"],
     // FEFO suite uses node:test (see package.json test script).

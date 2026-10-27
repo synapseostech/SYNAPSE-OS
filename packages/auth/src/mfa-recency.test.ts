@@ -5,9 +5,20 @@ vi.mock('@synapse/db/admin', () => ({ supabaseAdmin: { from: mocks.from } }))
 vi.mock('./totp', () => ({ matchingTotpTimeStep: mocks.matching }))
 import { hasRecentVerifiedMfa, verifyStepUpMfa } from './mfa-recency'
 
-function query(result: unknown) {
-  const q: any = { then: (resolve: any) => Promise.resolve(result).then(resolve) }
-  for (const method of ['select', 'eq', 'is', 'gt', 'update', 'insert']) q[method] = vi.fn(() => q)
+type FakeQuery = {
+  then: (resolve: (value: unknown) => unknown) => Promise<unknown>
+  select: () => FakeQuery
+  eq: () => FakeQuery
+  is: () => FakeQuery
+  gt: () => FakeQuery
+  update: () => FakeQuery
+  insert: () => FakeQuery
+  maybeSingle: () => Promise<unknown>
+}
+
+function query(result: unknown): FakeQuery {
+  const q = { then: (resolve: (value: unknown) => unknown) => Promise.resolve(result).then(resolve) } as FakeQuery
+  for (const method of ['select', 'eq', 'is', 'gt', 'update', 'insert'] as const) q[method] = vi.fn(() => q)
   q.maybeSingle = vi.fn(async () => result)
   return q
 }

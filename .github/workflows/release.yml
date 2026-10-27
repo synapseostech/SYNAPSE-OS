@@ -48,17 +48,41 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const sha = process.env.RELEASE_SHA;
-            if (!/^[0-9a-f]{40}$/i.test(sha)) core.setFailed(`Invalid release SHA: ${sha}`);
-            if (process.env.SOURCE_REPOSITORY !== `${owner}/${repo}`) core.setFailed("Release source repository is not this repository");
+            if (!/^[0-9a-f]{40}$/i.test(String(sha || ""))) throw new Error(`Invalid release SHA: ${sha}`);
+            if (process.env.SOURCE_REPOSITORY !== `${owner}/${repo}`) throw new Error("Release source repository is not this repository");
             if (context.eventName === "workflow_run" && (process.env.SOURCE_BRANCH !== "main" || process.env.SOURCE_EVENT !== "push")) {
-              core.setFailed("Automatic release requires a successful CI push on main");
+              throw new Error("Automatic release requires a successful CI push on main");
             }
-            const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
-              owner, repo, workflow_id: "ci.yml", head_sha: sha, status: "completed", per_page: 100
-            });
-            const passing = runs.find((run) => run.conclusion === "success" && run.event === "push" && run.head_branch === "main");
-            if (!passing) core.setFailed(`No successful required CI run found for ${sha}`);
-            core.info(`Release source ${sha} verified by CI run ${passing?.id ?? process.env.CI_RUN_ID ?? "unknown"}`);
+            const workflow = (await github.rest.actions.getWorkflow({ owner, repo, workflow_id: "ci.yml" })).data;
+            if (workflow.path !== ".github/workflows/ci.yml") throw new Error("Required CI workflow could not be verified");
+            const isPassingCiRun = (run) =>
+              String(run.workflow_id) === String(workflow.id) &&
+              run.head_sha === sha &&
+              run.status === "completed" &&
+              run.conclusion === "success" &&
+              run.event === "push" &&
+              run.head_branch === "main" &&
+              run.repository?.full_name === `${owner}/${repo}` &&
+              run.head_repository?.full_name === `${owner}/${repo}`;
+            let passing;
+            if (context.eventName === "workflow_run") {
+              const runId = process.env.CI_RUN_ID;
+              if (!/^\d+$/.test(runId || "")) throw new Error("Triggering CI run ID is invalid");
+              const triggeringRun = (await github.rest.actions.getWorkflowRun({
+                owner, repo, run_id: Number(runId)
+              })).data;
+              if (String(triggeringRun.id) !== runId || !isPassingCiRun(triggeringRun)) {
+                throw new Error(`Triggering CI run ${runId} does not validate release SHA ${sha}`);
+              }
+              passing = triggeringRun;
+            } else {
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                owner, repo, workflow_id: workflow.id, head_sha: sha, status: "completed", per_page: 100
+              });
+              passing = runs.find(isPassingCiRun);
+              if (!passing) throw new Error(`No successful required CI run found for ${sha}`);
+            }
+            core.info(`Release source ${sha} verified by CI run ${passing.id}`);
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_SHA }}
@@ -78,22 +102,13 @@ jobs:
       - name: Schema compatibility comparison
         run: npm run db:check
 
+      # A release that cannot probe the deployed build has verified nothing, so this
+      # step fails closed: an unconfigured PRODUCTION_URL is an error, not a skip.
       - name: Vercel deployment smoke check
         env:
           PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
-        run: |
-          mkdir -p artifacts/readiness
-          if [ -z "$PRODUCTION_URL" ]; then
-            printf '{"status":"BLOCKED","reason":"PRODUCTION_URL is not configured","sha":"%s"}\n' "$RELEASE_SHA" > artifacts/readiness/deployment-smoke.json
-            exit 0
-          fi
-          status=$(curl --silent --show-error --location --max-time 15 --output /tmp/deployment-body --write-out '%{http_code}' "$PRODUCTION_URL")
-          if [[ "$status" =~ ^2[0-9][0-9]$|^3[0-9][0-9]$|^401$|^403$ ]]; then
-            printf '{"status":"PASS","http_status":%s,"sha":"%s","url":"%s"}\n' "$status" "$RELEASE_SHA" "$PRODUCTION_URL" > artifacts/readiness/deployment-smoke.json
-          else
-            printf '{"status":"FAIL","http_status":%s,"sha":"%s","url":"%s"}\n' "$status" "$RELEASE_SHA" "$PRODUCTION_URL" > artifacts/readiness/deployment-smoke.json
-            exit 1
-          fi
+          RELEASE_SHA: ${{ env.RELEASE_SHA }}
+        run: node scripts/release-deployment-smoke.mjs
 
       - name: Publish evidence
         if: always()

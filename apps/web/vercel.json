@@ -1,19 +1,5 @@
 {
   "buildCommand": "next build",
   "outputDirectory": ".next",
-  "framework": "nextjs",
-  "crons": [
-    {
-      "path": "/api/cron/billing-sweep",
-      "schedule": "15 21 * * *"
-    },
-    {
-      "path": "/api/cron/mobile-alerts",
-      "schedule": "0 6 * * *"
-    },
-    {
-      "path": "/api/cron/dhis2-export",
-      "schedule": "0 23 * * *"
-    }
-  ]
+  "framework": "nextjs"
 }

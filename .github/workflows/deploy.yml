@@ -121,6 +121,16 @@ jobs:
           done
           echo "Applied $applied post-snapshot migrations"
 
+      # Fail-closed: verify the bootstrap default-privilege fix (A5) propagated
+      # to the whole function surface. Any service_role-granted function that is
+      # anon-executable, or any anon grant the bootstrap dropped, aborts here.
+      - name: Assert function ACL surface matches the snapshot
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -f scripts/db-tests/assert-function-acl-surface.sql
+
       - name: Export disposable database credentials
         run: |
           supabase status -o env > /tmp/sb.env

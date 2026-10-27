@@ -1,3 +1,5 @@
+import { TallyXmlAdapter } from "./tally-xml"
+
 /** Safe, provider-neutral staging boundary for Tally and other exports. */
 export type MigrationFormat = "tally-xml" | "tally-json" | "xlsx" | "csv"
 export type MigrationObjectType = "company" | "master" | "inventory" | "transaction" | "accounting"
@@ -64,6 +66,9 @@ export class TallyJsonAdapter implements MigrationSourceAdapter {
 
 export function adapterFor(fileName: string, mimeType = ""): MigrationSourceAdapter {
   const lower = fileName.toLowerCase()
+  // XML is checked before JSON because `application/xml` does not contain
+  // "json", and `.xml` files can legitimately be served as `text/xml`.
+  if (lower.endsWith(".xml") || mimeType.includes("xml")) return new TallyXmlAdapter()
   if (lower.endsWith(".json") || mimeType.includes("json")) return new TallyJsonAdapter()
   if (lower.endsWith(".csv") || mimeType.includes("csv")) return new TallySpreadsheetAdapter()
   throw new Error("MIGRATION_UNSUPPORTED_FILE_TYPE")

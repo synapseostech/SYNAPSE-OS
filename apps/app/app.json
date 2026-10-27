@@ -76,6 +76,7 @@
       "supabaseUrl": "https://qfqakzmjatszisuqjwon.supabase.co",
       "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFmcWFrem1qYXRzemlzdXFqd29uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1NTQzODksImV4cCI6MjA5MTEzMDM4OX0.iFCseUE1uVvCuz_wP37agvzulXya17aGG9s49Lnz92o",
       "webAppUrl": "https://www.synapseos.tech",
+      "pharmacyAppUrl": "https://pharm.synapseos.tech",
       "router": {
         "origin": false
       },

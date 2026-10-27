@@ -12,6 +12,7 @@ const {
   appendClinicalChargeBestEffort,
   publishClinicalTimelineBestEffort,
   publishTimelineEvent,
+  runClinicalSafetyCheck,
   dbFrom,
 } = vi.hoisted(() => ({
   requireHospitalStaffContext: vi.fn(),
@@ -24,6 +25,7 @@ const {
   appendClinicalChargeBestEffort: vi.fn(),
   publishClinicalTimelineBestEffort: vi.fn(),
   publishTimelineEvent: vi.fn(),
+  runClinicalSafetyCheck: vi.fn(),
   dbFrom: vi.fn(),
 }))
 
@@ -41,6 +43,7 @@ vi.mock("@/lib/hospital-dept", async () => {
       care_plan_id: z.string().uuid().optional(),
       person_id: z.string().uuid().optional(),
       pharmacy_tenant_id: z.string().uuid().optional(),
+      safety_override_reason: z.string().trim().min(8).max(500).optional(),
     }),
   }
 })
@@ -82,6 +85,10 @@ vi.mock("@synapse/db/clinical-charge", () => ({
   recordInvoiceCreatedEvent: () => ({ list: () => [] }),
 }))
 
+vi.mock("@/lib/clinical-safety", () => ({
+  runClinicalSafetyCheck: (...args: unknown[]) => runClinicalSafetyCheck(...args),
+}))
+
 const TENANT = "11111111-1111-4111-8111-111111111111"
 const HOSPITAL = "22222222-2222-4222-8222-222222222222"
 const PATIENT = "33333333-3333-4333-8333-333333333333"
@@ -112,6 +119,37 @@ function chain(result: { data: unknown; error: unknown }) {
   api.maybeSingle = vi.fn(async () => result)
   api.upsert = vi.fn(async () => ({ error: null }))
   return api
+}
+
+function allowSafety() {
+  const coverage = {
+    allergies: { state: "loaded", rows: 0 },
+    interactions: { state: "loaded", rows: 0 },
+    contraindications: { state: "loaded", rows: 0 },
+    doseAdjustments: { state: "loaded", rows: 0 },
+    renalFunction: { state: "loaded", rows: 0 },
+  }
+  return {
+    evaluation: { alerts: [], coverage, highest: "none", indeterminate: false, indeterminateDomains: [] },
+    decision: { decision: "allow", blocking: [], suppressed: [], reasons: [], policyWarnings: [] },
+    payload: { decision: "allow", highest: "none", indeterminate: false, indeterminateDomains: [], coverage, alerts: [], blockingAlerts: [], reasons: [], policyWarnings: [] },
+    auditRecordId: "audit-1",
+  }
+}
+
+function blockingSafety() {
+  const allowed = allowSafety()
+  return {
+    ...allowed,
+    decision: { decision: "block", blocking: [{ key: "allergy_match:a1:x", severity: "critical" }], suppressed: [], reasons: ["Allergy blocks"], policyWarnings: [] },
+    payload: {
+      ...allowed.payload,
+      decision: "block",
+      highest: "critical",
+      blockingAlerts: ["allergy_match:a1:x"],
+      reasons: ["Allergy blocks"],
+    },
+  }
 }
 
 function postBody(body: Record<string, unknown>) {
@@ -148,6 +186,7 @@ describe("POST /api/opd/prescriptions", () => {
       result: { created: false, invoiceId: "inv-1", totalAmount: 0 },
     })
     publishClinicalTimelineBestEffort.mockResolvedValue(undefined)
+    runClinicalSafetyCheck.mockResolvedValue(allowSafety())
   })
 
   afterEach(() => {
@@ -272,6 +311,79 @@ describe("POST /api/opd/prescriptions", () => {
       expect.objectContaining({
         action: "INSERT",
         tableName: "clinical_prescriptions",
+      }),
+    )
+    expect(json.safety.decision).toBe("allow")
+  })
+
+  it("returns 409 and writes nothing when the safety check blocks", async () => {
+    requireHospitalStaffContext.mockResolvedValue(staffCtx())
+    dbFrom.mockReturnValue(
+      chain({ data: { id: ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT }, error: null }),
+    )
+    runClinicalSafetyCheck.mockResolvedValue(blockingSafety())
+
+    const { POST } = await import("./route")
+    const res = await POST(postBody(validBody()))
+
+    expect(res.status).toBe(409)
+    const json = await res.json()
+    expect(json.error).toBe("clinical_safety_block")
+    expect(json.safety.blockingAlerts).toContain("allergy_match:a1:x")
+    expect(persistClinicalPrescriptionBestEffort).not.toHaveBeenCalled()
+    expect(logHospitalAudit).not.toHaveBeenCalled()
+  })
+
+  it("proceeds past a block only when an override reason is supplied, and passes it to the audit", async () => {
+    requireHospitalStaffContext.mockResolvedValue(staffCtx())
+    dbFrom.mockReturnValue(
+      chain({ data: { id: ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT }, error: null }),
+    )
+    runClinicalSafetyCheck.mockResolvedValue(blockingSafety())
+
+    const { POST } = await import("./route")
+    const res = await POST(
+      postBody(validBody({ safety_override_reason: "Benefit outweighs risk; haematology aware" })),
+    )
+
+    expect(res.status).toBe(201)
+    expect(runClinicalSafetyCheck).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: "prescribe",
+        overrideReason: "Benefit outweighs risk; haematology aware",
+      }),
+    )
+    const json = await res.json()
+    expect(json.safety.decision).toBe("block")
+  })
+
+  it("rejects an override reason too short to be a record of a decision", async () => {
+    requireHospitalStaffContext.mockResolvedValue(staffCtx())
+
+    const { POST } = await import("./route")
+    const res = await POST(postBody(validBody({ safety_override_reason: "ok" })))
+
+    expect(res.status).toBe(400)
+    expect(runClinicalSafetyCheck).not.toHaveBeenCalled()
+  })
+
+  it("runs the safety check against the drug being ordered before anything is written", async () => {
+    requireHospitalStaffContext.mockResolvedValue(staffCtx())
+    dbFrom.mockReturnValue(
+      chain({ data: { id: ENCOUNTER, patient_id: PATIENT, tenant_id: TENANT }, error: null }),
+    )
+
+    const { POST } = await import("./route")
+    await POST(postBody(validBody()))
+
+    expect(runClinicalSafetyCheck).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: TENANT,
+        hospitalId: HOSPITAL,
+        patientId: PATIENT,
+        encounterId: ENCOUNTER,
+        actorId: DOCTOR,
+        newDrugs: [{ label: "Paracetamol 500mg", aliases: [], role: "new" }],
       }),
     )
   })

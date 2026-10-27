@@ -11,6 +11,55 @@ import type { AppSurface, SynapseRole } from '@synapse/config/constants'
 import { isAccountActivated } from './activation'
 import { assertSessionMatchesHost } from './tenant-guard.server'
 
+type PgError = { message: string }
+
+/**
+ * `platform_memberships` is not in the generated `Database` type, and the
+ * generated `profiles` row omits `email_verified_at`. These describe only the
+ * two reads below, so the cast stays narrower than `any`.
+ */
+type ProfileRow = {
+  id: string
+  email: string | null
+  role: string
+  full_name: string | null
+  first_name: string | null
+  last_name: string | null
+  tenant_id: string | null
+  synapse_id: string | null
+  is_admin: boolean | null
+  onboarding_complete: boolean
+  verification_status: string
+  avatar_url: string | null
+  must_change_password: boolean
+  email_verified_at: string | null
+  is_deleted: boolean | null
+}
+type MembershipRow = { platform_role: string; status: string; expires_at: string | null }
+type ProfileClient = {
+  from: (table: "profiles") => {
+    select: (columns: string) => {
+      eq: (column: "id", value: string) => {
+        single: () => PromiseLike<{ data: ProfileRow | null; error: PgError | null }>
+      }
+    }
+  }
+}
+type MembershipClient = {
+  from: (table: "platform_memberships") => {
+    select: (columns: string) => {
+      eq: (column: "user_id", value: string) => {
+        in: (
+          column: "status",
+          values: string[],
+        ) => PromiseLike<{ data: MembershipRow[] | null; error: PgError | null }>
+      }
+    }
+  }
+}
+const profileDb = supabaseAdmin as unknown as ProfileClient
+const membershipDb = supabaseAdmin as unknown as MembershipClient
+
 export interface SynapseContext {
   user: {
     id: string
@@ -67,7 +116,7 @@ export async function getContext(
 
   const tokenPayload = payload
 
-  const { data: profile, error: profileError } = await (supabaseAdmin as any)
+  const { data: profile, error: profileError } = await profileDb
     .from('profiles')
     .select(`
       id, email, role, full_name, first_name, last_name,
@@ -82,7 +131,7 @@ export async function getContext(
 
   // One membership read serves both the account-suspension marker (a SUSPENDED
   // platform_memberships row, see account-suspension.ts) and the platform scope below.
-  const { data: membershipRows, error: membershipError } = await (supabaseAdmin as any)
+  const { data: membershipRows, error: membershipError } = await membershipDb
     .from('platform_memberships')
     .select('platform_role, status, expires_at')
     .eq('user_id', profile.id as string)

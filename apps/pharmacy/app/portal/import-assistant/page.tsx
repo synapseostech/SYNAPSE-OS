@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 import { BrainCircuit, FileSpreadsheet, Wand2, Upload } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -217,6 +218,13 @@ export default function ImportAssistantPage() {
           </p>
           <p className="mt-1 text-xs opacity-70">Internal semantic: STOCK_RECEIPT_DELTA</p>
         </div>
+        <p className="mt-3 text-sm text-muted-foreground">
+          Moving a whole Tally company across? Use the{" "}
+          <Link href="/portal/tally-import" className="text-primary underline underline-offset-2">
+            Tally cut-over workspace
+          </Link>{" "}
+          instead — it imports ledgers, opening balances and dated vouchers, not only stock rows.
+        </p>
       </div>
 
       <Card>

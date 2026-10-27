@@ -4,7 +4,7 @@ import { appendClinicalCharge, materializeEncounterCharges, resolveServicePrice,
 
 function catalogDb(rows: Array<{ tenant_id: string; service_type: string; name: string; price: number; is_active: boolean }>) {
   return {
-    from(table: string) {
+    from(_table: string) {
       const self: Record<string, unknown> = {}
       const chain = () => self
       let filtered = rows

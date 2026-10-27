@@ -80,6 +80,7 @@ export default function ProfileScreen() {
     { label: 'Till / cashier session', subtitle: 'Open, count, and close', icon: 'wallet-outline', route: '/till' },
     { label: 'Sync status', subtitle: 'Pending, failed, needs review', icon: 'cloud-upload-outline', route: '/sync-status' },
     { label: 'Sales history', subtitle: 'Receipts & lookups', icon: 'cash-outline', route: '/(main)/sales' },
+    { label: 'Transactions', subtitle: 'Counter & order history', icon: 'receipt-outline', route: '/transactions' },
     { label: 'Refunds', subtitle: 'Reverse a sale', icon: 'return-down-back-outline', route: '/refunds' },
     { label: 'Reports', subtitle: 'Sales & inventory', icon: 'bar-chart-outline', route: '/reports' },
   ]
@@ -89,6 +90,8 @@ export default function ProfileScreen() {
     { label: 'Receive stock (GRN)', subtitle: 'Batch + expiry', icon: 'download-outline', route: '/receive-stock' },
     { label: 'Stock transfers', subtitle: 'Ship and receive between stores', icon: 'swap-horizontal-outline', route: '/transfers' },
     { label: 'Stock import', subtitle: 'CSV / Excel', icon: 'cloud-upload-outline', route: '/stock-import' },
+    { label: 'Tally import', subtitle: 'Full accounting cut-over', icon: 'document-attach-outline', route: '/tally-import' },
+    { label: 'Import assistant', subtitle: 'Migration history', icon: 'cloud-done-outline', route: '/import-assistant' },
     { label: 'Barcode lookup', subtitle: 'Scan or type', icon: 'barcode-outline', route: '/barcode-scan' },
   ]
 
@@ -99,9 +102,17 @@ export default function ProfileScreen() {
     { label: 'Suppliers', subtitle: 'Vendor directory', icon: 'business-outline', route: '/suppliers' },
   ]
 
+  const financeItems: NavItem[] = [
+    { label: 'Customers', subtitle: 'Directory & accounts', icon: 'people-circle-outline', route: '/customers' },
+    { label: 'Credit ledger', subtitle: 'Balances & repayments', icon: 'book-outline', route: '/credit-ledger' },
+    { label: 'Accounting', subtitle: 'Trial balance & journals', icon: 'calculator-outline', route: '/accounting' },
+  ]
+
   const adminItems: NavItem[] = [
     { label: 'Staff & users', subtitle: 'Roles & temp passwords', icon: 'people-outline', route: '/users' },
     { label: 'Pharmacy settings', subtitle: 'Receipt & printer', icon: 'settings-outline', route: '/settings' },
+    { label: 'Branches', subtitle: 'Sites & satellites', icon: 'business-outline', route: '/branches' },
+    { label: 'Activity log', subtitle: 'Audit trail', icon: 'list-outline', route: '/activity-log' },
     { label: 'Billing & subscription', subtitle: 'Plan status', icon: 'card-outline', route: '/billing' },
     {
       label: 'Open web portal',
@@ -152,6 +163,7 @@ export default function ProfileScreen() {
           <NavSection title="Sales & POS" items={salesItems} onNavigate={go} />
           <NavSection title="Inventory" items={inventoryItems} onNavigate={go} />
           <NavSection title="Purchasing & orders" items={purchasingItems} onNavigate={go} />
+          <NavSection title="Customers & finance" items={financeItems} onNavigate={go} />
           <NavSection title="Admin" items={adminItems} onNavigate={go} />
         </>
       ) : (

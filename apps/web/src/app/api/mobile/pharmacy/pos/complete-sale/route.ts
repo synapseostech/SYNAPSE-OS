@@ -25,6 +25,8 @@ export const dynamic = 'force-dynamic'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = () => supabaseAdmin as any
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /**
  * Complete a POS sale via live `complete_pharmacy_sale` RPC (same as pharmacy portal).
  * Cashier = authenticated mobile user. Catalog list prices enforced server-side.
@@ -39,6 +41,31 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+  }
+
+  // A client-supplied patient id is written under the service role and must be
+  // proven to belong to the tenant first. Reported as 404 (not 403) so another
+  // tenant's patient ids cannot be probed by status code.
+  const patientIdRaw =
+    typeof body.patientId === 'string' && body.patientId.trim() ? body.patientId.trim() : null
+  if (patientIdRaw && !UUID_PATTERN.test(patientIdRaw)) {
+    return NextResponse.json(
+      { error: 'Invalid patient id', code: 'INVALID_PATIENT_ID' },
+      { status: 400 },
+    )
+  }
+  let patientId: string | null = null
+  if (patientIdRaw) {
+    const { data: patient } = await db()
+      .from('patients')
+      .select('id')
+      .eq('id', patientIdRaw)
+      .eq('tenant_id', auth.tenantId)
+      .maybeSingle()
+    if (!patient?.id) {
+      return NextResponse.json({ error: 'Patient not found' }, { status: 404 })
+    }
+    patientId = patient.id as string
   }
 
   const idempotencyKey = readIdempotencyKey(req, body)
@@ -146,7 +173,7 @@ export async function POST(req: NextRequest) {
     p_payment_ref: body.paymentRef ?? null,
     p_discount_total: 0,
     p_tax_amount: Number(body.taxAmount ?? 0),
-    p_patient_id: body.patientId ?? null,
+    p_patient_id: patientId,
     p_confirmed_by: auth.userId,
     // Always named: an older 11-argument overload still exists, so omitting it is ambiguous.
     p_idempotency_key: idempotencyKey ?? null,

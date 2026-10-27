@@ -129,17 +129,30 @@ export async function runCoverageCheck(params: {
   checkedBy:   string
   encounterId?: string
 }): Promise<CoverageCheckResult> {
+  // The policy is the ownership anchor: benefits are only read once the policy
+  // is proven to belong to the caller's tenant.
+  const { data: policy } = await db
+    .from('insurance_policies')
+    .select('copay_amount')
+    .eq('id', params.policyId)
+    .eq('tenant_id', params.tenantId)
+    .maybeSingle()
+
+  if (!policy) {
+    return {
+      covered:      false,
+      copayAmount:  null,
+      benefitLimit: null,
+      benefitUsed:  null,
+      notes:        'Policy not found for this facility.',
+    }
+  }
+
   const { data: benefit } = await db
     .from('insurance_benefits')
     .select('limit_amount, used_amount, period')
     .eq('policy_id', params.policyId)
     .eq('benefit_key', params.benefitKey)
-    .maybeSingle()
-
-  const { data: policy } = await db
-    .from('insurance_policies')
-    .select('copay_amount')
-    .eq('id', params.policyId)
     .maybeSingle()
 
   const limitAmount = benefit?.limit_amount ? Number(benefit.limit_amount) : null
@@ -239,21 +252,30 @@ export async function generateClaimDraft(params: {
   policyId:    string
   actorId:     string
 }): Promise<ClaimDraft> {
-  // Pull encounter + diagnosis data for draft
+  // Pull encounter + diagnosis data for draft. The encounter must belong to
+  // this tenant and to the patient named on the request; diagnoses are then
+  // read by encounter id, which is safe once the encounter is proven owned.
   const { data: encounter } = await db
     .from('encounters')
     .select('id, created_at')
     .eq('id', params.encounterId)
+    .eq('tenant_id', params.tenantId)
+    .eq('patient_id', params.patientId)
     .maybeSingle()
 
-  const { data: diagnoses } = await db
-    .from('encounter_diagnoses')
-    .select('title, stem_code')
-    .eq('encounter_id', params.encounterId)
+  const { data: diagnoses } = encounter
+    ? await db
+        .from('encounter_diagnoses')
+        .select('title, stem_code')
+        .eq('encounter_id', params.encounterId)
+    : { data: null }
 
-  const notes = `Draft generated from encounter ${params.encounterId}. ` +
-    `Diagnoses: ${(diagnoses ?? []).map((d: Record<string, string>) => d.title).join(', ') || 'none'}. ` +
-    `Review and submit manually.`
+  const notes = encounter
+    ? `Draft generated from encounter ${params.encounterId}. ` +
+      `Diagnoses: ${(diagnoses ?? []).map((d: Record<string, string>) => d.title).join(', ') || 'none'}. ` +
+      `Review and submit manually.`
+    : `Draft could not be verified: encounter ${params.encounterId} was not found for this facility and patient. ` +
+      `Confirm the encounter before relying on this draft.`
 
   await auditCopilotAction({
     tenantId:   params.tenantId,

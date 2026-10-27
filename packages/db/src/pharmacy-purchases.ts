@@ -537,6 +537,9 @@ export type ReceivePurchaseResult = {
 }
 
 type DbClient = {
+  // Injected client: supabase-js in production, an in-memory PostgREST fake in
+  // tests. Row shapes differ per table and are annotated at each call site.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   from: (table: string) => any
   rpc: (
     fn: string,

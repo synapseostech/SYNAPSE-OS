@@ -1,0 +1,69 @@
+{
+  "timestamp": "2026-10-26T14:18:31.827Z",
+  "git": {
+    "branch": "integration/synapse-2026-10-09",
+    "head": "c9e53e37fc2c6a22c1699e4d331b1a05e5ff659f"
+  },
+  "migrationCount": {
+    "count": 197,
+    "exitCode": 0
+  },
+  "suites": {
+    "rls-tenant-isolation": {
+      "tests": 21,
+      "pass": 21,
+      "fail": 0,
+      "exitCode": 0
+    },
+    "security-gates": {
+      "tests": 41,
+      "pass": 41,
+      "fail": 0,
+      "banner": "SECURITY GATES PASS cutoff=20261003160000 migrations=10 failures=0",
+      "exitCode": 0
+    },
+    "hardening": {
+      "files": 6,
+      "filesTotal": 6,
+      "tests": 72,
+      "testsTotal": 72,
+      "exitCode": 0
+    },
+    "tenancy": {
+      "files": 6,
+      "filesTotal": 6,
+      "tests": 59,
+      "testsTotal": 59,
+      "exitCode": 0
+    },
+    "workflow-safety": {
+      "tests": 59,
+      "pass": 59,
+      "fail": 0,
+      "exitCode": 0
+    },
+    "rls-matrix": {
+      "tests": 10,
+      "pass": 10,
+      "fail": 0,
+      "exitCode": 0
+    }
+  },
+  "dbAcl": {
+    "definerFunctions": 68,
+    "publicGrants": 0,
+    "possibleImplicitPublic": 20,
+    "liveCheck": "SKIPPED_NO_DATABASE_ACL_URL",
+    "exitCode": 0
+  },
+  "routeIntegrity": {
+    "pages": 288,
+    "navLinks": 73,
+    "roadmap": 77,
+    "exitCode": 0
+  },
+  "disposableDb": {
+    "result": "not_provided",
+    "note": "set SYNAPSE_DISPOSABLE_RESULT to a JSON object documenting a disposable-DB run"
+  }
+}

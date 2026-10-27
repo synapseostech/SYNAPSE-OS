@@ -8,7 +8,6 @@ import {
   hashPayload,
   resolveSyncConflict,
   type SyncCommand,
-  type SyncOutboxStatus,
 } from "./sync-contract"
 
 export const CLINICAL_TRIAGE_COMMAND = "clinical.encounter.triage.v1" as const

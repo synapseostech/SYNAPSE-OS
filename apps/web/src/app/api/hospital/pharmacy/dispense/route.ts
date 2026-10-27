@@ -10,6 +10,7 @@ import { medicationDispensedTimelineEvent, publishClinicalTimelineBestEffort } f
 import { publishTimelineEvent } from '@synapse/db/identity-persist'
 import { isContextError, requireHospitalCapability, gateHospitalModule, logHospitalAudit } from '@/lib/hospital-shared'
 import { requireHospitalStaffContext, hospitalDispenseSchema } from '@/lib/hospital-dept'
+import { runClinicalSafetyCheck } from '@/lib/clinical-safety'
 
 export const dynamic = 'force-dynamic'
 
@@ -29,7 +30,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 })
   }
 
-  const { prescription_id, product_id, pharmacy_tenant_id, payment_method } = parsed.data
+  const { prescription_id, product_id, pharmacy_tenant_id, payment_method, safety_override_reason } =
+    parsed.data
 
   // Hospital dispensing draws on the facility's own stock; cross-tenant network dispensing is not enabled.
   if (pharmacy_tenant_id !== ctx.tenantId) {
@@ -60,7 +62,10 @@ export async function POST(req: NextRequest) {
 
   const { data: product, error: productError } = await db
     .from('pharmacy_products')
-    .select('id, price, name, is_active')
+    // `generic_name` and `active_ingredient` are read for the safety check: the
+    // product name alone is a brand string and is the least reliable of the
+    // three for matching against a drug catalogue.
+    .select('id, price, name, generic_name, active_ingredient, is_active')
     .eq('id', product_id)
     .eq('tenant_id', pharmacy_tenant_id)
     .maybeSingle()
@@ -68,6 +73,45 @@ export async function POST(req: NextRequest) {
   if (productError) return NextResponse.json({ error: productError.message }, { status: 500 })
   if (!product?.is_active) {
     return NextResponse.json({ error: 'Product not found or inactive' }, { status: 400 })
+  }
+
+  // Safety runs against the product actually being handed over, not against the
+  // prescription's free text: at this point the drug is a real catalogue entry.
+  const safety = await runClinicalSafetyCheck({
+    db,
+    tenantId: ctx.tenantId,
+    hospitalId: ctx.hospitalId,
+    patientId: current.patientId,
+    encounterId: current.encounterId,
+    actorId: ctx.userId,
+    stage: 'dispense',
+    newDrugs: [
+      {
+        label: product.name,
+        aliases: [product.generic_name, product.active_ingredient, current.medicationDisplay].filter(
+          (value: string | null): value is string => typeof value === 'string' && value.trim().length > 0,
+        ),
+        productId: product.id,
+        role: 'new',
+      },
+    ],
+    overrideReason: safety_override_reason ?? null,
+  })
+
+  if (safety.decision.decision === 'block') {
+    const overridden = typeof safety_override_reason === 'string' && safety_override_reason.trim().length > 0
+    if (!overridden) {
+      return NextResponse.json(
+        {
+          error: 'clinical_safety_block',
+          message:
+            'This dispense was stopped by a clinical safety check. Supply safety_override_reason to proceed deliberately.',
+          safety: safety.payload,
+          safetyAuditRecordId: safety.auditRecordId ?? null,
+        },
+        { status: 409 },
+      )
+    }
   }
 
   // Authoritative on-hand qty lives on pharmacy_product_batches (not a pharmacy_stock table).
@@ -299,6 +343,9 @@ export async function POST(req: NextRequest) {
       prescription: updatedRx,
       sale,
       remainingStock: dispensed.remainingStock,
+      safety: safety.payload,
+      safetyAuditRecordId: safety.auditRecordId ?? null,
+      safetyAuditError: safety.auditError ?? null,
     })
   } catch (error) {
     return NextResponse.json(

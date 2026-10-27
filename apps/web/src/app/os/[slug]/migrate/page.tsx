@@ -1,12 +1,22 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useParams } from "next/navigation";
 
 type Step = 1 | 2 | 3 | 4;
 type SourceType = "csv" | "openmrs_fhir" | "manual_entry";
 
 const STEPS = ["Select Source", "Upload File", "Validate", "Import"];
+// The values import_batches_status_check allows that mean the run is over.
+const TERMINAL_STATUSES = new Set(["completed", "failed", "completed_with_errors", "cancelled"]);
+const INCOMPLETE_STATUS = "completed_with_errors";
+
+type UploadSummary = {
+  totalRows?: number;
+  stagedRows?: number;
+  malformedRows?: number;
+  duplicateRowsSkipped?: number;
+};
 
 export default function MigratePage() {
   const params = useParams<{ slug: string }>();
@@ -17,54 +27,87 @@ export default function MigratePage() {
   const [progress, setProgress] = useState(0);
   const [importStatus, setImportStatus] = useState<string>("idle");
   const [summary, setSummary] = useState<{ validRows?: number; errorRows?: number } | null>(null);
+  const [upload, setUpload] = useState<UploadSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [executing, setExecuting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Never leave a poll loop running after the page is left.
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
 
   async function handleStart() {
+    setError(null);
+    // The server derives the facility from the authenticated session; the slug
+    // in the URL is a display identifier and is not sent as an ownership claim.
     const res = await fetch("/api/import/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        hospitalId: params.slug,
         sourceType,
         sourceName: file?.name ?? "manual",
         importScope: "patients",
       }),
     });
-    const data = await res.json() as { batchId?: string };
-    if (data.batchId) {
-      setBatchId(data.batchId);
-      setStep(2);
+    const data = (await res.json().catch(() => ({}))) as { batchId?: string; error?: string };
+    if (!res.ok || !data.batchId) {
+      setError(data.error ?? "Could not start the import. Please try again.");
+      return;
     }
+    setBatchId(data.batchId);
+    setStep(2);
   }
 
   async function handleUpload() {
     if (!file || !batchId) return;
+    setError(null);
     setUploading(true);
     const form = new FormData();
     form.append("file", file);
     form.append("batchId", batchId);
     const res = await fetch("/api/import/upload", { method: "POST", body: form });
-    const data = await res.json() as { totalRows?: number; validRows?: number; errorRows?: number };
-    setSummary(data);
+    const data = (await res.json().catch(() => ({}))) as UploadSummary & { error?: string };
     setUploading(false);
+    if (!res.ok) {
+      setError(data.error ?? "The file could not be read. Please check it and try again.");
+      return;
+    }
+    setUpload(data);
     setStep(3);
   }
 
-  function pollProgress(id: string) {
-    const poll = setInterval(async () => {
+  function startPolling(id: string) {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
       const res = await fetch(`/api/import/status/${id}`);
-      const data = await res.json() as {
+      const data = (await res.json().catch(() => ({}))) as {
         progressPercent?: number;
         status?: string;
         validRows?: number;
         errorRows?: number;
+        summary?: { remaining?: number; aborted?: boolean } | null;
+        error?: string;
       };
+      if (!res.ok) {
+        // A transient status failure must not stop the loop or pretend success.
+        return;
+      }
       setProgress(data.progressPercent ?? 0);
-      if (data.status === "completed" || data.status === "failed") {
-        clearInterval(poll);
-        setImportStatus(data.status ?? "failed");
+      if (data.status && TERMINAL_STATUSES.has(data.status)) {
+        stopPolling();
+        setImportStatus(data.status);
         setSummary({ validRows: data.validRows, errorRows: data.errorRows });
       }
     }, 2000);
@@ -72,16 +115,45 @@ export default function MigratePage() {
 
   async function handleExecute() {
     if (!batchId) return;
+    setError(null);
     setStep(4);
     setExecuting(true);
     setImportStatus("running");
-    await fetch("/api/import/execute", {
+    setProgress(0);
+
+    const res = await fetch("/api/import/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ batchId }),
     });
+    const data = (await res.json().catch(() => ({}))) as {
+      status?: string;
+      imported?: number;
+      errored?: number;
+      remaining?: number;
+      error?: string;
+    };
     setExecuting(false);
-    pollProgress(batchId);
+
+    if (!res.ok) {
+      setImportStatus("failed");
+      setError(data.error ?? "The import could not be started.");
+      return;
+    }
+
+    // The execute call runs to completion for up to 2,000 rows, so its own
+    // result is the most accurate report; polling only covers batches that are
+    // still running when the request returns.
+    if (data.status) {
+      setImportStatus(data.status);
+      setSummary({ validRows: data.imported, errorRows: data.errored });
+      if (typeof data.remaining === "number" && data.remaining > 0) {
+        setError(`${data.remaining} rows are still pending. Execute again to continue.`);
+      }
+      return;
+    }
+
+    startPolling(batchId);
   }
 
   return (
@@ -115,6 +187,12 @@ export default function MigratePage() {
         })}
       </div>
 
+      {error && (
+        <div className="mb-6 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          {error}
+        </div>
+      )}
+
       {/* Step 1 */}
       {step === 1 && (
         <div className="space-y-5">
@@ -139,13 +217,13 @@ export default function MigratePage() {
               className="border-2 border-dashed border-slate-700 hover:border-[#00D4AA] rounded-xl p-10 text-center cursor-pointer transition-colors"
             >
               <p className="text-slate-300 font-medium">
-                {file ? file.name : "Drop CSV or Excel file here"}
+                {file ? file.name : "Drop CSV file here"}
               </p>
-              <p className="text-slate-500 text-sm mt-1">Max 50MB · CSV or XLSX</p>
+              <p className="text-slate-500 text-sm mt-1">Max 5 MB · CSV or TXT</p>
               <input
                 ref={fileRef}
                 type="file"
-                accept=".csv,.xlsx"
+                accept=".csv,.txt"
                 className="hidden"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               />
@@ -184,18 +262,23 @@ export default function MigratePage() {
       )}
 
       {/* Step 3 */}
-      {step === 3 && summary !== null && (
+      {step === 3 && upload !== null && (
         <div className="space-y-5">
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-5 text-center">
-              <p className="text-3xl font-bold text-emerald-400">{summary.validRows ?? 0}</p>
+              <p className="text-3xl font-bold text-emerald-400">{upload.stagedRows ?? 0}</p>
               <p className="text-sm text-emerald-400 mt-1">Valid rows</p>
             </div>
             <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-5 text-center">
-              <p className="text-3xl font-bold text-red-400">{summary.errorRows ?? 0}</p>
+              <p className="text-3xl font-bold text-red-400">{upload.malformedRows ?? 0}</p>
               <p className="text-sm text-red-400 mt-1">Error rows</p>
             </div>
           </div>
+          {(upload.duplicateRowsSkipped ?? 0) > 0 && (
+            <p className="text-slate-400 text-sm">
+              {upload.duplicateRowsSkipped} duplicate row(s) inside the file were skipped.
+            </p>
+          )}
           <button
             onClick={handleExecute}
             className="w-full bg-[#00D4AA] text-[#060D1A] font-bold py-3 rounded-xl"
@@ -224,10 +307,12 @@ export default function MigratePage() {
             )}
             {importStatus === "completed" && (
               <>
-                <p className="text-5xl mb-4">Done</p>
                 <p className="text-xl font-bold text-[#00D4AA]">Import Complete</p>
                 <p className="text-slate-400 text-sm mt-2">
                   {summary?.validRows ?? 0} patients imported
+                  {(summary?.errorRows ?? 0) > 0
+                    ? `, ${summary?.errorRows} row(s) rejected`
+                    : ""}
                 </p>
                 <a
                   href={`/os/${params.slug}/patients`}
@@ -235,6 +320,26 @@ export default function MigratePage() {
                 >
                   View imported patients
                 </a>
+              </>
+            )}
+            {(importStatus === "failed" || importStatus === INCOMPLETE_STATUS) && (
+              <>
+                <p className="text-xl font-bold text-amber-400">
+                  {importStatus === INCOMPLETE_STATUS ? "Import Incomplete" : "Import Failed"}
+                </p>
+                <p className="text-slate-400 text-sm mt-2">
+                  {summary?.validRows ?? 0} patients imported
+                  {(summary?.errorRows ?? 0) > 0
+                    ? `, ${summary?.errorRows} row(s) rejected`
+                    : ""}
+                  . Nothing was discarded — the remaining rows stay staged.
+                </p>
+                <button
+                  onClick={handleExecute}
+                  className="inline-block mt-5 bg-[#00D4AA] text-[#060D1A] font-bold px-6 py-2.5 rounded-xl"
+                >
+                  Retry import
+                </button>
               </>
             )}
           </div>
