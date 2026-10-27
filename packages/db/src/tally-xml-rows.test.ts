@@ -8,8 +8,6 @@ import {
   TALLY_XML_ROW_LIMITS,
 } from "./tally-xml-rows.ts"
 
-const enc = (value: string) => new TextEncoder().encode(value)
-
 function tallyExport(inner: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <ENVELOPE>
