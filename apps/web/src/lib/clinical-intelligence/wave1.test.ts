@@ -43,8 +43,10 @@ describe("Clinical Intelligence Wave 1", () => {
     expect(advice.safety.canActivatePathway).toBe(false)
     expect(advice.safety.canPlaceOrder).toBe(false)
     expect(advice.provider).toBe("mock")
-    expect(advice.suggestedPathwayIds.length + (advice.recommendation.suggestedPathwayId ? 1 : 0)).toBeGreaterThan(0)
-    expect(advice.recommendation.suggestedPathwayId === "pathway.adult-sepsis" || advice.suggestedPathwayIds.includes("pathway.adult-sepsis")).toBe(true)
+    expect(advice.availability).toBe("available")
+    expect(advice.recommendation).not.toBeNull()
+    expect(advice.suggestedPathwayIds.length + (advice.recommendation?.suggestedPathwayId ? 1 : 0)).toBeGreaterThan(0)
+    expect(advice.recommendation?.suggestedPathwayId === "pathway.adult-sepsis" || advice.suggestedPathwayIds.includes("pathway.adult-sepsis")).toBe(true)
   })
 
   it("records clinician override decisions", () => {

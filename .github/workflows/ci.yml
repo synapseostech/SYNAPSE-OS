@@ -65,6 +65,9 @@ jobs:
       - name: Consolidation security regressions
         run: npm run test:consolidation
 
+      - name: Clinical Intelligence Wave 1 (flag-OFF, mocked providers)
+        run: npm run test:clinical-intelligence
+
       - name: Platform admin guard audit
         run: node scripts/check-platform-admin-guards.mjs
 
