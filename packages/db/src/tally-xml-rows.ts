@@ -181,8 +181,12 @@ type XmlNode = {
   children: XmlNode[]
 }
 
-const TAG_RE = /<\s*(\/?)\s*([A-Za-z_][\w.:-]*)([^<>]*?)(\/?)\s*>/g
-const ATTR_RE = /([A-Za-z_][\w.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g
+// Parser input is an untrusted upload, so every quantifier runs against attacker
+// chosen text. Bounded names and single (non-overlapping) whitespace runs keep the
+// scans linear; `<\s*(\/?)\s*` and `([^<>]*?)\s*>` backtrack quadratically on a run
+// of spaces with no closing `>`.
+const TAG_RE = /<(\/?)\s*([A-Za-z_][\w.:-]{0,63})([^<>]*?)(\/?)>/g
+const ATTR_RE = /([A-Za-z_][\w.:-]{0,127})\s*=\s*(?:"([^"]*)"|'([^']*)')/g
 const DATE_RE = /^(\d{4})(\d{2})(\d{2})$/
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
 

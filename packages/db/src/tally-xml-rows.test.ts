@@ -247,6 +247,18 @@ describe("parseTallyXmlRows", () => {
     assert.ok(document.warnings.includes("DATE_UNREADABLE"))
   })
 
+  it("scans hostile whitespace and identifier runs in linear time", () => {
+    const started = Date.now()
+    // Both shapes backtrack quadratically against an unbounded, overlapping scan.
+    assert.deepEqual(parseTallyXmlRows(`<ENVELOPE><${" ".repeat(200_000)}`).ledgers, [])
+    assert.equal(
+      parseTallyXmlRows(`<ENVELOPE><LEDGER ${"A".repeat(200_000)}></LEDGER></ENVELOPE>`).ledgers.length,
+      1,
+    )
+    const elapsed = Date.now() - started
+    assert.ok(elapsed < 2_000, `hostile input took ${elapsed}ms`)
+  })
+
   it("reads self-closing records", () => {
     const document = parseTallyXmlRows(tallyExport(`<LEDGER NAME="Self closing" />`))
     assert.equal(document.ledgers.length, 1)
