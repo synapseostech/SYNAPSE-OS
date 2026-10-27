@@ -650,9 +650,9 @@ export async function provisionHospital(
           plan_id: planRow.id,
           status: "trialing",
           starts_at: nowIso(),
-          trial_ends: new Date(Date.now() + 30 * 86400000).toISOString(),
+          trial_ends: new Date(Date.now() + 7 * 86400000).toISOString(),
           current_period_start: nowIso(),
-          current_period_end: new Date(Date.now() + 30 * 86400000).toISOString(),
+          current_period_end: new Date(Date.now() + 7 * 86400000).toISOString(),
         },
         { onConflict: "tenant_id" },
       )
@@ -665,7 +665,7 @@ export async function provisionHospital(
         stepResults.push({ step: "subscription", status: "COMPLETE" })
       }
     } else {
-      const trialDays = (input.tier ?? "trial") === "trial" ? 30 : 14
+      const trialDays = (input.tier ?? "trial") === "trial" ? 7 : 14
       const trialEnd = new Date(Date.now() + trialDays * 86400000).toISOString()
       const { error } = await db.from("tenant_subscriptions").upsert(
         {

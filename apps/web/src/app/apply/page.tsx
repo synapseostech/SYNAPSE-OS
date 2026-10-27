@@ -357,7 +357,7 @@ export default function ApplyPage() {
 
               <p className="text-xs text-center mt-4" style={{ color: 'var(--text-muted)' }}>
                 We review every application and respond within 24 hours.
-                Free 30-day trial &mdash; no credit card required.
+                Free 7-day trial &mdash; no credit card required.
               </p>
             </div>
           )}

@@ -82,7 +82,7 @@ export default function HospitalInterestPage() {
             <p className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: 'var(--text-muted)' }}>NEXT STEPS</p>
             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>1. Our sales team reviews your submission</p>
             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>2. You receive a personalised demo invitation</p>
-            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>3. Free 30-day trial — full platform, no credit card</p>
+            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>3. Free 7-day trial — full platform, no credit card</p>
           </div>
           <Link href="/" className="btn-primary inline-block px-8">Back to Home</Link>
         </div>
@@ -216,7 +216,7 @@ export default function HospitalInterestPage() {
           </button>
 
           <p className="text-xs text-center" style={{ color: 'var(--text-muted)' }}>
-            We respond within 24 hours. Free 30-day trial — no credit card required.
+            We respond within 24 hours. Free 7-day trial — no credit card required.
           </p>
         </form>
       </div>

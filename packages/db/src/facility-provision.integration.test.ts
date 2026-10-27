@@ -108,6 +108,20 @@ describe('facility orchestration with persisted effects', () => {
     expect(db.tables.facility_provisioning_runs[0].failure_code).toBeNull()
     expect(Object.fromEntries(Object.entries(db.tables).map(([k, v]) => [k, v.length]))).toEqual(counts)
   })
+  it('gives a hospital, clinic and laboratory a seven-day trial', async () => {
+    for (const type of ['hospital', 'clinic', 'laboratory'] as const) {
+      const db = database()
+      const result = await provisionFacility(db, { ...input(type), mode: 'REAL' })
+      expect(result.ok).toBe(true)
+      const sub = db.tables.tenant_subscriptions[0]
+      expect(sub.status).toBe('trialing')
+      // Entitlement evaluates current_period_end, so it must track trial_ends.
+      expect(sub.current_period_end).toBe(sub.trial_ends)
+      const days = (Date.parse(sub.trial_ends as string) - Date.now()) / 86_400_000
+      expect(days).toBeGreaterThan(6.9)
+      expect(days).toBeLessThan(7.1)
+    }
+  })
   it('laboratory keeps its tenant link, exact lean modules, and lab administrator', async () => {
     const db = database()
     const result = await provisionFacility(db, input('laboratory'))

@@ -24,7 +24,7 @@ const STEPS = [
 ] as const
 
 const TIER_LABELS: Record<string, string> = {
-  trial: "30 days free",
+  trial: "7 days free",
   starter: "Starter",
   professional: "Professional",
   enterprise: "Enterprise",
