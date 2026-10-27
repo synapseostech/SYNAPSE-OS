@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-26T14:18:30.737Z",
-  "security_definer_count": 68,
+  "generated_at": "2026-10-27T17:02:23.289Z",
+  "security_definer_count": 69,
   "public_or_anon_execute_grants": [],
   "unexpected_public_execute": [],
   "possible_implicit_public_exec": [
@@ -352,6 +352,10 @@
     {
       "file": "20261026120000_telemedicine_intake_tenant_ownership.sql",
       "fn": "public.set_intake_message_tenant_from_case"
+    },
+    {
+      "file": "20261026160000_revoke_anon_default_function_privileges.sql",
+      "fn": "public.synapse_lock_function_default_acl"
     },
     {
       "file": "20261026190000_pharmacy_period_close_integrity.sql",
