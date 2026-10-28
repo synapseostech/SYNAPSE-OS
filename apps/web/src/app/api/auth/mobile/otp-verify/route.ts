@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyOTP, signToken, createSession, AccountSuspendedError, ACCOUNT_UNAVAILABLE_ERROR } from '@synapse/auth'
+import { verifyOTP, signToken, createSession, AccountSuspendedError, ACCOUNT_UNAVAILABLE_ERROR, listProfileWorkspaces, pickWorkspace } from '@synapse/auth'
 import { supabaseAdmin } from '@synapse/db/admin'
 import { SESSION_DURATION_DAYS } from '@synapse/config/constants'
 
@@ -52,11 +52,34 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Account not found.' }, { status: 404 })
   }
 
+  // The facility chosen at the password step, echoed back by the app. The code
+  // is already spent, so a workspace that no longer resolves refuses the
+  // session rather than asking for a choice that would need a new code.
+  const workspaces = await listProfileWorkspaces(profile)
+  const requestedTenantId = typeof body.tenantId === 'string' ? body.tenantId.trim() : ''
+  const workspace = pickWorkspace(workspaces, requestedTenantId)
+
+  if (requestedTenantId && !workspace) {
+    return NextResponse.json(
+      { error: 'Your access to that facility has changed. Sign in again.', code: 'NO_WORKSPACE' },
+      { status: 403 },
+    )
+  }
+  if (!workspace && workspaces.length > 1) {
+    return NextResponse.json(
+      { error: 'Sign in again and choose the facility you are signing into.', code: 'CHOOSE_WORKSPACE' },
+      { status: 403 },
+    )
+  }
+
+  const sessionRole = workspace?.role || profile.role
+  const sessionTenantId = workspace?.tenantId ?? (profile.tenant_id ?? '')
+
   const token = await signToken({
     sub: profile.id,
     email,
-    role: profile.role,
-    tenant_id: profile.tenant_id ?? '',
+    role: sessionRole,
+    tenant_id: sessionTenantId,
     app: 'mobile',
     synapse_id: profile.synapse_id ?? undefined,
   })
@@ -85,7 +108,7 @@ export async function POST(req: NextRequest) {
   const { data: tenant } = await db
     .from('tenants')
     .select('name')
-    .eq('id', profile.tenant_id ?? '')
+    .eq('id', sessionTenantId || '')
     .maybeSingle()
 
   const joinedName = [profile.first_name, profile.last_name].filter(Boolean).join(' ')
@@ -97,14 +120,14 @@ export async function POST(req: NextRequest) {
     user: {
       id: profile.id,
       email,
-      role: profile.role,
+      role: sessionRole,
       fullName,
       synapseId: profile.synapse_id ?? null,
-      tenantId: profile.tenant_id ?? '',
+      tenantId: sessionTenantId,
       tenantName: (tenant?.name as string | null) ?? '',
       isAdmin: (profile.is_admin as boolean | null) ?? false,
       mustChangePassword: (profile.must_change_password as boolean | null) ?? false,
-      dashboardKind: ROLE_KIND[profile.role as string] ?? 'generic',
+      dashboardKind: ROLE_KIND[sessionRole] ?? 'generic',
     },
   })
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isAccountActivated, verifyToken, validateSession, withMembershipSuspension } from '@synapse/auth'
+import { isAccountActivated, verifyToken, validateSession, withMembershipSuspension, resolveSessionScope } from '@synapse/auth'
 import { supabaseAdmin } from '@synapse/db/admin'
 
 const ROLE_KIND: Record<string, string> = {
@@ -58,10 +58,25 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // The session belongs to the facility it was minted for. A token whose
+  // facility no longer resolves must not quietly become a different one. A home
+  // facility token needs no read at all — this is the app's hottest request.
+  const tokenTenantId = typeof payload.tenant_id === 'string' ? payload.tenant_id.trim() : ''
+  const sessionScope = await resolveSessionScope(
+    { id: profile.id as string, role: (profile.role as string | null) ?? '', tenant_id: profile.tenant_id as string | null },
+    tokenTenantId,
+  )
+  if (!sessionScope) {
+    return NextResponse.json({ error: 'Session expired' }, { status: 401 })
+  }
+
+  const sessionRole = sessionScope.role
+  const sessionTenantId = sessionScope.tenantId
+
   const { data: tenant } = await db
     .from('tenants')
     .select('name')
-    .eq('id', profile.tenant_id ?? '')
+    .eq('id', sessionTenantId || '')
     .maybeSingle()
 
   const joinedName = [profile.first_name, profile.last_name].filter(Boolean).join(' ')
@@ -70,13 +85,13 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     id: profile.id,
     email: (profile.email as string | null) ?? '',
-    role: profile.role as string,
+    role: sessionRole,
     fullName,
     synapseId: (profile.synapse_id as string | null) ?? null,
-    tenantId: (profile.tenant_id as string | null) ?? '',
+    tenantId: sessionTenantId,
     tenantName: (tenant?.name as string | null) ?? '',
     isAdmin: (profile.is_admin as boolean | null) ?? false,
     mustChangePassword: (profile.must_change_password as boolean | null) ?? false,
-    dashboardKind: ROLE_KIND[(profile.role as string) ?? ''] ?? 'generic',
+    dashboardKind: ROLE_KIND[sessionRole] ?? 'generic',
   })
 }

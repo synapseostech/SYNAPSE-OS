@@ -95,13 +95,20 @@ async function isSessionStored(token: string, userId: string): Promise<boolean> 
   }
 }
 
-async function getSynapseUserId(request: NextRequest): Promise<string | null> {
+type SynapseSession = {
+  userId: string
+  /** The facility the token was minted for — not the profile's home facility. */
+  tenantId: string
+}
+
+async function getSynapseSession(request: NextRequest): Promise<SynapseSession | null> {
   const token = request.cookies.get(SESSION_COOKIE)?.value
   if (!token) return null
   try {
     const payload = await verifyToken(token)
     const stored = await isSessionStored(token, payload.sub)
-    return stored ? payload.sub : null
+    if (!stored) return null
+    return { userId: payload.sub, tenantId: (payload.tenant_id ?? '').trim() }
   } catch {
     return null
   }
@@ -262,22 +269,23 @@ async function pharmMfaSatisfied(request: NextRequest, userId: string): Promise<
 async function runPharmacyAccessChecks(params: {
   request: NextRequest
   profile: PharmacyProfile
+  tenantId: string
   pathname: string
   isPublicPath: boolean
   isMfaPage: boolean
 }): Promise<NextResponse | null> {
-  const { request, profile, pathname, isPublicPath, isMfaPage } = params
+  const { request, profile, tenantId, pathname, isPublicPath, isMfaPage } = params
 
-  if (!profile.tenant_id && !profile.is_admin) {
+  if (!tenantId && !profile.is_admin && !isPlatformAdmin(profile.role)) {
     return NextResponse.redirect(new URL('/login?error=no_pharmacy_access', request.url))
   }
 
   // Facility admins (is_admin) of hospital/laboratory tenants are not pharmacy staff;
   // only control-plane roles skip the pharmacy-tenant check.
-  if (profile.tenant_id && !isPlatformAdmin(profile.role)) {
+  if (tenantId && !isPlatformAdmin(profile.role)) {
     const tenant = await restGet<TenantRow>(
       'tenants',
-      { id: `eq.${profile.tenant_id}` },
+      { id: `eq.${tenantId}` },
       'is_active,facility_type'
     )
 
@@ -319,16 +327,16 @@ async function runPharmacyAccessChecks(params: {
   // Platform-provisioned pharmacies mark tenants.onboarding_completed=true and
   // profiles.onboarding_complete=true before first login. Do not force the
   // optional license/store wizard when provisioning already finished.
-  if (!isPublicPath && profile.tenant_id && !profile.onboarding_complete) {
+  if (!isPublicPath && tenantId && !profile.onboarding_complete) {
     const tenantOnboarding = await restGet<TenantRow>(
       'tenants',
-      { id: `eq.${profile.tenant_id}` },
+      { id: `eq.${tenantId}` },
       'is_active,facility_type,onboarding_completed',
     )
     if (!tenantOnboarding?.onboarding_completed) {
       const onboarding = await restGet<OnboardingRow>(
         'pharmacy_onboarding',
-        { tenant_id: `eq.${profile.tenant_id}` },
+        { tenant_id: `eq.${tenantId}` },
         'current_step,onboarding_completed_at',
       )
 
@@ -342,7 +350,7 @@ async function runPharmacyAccessChecks(params: {
         // were left at current_step < 5 without onboarding_completed_at.
         const existingStore = await restGet<{ id: string }>(
           'pharmacy_stores',
-          { tenant_id: `eq.${profile.tenant_id}` },
+          { tenant_id: `eq.${tenantId}` },
           'id',
         )
         if (!existingStore) {
@@ -391,17 +399,17 @@ export async function middleware(request: NextRequest) {
     // Feature 1: the admin module is fully gated behind an active subscription.
     // Billing/auth/public/customer APIs stay reachable so a locked tenant can pay.
     if (pathname.startsWith('/api/admin/')) {
-      const uid = await getSynapseUserId(request)
-      if (uid) {
+      const session = await getSynapseSession(request)
+      if (session) {
         const profile = await restGet<PharmacyProfile>(
           'profiles',
-          { id: `eq.${uid}` },
+          { id: `eq.${session.userId}` },
           'id,is_admin,tenant_id,role',
         )
         // Only true platform/superadmins bypass; tenant-scoped users (incl. the
         // pharmacy's own owner-admin) are gated when the subscription is unpaid.
-        if (profile && profile.tenant_id && !isPlatformAdmin(profile.role)) {
-          const ent = await getTenantEntitlement(profile.tenant_id)
+        if (profile && session.tenantId && !isPlatformAdmin(profile.role)) {
+          const ent = await getTenantEntitlement(session.tenantId)
           if (!ent.entitled && isSubscriptionWriteBlocked(pathname, request.method)) {
             return subscriptionRequired402(ent.status, ent.reason)
           }
@@ -412,8 +420,8 @@ export async function middleware(request: NextRequest) {
     return passThrough()
   }
 
-  const synapseUserId = await getSynapseUserId(request)
-  const synapseValid = synapseUserId !== null
+  const session = await getSynapseSession(request)
+  const synapseValid = session !== null
   const isAuthenticated = synapseValid
 
   const isMarketingPage = pathname === '/' || pathname.startsWith('/register')
@@ -444,10 +452,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL('/login', request.url))
   }
 
-  if (synapseValid && synapseUserId) {
+  if (synapseValid && session) {
     const profile = await restGet<PharmacyProfile>(
       'profiles',
-      { id: `eq.${synapseUserId}` },
+      { id: `eq.${session.userId}` },
       'id,is_admin,tenant_id,role,must_change_password,onboarding_complete'
     )
 
@@ -462,6 +470,7 @@ export async function middleware(request: NextRequest) {
       const redirect = await runPharmacyAccessChecks({
         request,
         profile,
+        tenantId: session.tenantId,
         pathname,
         isPublicPath,
         isMfaPage,
@@ -472,8 +481,8 @@ export async function middleware(request: NextRequest) {
       // Elective commercial writes (POS, refunds, purchasing, user admin) stay locked.
       const isPortalPath = pathname.startsWith('/portal')
       const isBillingPage = pathname.startsWith('/portal/billing')
-      if (isPortalPath && !isBillingPage && profile.tenant_id && !isPlatformAdmin(profile.role)) {
-        const ent = await getTenantEntitlement(profile.tenant_id)
+      if (isPortalPath && !isBillingPage && session.tenantId && !isPlatformAdmin(profile.role)) {
+        const ent = await getTenantEntitlement(session.tenantId)
         if (!ent.entitled && isSubscriptionWriteBlocked(pathname, request.method)) {
           const url = new URL('/portal/billing', request.url)
           url.searchParams.set('billing', 'past_due')

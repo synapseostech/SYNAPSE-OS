@@ -10,6 +10,7 @@ import { SESSION_COOKIE } from '@synapse/config/constants'
 import type { AppSurface, SynapseRole } from '@synapse/config/constants'
 import { isAccountActivated } from './activation'
 import { assertSessionMatchesHost } from './tenant-guard.server'
+import { resolveSessionScope } from './session-scope'
 
 type PgError = { message: string }
 
@@ -142,19 +143,25 @@ export async function getContext(
 
   if (!isAccountActivated({ ...profile, membership_suspended: membershipSuspended })) redirect(redirectTo)
 
+  const sessionScope = await resolveSessionScope(
+    { id: profile.id as string, role: profile.role as string, tenant_id: profile.tenant_id as string | null },
+    tokenPayload.tenant_id ?? null,
+  )
+  if (!sessionScope) redirect(redirectTo)
+
   await assertSessionMatchesHost({
-    role: profile.role as string,
-    sessionTenantId: profile.tenant_id as string | null,
+    role: sessionScope.role,
+    sessionTenantId: sessionScope.tenantId || null,
   })
 
   const user = {
     id: profile.id as string,
     email: profile.email as string,
-    role: profile.role as SynapseRole,
+    role: sessionScope.role as SynapseRole,
     fullName: profile.full_name as string | null,
     firstName: profile.first_name as string | null,
     lastName: profile.last_name as string | null,
-    tenantId: (profile.tenant_id as string | null) ?? '',
+    tenantId: sessionScope.tenantId,
     synapseId: profile.synapse_id as string | null,
     avatarUrl: profile.avatar_url as string | null,
     isAdmin: (profile.is_admin as boolean) ?? false,
@@ -200,7 +207,7 @@ export async function getContext(
     }
   }
 
-  if (!profile.tenant_id) redirect(redirectTo)
+  if (!sessionScope.tenantId) redirect(redirectTo)
 
   const { data: tenant, error: tenantError } = await supabaseAdmin
     .from('tenants')
@@ -208,7 +215,7 @@ export async function getContext(
       id, name, slug, facility_type, status, plan,
       modules_enabled, is_network_member, onboarding_completed
     `)
-    .eq('id', profile.tenant_id as string)
+    .eq('id', sessionScope.tenantId)
     .single()
 
   if (tenantError || !tenant) redirect(redirectTo)

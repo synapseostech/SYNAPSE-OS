@@ -30,18 +30,27 @@ export type PharmacySession = {
   user: { id: string; email: string }
 }
 
-async function loadPharmacySettings(userId: string): Promise<{
+/**
+ * Settings for the pharmacy this session is in. A profile may hold a row per
+ * pharmacy tenant, so the tenant always scopes the read; without one (a
+ * control-plane session) there are no settings to apply.
+ */
+async function loadPharmacySettings(userId: string, tenantId: string): Promise<{
   pharmacyRole: string | null
   permissions: string[]
   mustChangePassword: boolean | null
   storeId: string | null
   isActive: boolean
 }> {
+  if (!tenantId) {
+    return { pharmacyRole: null, permissions: [], mustChangePassword: null, storeId: null, isActive: true }
+  }
   try {
     const { data } = await (supabaseAdmin as any)
       .from('pharmacy_user_settings')
       .select('pharmacy_role, permissions, must_change_password, store_id, is_active')
       .eq('profile_id', userId)
+      .eq('tenant_id', tenantId)
       .maybeSingle()
 
     return {
@@ -58,7 +67,7 @@ async function loadPharmacySettings(userId: string): Promise<{
 }
 
 async function toPharmacySession(ctx: SynapseContext): Promise<PharmacySession | null> {
-  const settings = await loadPharmacySettings(ctx.user.id)
+  const settings = await loadPharmacySettings(ctx.user.id, ctx.user.tenantId)
   // Deactivated staff are refused on every request, whichever login path minted the session.
   if (!settings.isActive) return null
   const pharmacyRole = settings.pharmacyRole ?? ctx.user.role

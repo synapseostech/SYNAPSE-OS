@@ -6,9 +6,14 @@ import {
   classifyAccountState,
   isAccountActivated,
 } from '../../../../../../../packages/auth/src/activation'
+import {
+  pickWorkspace,
+  type SynapseWorkspace,
+} from '../../../../../../../packages/auth/src/workspaces'
 
 const mocks = vi.hoisted(() => ({
   profiles: [] as Array<Record<string, unknown>>,
+  workspaces: [] as SynapseWorkspace[],
   verifyPassword: vi.fn(),
   createAndSendOTP: vi.fn(),
   sendOtpEmail: vi.fn(),
@@ -25,6 +30,9 @@ vi.mock('@synapse/auth', () => ({
   shouldSkipOtpEmailDelivery: () => false,
   // Account suspension is a SUSPENDED platform_memberships row (see @synapse/auth/account-suspension).
   withMembershipSuspension: async (p: { id?: unknown }) => ({ ...p, membership_suspended: mocks.suspendedIds.has(String(p.id)) }),
+  // The facility is resolved against the account's workspaces, not the profile row.
+  listProfileWorkspaces: async () => mocks.workspaces,
+  pickWorkspace,
 }))
 vi.mock('@synapse/auth/mfa', () => ({
   signMfaPendingToken: vi.fn(async () => 'pending'),
@@ -34,10 +42,14 @@ vi.mock('@synapse/auth/mfa', () => ({
 vi.mock('../../../../lib/resend', () => ({ sendOtpEmail: (...a: unknown[]) => mocks.sendOtpEmail(...a) }))
 
 function chain(result: unknown) {
+  // One identity per email, so the profile read uses maybeSingle(). A table
+  // mock holding exactly one row answers with that row, as PostgREST would.
+  const rows = (result as { data?: unknown } | null)?.data
+  const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : null
   const q: any = { then: (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject) }
   for (const m of ['select', 'eq', 'in', 'is', 'update', 'order']) q[m] = vi.fn(() => q)
   q.limit = vi.fn(async () => result)
-  q.maybeSingle = vi.fn(async () => ({ data: null, error: null }))
+  q.maybeSingle = vi.fn(async () => ({ data: row, error: null }))
   return q
 }
 
@@ -62,21 +74,37 @@ const base = {
   is_deleted: false,
 }
 
-async function login(password = 'correct-password') {
+async function login(password = 'correct-password', tenantId?: string) {
   const { POST } = await import('./route')
   const req = new Request('https://synapseos.tech/api/auth/password-login', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(tenantId ? { 'x-tenant-id': tenantId } : {}),
+    },
     body: JSON.stringify({ email: 'staff@example.test', password }),
   })
   const res = await POST(req as any)
   return { status: res.status, body: await res.json() }
 }
 
+const homeWorkspace: SynapseWorkspace = {
+  tenantId: 'tenant-1',
+  name: 'Test Clinic',
+  slug: 'test-clinic',
+  facilityType: 'hospital',
+  role: 'doctor',
+  pharmacyRole: null,
+  permissions: [],
+  storeId: null,
+  isHome: true,
+}
+
 describe('POST /api/auth/password-login account-state matrix', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.profiles = [{ ...base }]
+    mocks.workspaces = [homeWorkspace]
     mocks.suspendedIds = new Set()
     mocks.verifyPassword.mockImplementation(async (pw: string) => pw === 'correct-password')
     mocks.createAndSendOTP.mockResolvedValue('123456')
@@ -141,5 +169,22 @@ describe('POST /api/auth/password-login account-state matrix', () => {
     const r = await login()
     expect(r).toEqual({ status: 200, body: { otpSent: true } })
     expect(mocks.createAndSendOTP).toHaveBeenCalledTimes(1)
+  })
+
+  it('a facility host the account does not work at is refused after the password', async () => {
+    const r = await login('correct-password', 'tenant-other')
+    expect(r.status).toBe(403)
+    expect(mocks.createAndSendOTP).not.toHaveBeenCalled()
+  })
+
+  it('an account with several facilities must sign in from its own facility address', async () => {
+    // No home facility: the route must not guess which of the two to enter.
+    mocks.workspaces = [
+      { ...homeWorkspace, isHome: false },
+      { ...homeWorkspace, tenantId: 'tenant-2', name: 'Second Clinic', slug: 'second', isHome: false },
+    ]
+    const r = await login()
+    expect(r.status).toBe(409)
+    expect(mocks.createAndSendOTP).not.toHaveBeenCalled()
   })
 })

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { accountStateResponse, classifyAccountState, verifyPassword, createAndSendOTP, withMembershipSuspension } from '@synapse/auth'
+import { accountStateResponse, classifyAccountState, verifyPassword, createAndSendOTP, withMembershipSuspension, listProfileWorkspaces, pickWorkspace } from '@synapse/auth'
 import { supabaseAdmin } from '@synapse/db/admin'
 import { sendOtpEmail } from '@/lib/resend'
 
@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
   const db = supabaseAdmin as any
   const { data: profile, error: profileErr } = await db
     .from('profiles')
-    .select('id, email, password_hash, login_attempts, locked_until, verification_status, email_verified_at, is_deleted')
+    .select('id, email, role, tenant_id, password_hash, login_attempts, locked_until, verification_status, email_verified_at, is_deleted')
     .eq('email', email)
     .single()
 
@@ -55,6 +55,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(blockedState.body, { status: blockedState.status })
   }
 
+  // One identity may work at, or belong to, more than one facility. The choice
+  // is made before a code is sent so the verify step does not burn the code
+  // asking for it.
+  const workspaces = await listProfileWorkspaces(profile)
+  const requestedTenantId = typeof body.tenantId === 'string' ? body.tenantId.trim() : ''
+  const workspace = pickWorkspace(workspaces, requestedTenantId)
+
+  if (requestedTenantId && !workspace) {
+    return NextResponse.json(
+      { error: 'This account has no access to that facility.', code: 'NO_WORKSPACE' },
+      { status: 403 },
+    )
+  }
+  if (!requestedTenantId && workspaces.length > 1) {
+    return NextResponse.json(
+      {
+        error: 'This email works at more than one facility. Choose where you are signing in.',
+        code: 'CHOOSE_WORKSPACE',
+        chooseWorkspace: true,
+        workspaces: workspaces.map((option) => ({
+          tenantId: option.tenantId,
+          name: option.name || option.slug,
+          slug: option.slug,
+        })),
+      },
+      { status: 409 },
+    )
+  }
+
   let otp: string
   try {
     otp = await createAndSendOTP({ channel: 'email', target: email })
@@ -73,5 +102,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to send verification email.' }, { status: 500 })
   }
 
-  return NextResponse.json({ otpSent: true })
+  return NextResponse.json({
+    otpSent: true,
+    tenantId: workspace?.tenantId ?? '',
+    tenantName: workspace ? workspace.name || workspace.slug : '',
+  })
 }

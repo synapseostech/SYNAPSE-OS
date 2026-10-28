@@ -136,3 +136,18 @@ export {
   withMembershipSuspension,
   type AccountSuspensionMetadata,
 } from './account-suspension'
+
+export {
+  listProfileWorkspaces,
+  mergeWorkspaces,
+  pickWorkspace,
+  workspaceTenantIds,
+  type SynapseWorkspace,
+  type WorkspacePharmacySettings,
+  type WorkspaceProfile,
+  type WorkspaceScope,
+  type WorkspaceSources,
+  type WorkspaceTenant,
+} from './workspaces'
+
+export { resolveSessionScope } from './session-scope'

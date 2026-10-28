@@ -113,8 +113,8 @@ export default function PersonalLayout() {
       <Tabs.Screen
         name="medical-id"
         options={{
-          title: 'Medical ID',
-          headerTitle: 'Medical ID',
+          title: 'Health profile',
+          headerTitle: 'Health profile',
           href: null,
           headerLeft: () => <BackToToday />,
         }}
@@ -133,6 +133,24 @@ export default function PersonalLayout() {
         options={{
           title: 'Journal',
           headerTitle: 'Health journal',
+          href: null,
+          headerLeft: () => <BackToToday />,
+        }}
+      />
+      <Tabs.Screen
+        name="coach"
+        options={{
+          title: 'Coach',
+          headerTitle: 'Coach',
+          href: null,
+          headerLeft: () => <BackToToday />,
+        }}
+      />
+      <Tabs.Screen
+        name="reminders"
+        options={{
+          title: 'Reminders',
+          headerTitle: 'Reminders',
           href: null,
           headerLeft: () => <BackToToday />,
         }}

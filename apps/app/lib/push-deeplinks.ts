@@ -20,6 +20,7 @@ function pathFromPushTarget(raw: unknown): string | null {
     '/patients',
     '/meds',
     '/profile',
+    '/personal/reminders',
   ])
   const base = value.split('?')[0]
   if (!allowed.has(base)) return '/home'
@@ -30,7 +31,15 @@ function navigateToTarget(data: Record<string, unknown> | undefined) {
   if (!data) return
   const target = pathFromPushTarget(data.url ?? data.target)
   if (!target) return
-  // Tab routes live under (main)
+  // Consumer screens live under (personal); the rest are (main) tabs.
+  if (target.startsWith('/personal/')) {
+    try {
+      router.push(`/(personal)${target.slice('/personal'.length)}` as never)
+    } catch {
+      router.push('/(personal)/today' as never)
+    }
+    return
+  }
   const href = `/(main)${target}` as const
   try {
     router.push(href)

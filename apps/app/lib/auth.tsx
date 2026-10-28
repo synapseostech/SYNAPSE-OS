@@ -4,7 +4,7 @@ import * as SecureStore from 'expo-secure-store'
 import * as LocalAuthentication from 'expo-local-authentication'
 import * as Notifications from 'expo-notifications'
 import * as Device from 'expo-device'
-import { apiRequest } from './api'
+import { ApiError, apiRequest } from './api'
 import { clearAllCache } from './cache'
 
 const TOKEN_KEY = 'synapse_mobile_token'
@@ -24,6 +24,17 @@ export interface MobileUser {
   dashboardKind: string
 }
 
+/** One identity can work at several facilities; the app picks before the code is sent. */
+export interface WorkspaceOption {
+  tenantId: string
+  name: string
+  slug: string
+}
+
+export type LoginResult =
+  | { requiresWorkspace: false; tenantId: string; tenantName: string }
+  | { requiresWorkspace: true; workspaces: WorkspaceOption[] }
+
 interface AuthState {
   user: MobileUser | null
   token: string | null
@@ -32,8 +43,8 @@ interface AuthState {
 }
 
 interface AuthContextValue extends AuthState {
-  login: (email: string, password: string) => Promise<void>
-  verifyLoginOtp: (email: string, otp: string) => Promise<void>
+  login: (email: string, password: string, tenantId?: string) => Promise<LoginResult>
+  verifyLoginOtp: (email: string, otp: string, tenantId?: string) => Promise<void>
   logout: () => Promise<void>
   unlock: () => Promise<boolean>
   refreshUser: () => Promise<void>
@@ -123,17 +134,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  const login = useCallback(async (email: string, password: string) => {
-    await apiRequest<{ otpSent: boolean }>(
-      '/api/auth/mobile/login',
-      { method: 'POST', body: { email, password } }
-    )
-  }, [])
+  const login = useCallback(
+    async (email: string, password: string, tenantId?: string): Promise<LoginResult> => {
+      try {
+        const data = await apiRequest<{ otpSent: boolean; tenantId?: string; tenantName?: string }>(
+          '/api/auth/mobile/login',
+          { method: 'POST', body: { email, password, ...(tenantId ? { tenantId } : {}) } }
+        )
+        return {
+          requiresWorkspace: false,
+          tenantId: data.tenantId ?? '',
+          tenantName: data.tenantName ?? '',
+        }
+      } catch (err) {
+        // Several facilities on one identity: the server asks which, before it
+        // spends a code. Any other failure is a real failure.
+        if (err instanceof ApiError && err.payload.chooseWorkspace === true) {
+          const list = Array.isArray(err.payload.workspaces) ? err.payload.workspaces : []
+          return {
+            requiresWorkspace: true,
+            workspaces: list as WorkspaceOption[],
+          }
+        }
+        throw err
+      }
+    },
+    []
+  )
 
-  const verifyLoginOtp = useCallback(async (email: string, otp: string) => {
+  const verifyLoginOtp = useCallback(async (email: string, otp: string, tenantId?: string) => {
     const data = await apiRequest<{ token: string; user: MobileUser }>(
       '/api/auth/mobile/otp-verify',
-      { method: 'POST', body: { email, otp } }
+      { method: 'POST', body: { email, otp, ...(tenantId ? { tenantId } : {}) } }
     )
     await SecureStore.setItemAsync(TOKEN_KEY, data.token)
     setState({ user: data.user, token: data.token, isLoading: false, isLocked: false })

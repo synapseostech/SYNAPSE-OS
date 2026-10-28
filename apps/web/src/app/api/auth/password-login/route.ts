@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { accountStateResponse, classifyAccountState, verifyPassword, createAndSendOTP, shouldSkipOtpEmailDelivery, withMembershipSuspension } from '@synapse/auth'
+import { accountStateResponse, classifyAccountState, verifyPassword, createAndSendOTP, shouldSkipOtpEmailDelivery, withMembershipSuspension, listProfileWorkspaces, pickWorkspace } from '@synapse/auth'
 import { signMfaPendingToken, mfaCookieOptions, MFA_PENDING_COOKIE } from '@synapse/auth/mfa'
 import { supabaseAdmin } from '@synapse/db/admin'
 import { sendOtpEmail } from '../../../../lib/resend'
@@ -21,21 +21,17 @@ export async function POST(req: NextRequest) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = supabaseAdmin as any
   const trustedTenantId = req.headers.get('x-tenant-id')?.trim() || null
-  let profileQuery = db
+
+  // There is one identity per email. The facility comes from the host and is
+  // checked against the account's workspaces once the password is proven — the
+  // profile row is never filtered by its home tenant.
+  const { data: profile, error: profileErr } = await db
     .from('profiles')
     .select('id, email, role, tenant_id, synapse_id, password_hash, login_attempts, locked_until, verification_status, email_verified_at, is_deleted')
     .eq('email', email)
-  if (trustedTenantId) profileQuery = profileQuery.eq('tenant_id', trustedTenantId)
-  const { data: profiles, error: profileErr } = await profileQuery.limit(2)
-  const profile = profiles?.length === 1 ? profiles[0] : null
+    .maybeSingle()
 
   if (profileErr || !profile) {
-    if (!trustedTenantId && (profiles?.length ?? 0) > 1) {
-      return NextResponse.json(
-        { error: 'This email belongs to more than one facility. Sign in from your facility address.' },
-        { status: 409 },
-      )
-    }
     return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 })
   }
 
@@ -115,11 +111,30 @@ export async function POST(req: NextRequest) {
     // No MFA enrolled yet — fall through to OTP for initial setup
   }
 
-  const { data: tenantRow } = await db
-    .from('tenants')
-    .select('is_synthetic, slug')
-    .eq('id', profile.tenant_id as string)
-    .maybeSingle()
+  // The facility this sign-in is for. A facility host names it; otherwise the
+  // home (or only) workspace is used, and an account with several must use its
+  // facility address. No workspace at all is a tenant-less account (a patient),
+  // which the web surface still serves.
+  const workspaces = await listProfileWorkspaces(profile)
+  const workspace = pickWorkspace(workspaces, trustedTenantId)
+
+  if (trustedTenantId && !workspace) {
+    return NextResponse.json(
+      { error: 'This account does not have access to this facility.' },
+      { status: 403 },
+    )
+  }
+  if (!workspace && workspaces.length > 1) {
+    return NextResponse.json(
+      { error: 'This email belongs to more than one facility. Sign in from your facility address.' },
+      { status: 409 },
+    )
+  }
+
+  const e2eTenantId = workspace?.tenantId ?? (profile.tenant_id as string | null)
+  const tenantRow = e2eTenantId
+    ? (await db.from('tenants').select('is_synthetic, slug').eq('id', e2eTenantId).maybeSingle()).data
+    : null
 
   const e2e = {
     email,

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { accountStateResponse, classifyAccountState, verifyOTP, signToken, createSession, withMembershipSuspension } from '@synapse/auth'
+import { accountStateResponse, classifyAccountState, verifyOTP, signToken, createSession, withMembershipSuspension, listProfileWorkspaces, pickWorkspace } from '@synapse/auth'
 import { signMfaPendingToken, mfaCookieOptions, MFA_PENDING_COOKIE } from '@synapse/auth/mfa'
 import { getPostLoginPath } from '@synapse/auth/redirects'
 import { supabaseAdmin } from '@synapse/db/admin'
@@ -33,21 +33,16 @@ export async function POST(req: NextRequest) {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const trustedTenantId = req.headers.get('x-tenant-id')?.trim() || null
-  let profileQuery = (supabaseAdmin as any)
+
+  // One identity per email; the facility is resolved from the host below rather
+  // than by filtering the profile row by its home tenant.
+  const { data: profile, error: profileErr } = await (supabaseAdmin as any)
     .from('profiles')
     .select('id, role, tenant_id, synapse_id, verification_status, email_verified_at, is_deleted, must_change_password, onboarding_complete')
     .eq('email', email)
-  if (trustedTenantId) profileQuery = profileQuery.eq('tenant_id', trustedTenantId)
-  const { data: profiles, error: profileErr } = await profileQuery.limit(2)
-  const profile = profiles?.length === 1 ? profiles[0] : null
+    .maybeSingle()
 
   if (profileErr || !profile) {
-    if (!trustedTenantId && (profiles?.length ?? 0) > 1) {
-      return NextResponse.json(
-        { error: 'This email belongs to more than one facility. Sign in from your facility address.' },
-        { status: 409 },
-      )
-    }
     return NextResponse.json({ error: 'Account not found.' }, { status: 404 })
   }
 
@@ -78,12 +73,33 @@ export async function POST(req: NextRequest) {
     return mfaResponse
   }
 
+  // The facility this sign-in is for: the host's workspace, else the home (or
+  // only) one. A tenant-less account (a patient) still signs in to the web.
+  const workspaces = await listProfileWorkspaces(profile)
+  const workspace = pickWorkspace(workspaces, trustedTenantId)
+
+  if (trustedTenantId && !workspace) {
+    return NextResponse.json(
+      { error: 'This account does not have access to this facility.' },
+      { status: 403 },
+    )
+  }
+  if (!workspace && workspaces.length > 1) {
+    return NextResponse.json(
+      { error: 'This email belongs to more than one facility. Sign in from your facility address.' },
+      { status: 409 },
+    )
+  }
+
+  const sessionRole = workspace?.role || profile.role
+  const sessionTenantId = workspace?.tenantId ?? (profile.tenant_id as string | null)
+
   // Non-platform_admin: issue full session immediately
   const token = await signToken({
     sub:        profile.id,
     email,
-    role:       profile.role,
-    tenant_id:  profile.tenant_id,
+    role:       sessionRole,
+    tenant_id:  sessionTenantId,
     app:        'web',
     synapse_id: profile.synapse_id ?? undefined,
   })
@@ -109,17 +125,17 @@ export async function POST(req: NextRequest) {
   let pharmacyOnboardingStep: number | null = null
   let tenantFacilityType: string | null = null
 
-  if (profile.tenant_id) {
+  if (sessionTenantId) {
     const [{ data: tenant }, { data: pharmOnboarding }] = await Promise.all([
       (supabaseAdmin as any)
         .from('tenants')
         .select('facility_type, onboarding_completed')
-        .eq('id', profile.tenant_id)
+        .eq('id', sessionTenantId)
         .maybeSingle(),
       (supabaseAdmin as any)
         .from('pharmacy_onboarding')
         .select('current_step')
-        .eq('tenant_id', profile.tenant_id)
+        .eq('tenant_id', sessionTenantId)
         .maybeSingle(),
     ])
     tenantFacilityType = tenant?.facility_type ?? null
@@ -127,7 +143,7 @@ export async function POST(req: NextRequest) {
   }
 
   const redirectTo = getPostLoginPath({
-    role: profile.role,
+    role: sessionRole,
     mustChangePassword: Boolean(profile.must_change_password),
     emailVerified: Boolean(profile.email_verified_at),
     onboardingComplete: Boolean(profile.onboarding_complete),

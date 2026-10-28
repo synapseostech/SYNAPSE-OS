@@ -7,13 +7,21 @@ import {
   signToken,
   createSession,
   withMembershipSuspension,
+  listProfileWorkspaces,
+  pickWorkspace,
+  type SynapseWorkspace,
 } from '@synapse/auth'
 import { supabaseAdmin } from '@synapse/db/admin'
 import { sendOTP } from '@synapse/email'
 import { SESSION_COOKIE, SESSION_DURATION_DAYS } from '@synapse/config/constants'
+import { pharmacyWorkspaces, workspaceOption } from '@/lib/workspaces'
 
 const MAX_ATTEMPTS = 10
 const LOCKOUT_MINUTES = 30
+
+// Control-plane staff have no home pharmacy. The portal serves them through the
+// platform branch of getContext, so they sign in without a tenant workspace.
+const PLATFORM_ROLES = new Set(['platform_admin', 'platform_observer', 'superadmin', 'super_admin'])
 
 type ProfileRow = {
   id: string
@@ -81,12 +89,35 @@ async function resolveProfileByIdentifier(identifier: string): Promise<ProfileRo
   return (data as ProfileRow | null) ?? null
 }
 
-async function issueSession(req: NextRequest, profile: ProfileRow, email: string) {
+/** The tenant-less workspace a control-plane account signs into, or null. */
+function platformWorkspaceFor(profile: ProfileRow): SynapseWorkspace | null {
+  const role = (profile.role ?? '').trim()
+  if (!PLATFORM_ROLES.has(role)) return null
+  return {
+    tenantId: '',
+    name: 'Synapse Platform',
+    slug: 'platform',
+    facilityType: 'platform',
+    role,
+    pharmacyRole: null,
+    permissions: [],
+    storeId: null,
+    isHome: true,
+  }
+}
+
+async function issueSession(
+  req: NextRequest,
+  profile: ProfileRow,
+  email: string,
+  workspace: SynapseWorkspace,
+) {
+  const role = workspace.role || profile.role || 'pharmacy_staff'
   const token = await signToken({
     sub: profile.id,
     email,
-    role: profile.role ?? 'pharmacy_staff',
-    tenant_id: profile.tenant_id ?? '',
+    role,
+    tenant_id: workspace.tenantId,
     app: 'pharmacy',
     synapse_id: profile.synapse_id ?? undefined,
   })
@@ -102,7 +133,6 @@ async function issueSession(req: NextRequest, profile: ProfileRow, email: string
   const expires = new Date()
   expires.setDate(expires.getDate() + SESSION_DURATION_DAYS)
 
-  const role = String(profile.role ?? '')
   let redirect = '/portal/dashboard'
   if (profile.must_change_password) {
     redirect = '/change-password'
@@ -115,6 +145,8 @@ async function issueSession(req: NextRequest, profile: ProfileRow, email: string
     sessionIssued: true,
     mustChangePassword: Boolean(profile.must_change_password),
     role,
+    tenantId: workspace.tenantId,
+    tenantName: workspace.name || workspace.slug,
     redirect,
   })
   response.cookies.set(SESSION_COOKIE, token, {
@@ -187,11 +219,51 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(blockedState.body, { status: blockedState.status })
   }
 
-  const { data: settings } = await db
+  // One identity may work at more than one pharmacy, so the facility is chosen
+  // before anything is issued. The client may name it on a repeat call.
+  const workspaces = pharmacyWorkspaces(await listProfileWorkspaces(profile))
+  const platformWorkspace = workspaces.length === 0 ? platformWorkspaceFor(profile) : null
+  if (workspaces.length === 0 && !platformWorkspace) {
+    return NextResponse.json(
+      {
+        error: 'This account is not set up for the pharmacy portal. Contact your pharmacy administrator.',
+        code: 'NO_PHARMACY_ACCESS',
+      },
+      { status: 403 },
+    )
+  }
+
+  const requestedTenantId = typeof body.tenantId === 'string' ? body.tenantId.trim() : ''
+
+  if (!requestedTenantId && !platformWorkspace && workspaces.length > 1) {
+    return NextResponse.json(
+      {
+        error: 'This email works at more than one pharmacy. Choose where you are signing in.',
+        code: 'CHOOSE_WORKSPACE',
+        chooseWorkspace: true,
+        workspaces: workspaces.map(workspaceOption),
+      },
+      { status: 409 },
+    )
+  }
+
+  const workspace = platformWorkspace ?? pickWorkspace(workspaces, requestedTenantId)
+  if (!workspace) {
+    return NextResponse.json(
+      { error: 'This account has no access to that pharmacy.', code: 'NO_PHARMACY_ACCESS' },
+      { status: 403 },
+    )
+  }
+
+  // The platform workspace has no facility, so its settings (if any) are the
+  // account's own row rather than a tenant-scoped one.
+  const settingsQuery = db
     .from('pharmacy_user_settings')
     .select('pharmacy_role, two_factor_enabled, is_active')
     .eq('profile_id', profile.id)
-    .maybeSingle()
+  const { data: settings } = workspace.tenantId
+    ? await settingsQuery.eq('tenant_id', workspace.tenantId).maybeSingle()
+    : await settingsQuery.maybeSingle()
 
   // Password already proven, so naming the state does not enable enumeration.
   if (settings && (settings as { is_active?: boolean | null }).is_active === false) {
@@ -204,8 +276,8 @@ export async function POST(req: NextRequest) {
   const pharmacyRole = (settings?.pharmacy_role as string | null) ?? null
   const twoFactorEnabled = (settings?.two_factor_enabled as boolean | null) ?? null
 
-  if (!roleRequiresLoginOtp(profile.role, pharmacyRole, twoFactorEnabled)) {
-    return issueSession(req, profile, email)
+  if (!roleRequiresLoginOtp(workspace.role, pharmacyRole, twoFactorEnabled)) {
+    return issueSession(req, profile, email, workspace)
   }
 
   // Pharmacy admin (or opted-in staff): gate with email OTP as second factor
@@ -228,5 +300,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to send verification code.' }, { status: 500 })
   }
 
-  return NextResponse.json({ otpSent: true, email })
+  return NextResponse.json({
+    otpSent: true,
+    email,
+    tenantId: workspace.tenantId,
+    tenantName: workspace.name || workspace.slug,
+  })
 }
