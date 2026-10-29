@@ -1,5 +1,6 @@
 import Constants from 'expo-constants'
 import * as FileSystem from 'expo-file-system'
+import { router } from 'expo-router'
 
 /** Apex redirects POST to www; Android fetch often drops the body on that redirect. */
 function resolveApiBaseUrl(): string {
@@ -60,6 +61,29 @@ export class ApiError extends Error {
 /** True when the server returned the Workstream C subscription lock (HTTP 402). */
 export function isSubscriptionLocked(err: unknown): err is ApiError {
   return err instanceof ApiError && err.status === 402
+}
+
+/** Billing stays reachable for a lapsed tenant, so a 402 there would loop. */
+const BILLING_LOCK_EXEMPT = ['/api/mobile/pharmacy/billing']
+let billingRedirectAt = 0
+
+/**
+ * A lapsed subscription can surface on any screen, not just the dashboard, so
+ * the lock is handled where every request passes through. The caller still
+ * receives the ApiError and can render its own state.
+ */
+function routeToBillingLock(message: string, path: string) {
+  if (BILLING_LOCK_EXEMPT.some((p) => path === p || path.startsWith(`${p}/`))) return
+  // Screens fire several requests at once; they all fail together, so one
+  // transition is enough.
+  const now = Date.now()
+  if (now - billingRedirectAt < 2000) return
+  billingRedirectAt = now
+  try {
+    router.replace({ pathname: '/billing-locked', params: { message } })
+  } catch {
+    billingRedirectAt = 0
+  }
 }
 
 interface RequestOptions {
@@ -124,6 +148,7 @@ export async function apiRequest<T>(
       (typeof payload.message === 'string' && payload.message) ||
       (typeof payload.error === 'string' && payload.error) ||
       `Request failed (${res.status})`
+    if (res.status === 402) routeToBillingLock(message, path)
     throw new ApiError(message, res.status, payload)
   }
 
@@ -156,7 +181,9 @@ export async function apiFetchText(
     clearTimeout(timer)
   }
   if (!res.ok) {
-    throw new ApiError(`Request failed (${res.status})`, res.status)
+    const message = `Request failed (${res.status})`
+    if (res.status === 402) routeToBillingLock(message, path)
+    throw new ApiError(message, res.status)
   }
   return res.text()
 }

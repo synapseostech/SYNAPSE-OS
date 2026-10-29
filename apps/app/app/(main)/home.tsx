@@ -70,10 +70,8 @@ export default function DashboardScreen() {
     try {
       await fetchFresh()
     } catch (err) {
-      if (isSubscriptionLocked(err)) {
-        router.replace({ pathname: '/billing-locked', params: { message: err.message } })
-        return
-      }
+      // The API layer already navigates to the billing screen on a 402.
+      if (isSubscriptionLocked(err)) return
       setError(err instanceof Error ? err.message : 'Failed to load dashboard')
     } finally {
       setLoading(false)

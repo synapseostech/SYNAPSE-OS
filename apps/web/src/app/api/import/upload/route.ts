@@ -69,13 +69,15 @@ export async function POST(req: NextRequest) {
     .delete()
     .eq("batch_id", batchId)
     .eq("tenant_id", ctx.tenantId)
-    .in("status", ["pending", "error"]);
+    .in("status", ["staged", "rejected"]);
 
   if (clearError) {
     console.error("[import/upload] clear failed", { code: clearError.code });
     return NextResponse.json({ error: "Could not stage import rows" }, { status: 500 });
   }
 
+  // Rows carry no actor: import_batch_rows.created_by is an auth.users FK and
+  // staff ids are profiles ids. import_batches.created_by records the uploader.
   const seen = new Set<string>();
   const rows = parsed.rows
     .map((row) => {
@@ -83,12 +85,11 @@ export async function POST(req: NextRequest) {
       return {
         batch_id: batchId,
         tenant_id: ctx.tenantId,
-        created_by: ctx.userId,
         row_number: row.line,
         entity: "patient",
         source_record: record,
         dedupe_key: dedupeKeyFor(record),
-        status: "pending",
+        status: "staged",
       };
     })
     .filter((row) => {
@@ -100,12 +101,11 @@ export async function POST(req: NextRequest) {
   const malformedRows = parsed.malformed.map((row) => ({
     batch_id: batchId,
     tenant_id: ctx.tenantId,
-    created_by: ctx.userId,
     row_number: row.line,
     entity: "patient",
     source_record: { raw: row.values.join(",") },
     dedupe_key: null,
-    status: "error",
+    status: "rejected",
     validation_errors: {
       message: `Row has ${row.values.length} fields but the header has ${parsed.header.length}`,
     },
@@ -126,7 +126,7 @@ export async function POST(req: NextRequest) {
   // the rows an earlier run already imported, so a file-only count would
   // report fewer rows than the batch holds.
   const counts = await Promise.all(
-    ["imported", "error", "pending"].map(async (status) => {
+    ["imported", "rejected", "staged"].map(async (status) => {
       const { count } = await sb
         .from("import_batch_rows")
         .select("id", { count: "exact", head: true })
@@ -138,15 +138,15 @@ export async function POST(req: NextRequest) {
   );
   const byStatus = Object.fromEntries(counts) as Record<string, number>;
   const importedRows = byStatus.imported ?? 0;
-  const errorRows = byStatus.error ?? 0;
-  const pendingRows = byStatus.pending ?? 0;
+  const rejectedRows = byStatus.rejected ?? 0;
+  const remainingStaged = byStatus.staged ?? 0;
 
   const { error: batchError } = await sb
     .from("import_batches")
     .update({
-      total_rows: importedRows + errorRows + pendingRows,
+      total_rows: importedRows + rejectedRows + remainingStaged,
       valid_rows: importedRows,
-      error_rows: errorRows,
+      error_rows: rejectedRows,
       status: "uploaded",
     })
     .eq("id", batchId)

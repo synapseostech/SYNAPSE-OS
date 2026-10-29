@@ -390,7 +390,7 @@ describe("POST /api/import/upload", () => {
 
     const rows = db.table("import_batch_rows");
     expect(rows).toHaveLength(2);
-    const staged = rows.find((r) => r.status === "pending");
+    const staged = rows.find((r) => r.status === "staged");
     expect(staged?.source_record).toMatchObject({ full_name: "Kato, Jr." });
   });
 
@@ -444,7 +444,7 @@ describe("POST /api/import/execute", () => {
       batch_id: BATCH_ID,
       tenant_id: TENANT_A,
       row_number: rowNumber,
-      status: "pending",
+      status: "staged",
       source_record: record,
       dedupe_key: `k${rowNumber}`,
     });

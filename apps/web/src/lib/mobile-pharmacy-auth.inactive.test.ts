@@ -7,6 +7,7 @@ vi.mock("@synapse/auth", () => ({
   verifyToken: vi.fn(async () => ({ sub: "staff-1", role: "pharmacy_cashier", tenant_id: "t1" })),
   validateSession: vi.fn(async () => ({ valid: m.sessionValid })),
   roleHasCapability: () => false,
+  isTenantEntitled: vi.fn(async () => ({ entitled: true, reason: "active", status: "active" })),
 }))
 vi.mock("@synapse/db/admin", () => {
   const q: any = { select: () => q, eq: () => q, maybeSingle: async () => ({ data: m.settings, error: null }) }

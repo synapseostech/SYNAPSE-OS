@@ -15,6 +15,7 @@ import {
 import {
   extendSubscriptionPeriod,
   reactivateSubscription,
+  reassignSubscriptionPlan,
   suspendSubscription,
 } from "../_lib/subscription-actions";
 
@@ -85,6 +86,9 @@ export default async function PlatformHospitalsPage() {
 
   const subscriptionMap = new Map(subscriptions.map((row) => [row.tenant_id, row]));
   const tenantSubMap = new Map(subData.subscriptions.map((row) => [row.tenant_id, row]));
+  const assignablePlans = subData.plans
+    .filter((plan) => plan.is_active !== false && plan.id && plan.slug)
+    .sort((a, b) => (a.slug ?? "").localeCompare(b.slug ?? ""));
 
   const lastSignInByTenant = new Map<string, string>();
   for (const row of staffRows) {
@@ -256,6 +260,28 @@ export default async function PlatformHospitalsPage() {
                                 <input type="hidden" name="days" value="30" />
                                 <button type="submit" className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300">
                                   Extend 30d
+                                </button>
+                              </form>
+                              <form action={reassignSubscriptionPlan} className="flex items-center gap-1">
+                                <input type="hidden" name="tenantId" value={tenant.id ?? ""} />
+                                <select
+                                  key={tenantSub.plan_id ?? ""}
+                                  name="planId"
+                                  defaultValue={tenantSub.plan_id ?? ""}
+                                  className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-300"
+                                >
+                                  {tenantSub.plan_id && !assignablePlans.some((plan) => plan.id === tenantSub.plan_id) ? (
+                                    <option value={tenantSub.plan_id}>{tenantSubPlan?.slug ?? "current plan"}</option>
+                                  ) : null}
+                                  {assignablePlans.map((plan) => (
+                                    <option key={plan.id} value={plan.id}>
+                                      {plan.slug}
+                                      {(plan.slug ?? "").startsWith("hospital_") ? " (legacy)" : ""}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button type="submit" className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300">
+                                  Set plan
                                 </button>
                               </form>
                             </>

@@ -30,12 +30,20 @@ vi.mock('../../../lib/supabase/server', () => ({
 import { signToken } from '@synapse/auth/tokens'
 import { hashToken } from '@synapse/auth'
 import { createMemoryDb } from '../../../test-utils/memory-postgrest'
-import { extendSubscriptionPeriod, reactivateSubscription, suspendSubscription } from './subscription-actions'
+import {
+  extendSubscriptionPeriod,
+  reactivateSubscription,
+  reassignSubscriptionPlan,
+  suspendSubscription,
+} from './subscription-actions'
 
 const NOW = new Date().toISOString()
 const FUTURE = new Date(Date.now() + 3600_000).toISOString()
 const ACTOR = '00000000-0000-4000-8000-0000000000b1'
 const TENANT = '00000000-0000-4000-8000-0000000000f1'
+const PLAN_LEGACY = '00000000-0000-4000-8000-0000000000a1'
+const PLAN_OS = '00000000-0000-4000-8000-0000000000a2'
+const PLAN_INACTIVE = '00000000-0000-4000-8000-0000000000a3'
 
 async function signInWith(platformRole: string) {
   const profile = {
@@ -49,7 +57,12 @@ async function signInWith(platformRole: string) {
     mfa_enrollments: [],
     synapse_sessions: [],
     audit_log: [],
-    tenant_subscriptions: [{ id: 'sub1', tenant_id: TENANT, status: 'active', current_period_start: NOW, current_period_end: FUTURE, grace_until: null }],
+    subscription_plans: [
+      { id: PLAN_LEGACY, slug: 'hospital_starter', name: 'Hospital Starter', is_active: true },
+      { id: PLAN_OS, slug: 'synapse_os_basic_annual', name: 'OS Basic', is_active: true },
+      { id: PLAN_INACTIVE, slug: 'hospital_professional', name: 'Hospital Professional', is_active: false },
+    ],
+    tenant_subscriptions: [{ id: 'sub1', tenant_id: TENANT, plan_id: PLAN_LEGACY, status: 'active', current_period_start: NOW, current_period_end: FUTURE, grace_until: null }],
   })
   const token = await signToken({ sub: ACTOR, email: profile.email, role: profile.role, tenant_id: '', app: 'web' })
   state.db.tables.synapse_sessions.push({ id: 's1', user_id: ACTOR, token_hash: hashToken(token), expires_at: FUTURE, revoked_at: null })
@@ -60,6 +73,7 @@ function form() {
   const fd = new FormData()
   fd.set('tenantId', TENANT)
   fd.set('days', '30')
+  fd.set('planId', PLAN_OS)
   return fd
 }
 const sub = () => state.db.tables.tenant_subscriptions[0]
@@ -68,13 +82,14 @@ const subWrites = () => state.db.log.filter((l: any) => l.table === 'tenant_subs
 describe('subscription actions authorization', () => {
   beforeEach(() => { env.token = null })
 
-  it.each(['READ_ONLY_OBSERVER', 'SUPPORT_ADMIN', 'FINANCE_ADMIN', 'AUDITOR'])('%s cannot suspend, reactivate or extend', async (role) => {
+  it.each(['READ_ONLY_OBSERVER', 'SUPPORT_ADMIN', 'FINANCE_ADMIN', 'AUDITOR'])('%s cannot suspend, reactivate, extend or reassign', async (role) => {
     await signInWith(role)
-    for (const action of [suspendSubscription, reactivateSubscription, extendSubscriptionPeriod]) {
+    for (const action of [suspendSubscription, reactivateSubscription, extendSubscriptionPeriod, reassignSubscriptionPlan]) {
       await expect(action(form())).rejects.toThrow(/NEXT_REDIRECT \/platform\?error=forbidden/)
     }
     expect(subWrites()).toEqual([])
     expect(sub().status).toBe('active')
+    expect(sub().plan_id).toBe(PLAN_LEGACY)
   })
 
   it('PLATFORM_ADMIN can suspend and reactivate, with audit', async () => {
@@ -84,5 +99,27 @@ describe('subscription actions authorization', () => {
     await reactivateSubscription(form())
     expect(sub().status).toBe('active')
     expect(state.db.tables.audit_log.map((a: any) => a.action)).toEqual(expect.arrayContaining(['subscription.suspended', 'subscription.reactivated']))
+  })
+
+  it('PLATFORM_ADMIN can move a tenant off a legacy plan, with audit, without touching status', async () => {
+    await signInWith('PLATFORM_ADMIN')
+    await reassignSubscriptionPlan(form())
+
+    expect(sub().plan_id).toBe(PLAN_OS)
+    expect(sub().status).toBe('active')
+
+    const entry = state.db.tables.audit_log.find((a: any) => a.action === 'subscription.plan_changed')
+    expect(entry?.old_value).toMatchObject({ plan_id: PLAN_LEGACY })
+    expect(entry?.new_value).toMatchObject({ plan_id: PLAN_OS, plan_slug: 'synapse_os_basic_annual' })
+  })
+
+  it('refuses an inactive plan and writes nothing', async () => {
+    await signInWith('PLATFORM_ADMIN')
+    const fd = form()
+    fd.set('planId', PLAN_INACTIVE)
+    await reassignSubscriptionPlan(fd)
+
+    expect(sub().plan_id).toBe(PLAN_LEGACY)
+    expect(subWrites()).toEqual([])
   })
 })

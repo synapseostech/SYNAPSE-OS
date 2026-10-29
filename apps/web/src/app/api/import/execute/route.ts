@@ -12,7 +12,7 @@ import {
 
 /** Rows are processed in pages so one request cannot hold a transaction open indefinitely. */
 const PAGE_SIZE = 200;
-/** Hard ceiling per invocation. Exceeding it leaves rows pending and the batch is reported as partial. */
+/** Hard ceiling per invocation. Exceeding it leaves rows staged and the batch is reported as partial. */
 const MAX_ROWS_PER_RUN = 2000;
 /**
  * A run that never reached its finalize step leaves the batch importing.
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Reclaim a run that was killed before it could finalize. Imported rows stay
-  // imported and only "pending" rows are read again, so this resumes rather
+  // imported and only staged rows are read again, so this resumes rather
   // than repeats.
   let claimed = Boolean(claim.data && claim.data.length > 0);
   if (!claimed) {
@@ -117,7 +117,7 @@ export async function POST(req: NextRequest) {
         .select("id, row_number, source_record")
         .eq("batch_id", batchId)
         .eq("tenant_id", ctx.tenantId)
-        .eq("status", "pending")
+        .eq("status", "staged")
         .order("row_number", { ascending: true })
         .limit(Math.min(PAGE_SIZE, MAX_ROWS_PER_RUN - processed));
 
@@ -132,7 +132,7 @@ export async function POST(req: NextRequest) {
         if (!mapped.ok) {
           await db
             .from("import_batch_rows")
-            .update({ status: "error", validation_errors: { errors: mapped.errors } })
+            .update({ status: "rejected", validation_errors: { errors: mapped.errors } })
             .eq("id", row.id)
             .eq("tenant_id", ctx.tenantId);
           continue;
@@ -162,7 +162,7 @@ export async function POST(req: NextRequest) {
             : [message];
           await db
             .from("import_batch_rows")
-            .update({ status: "error", validation_errors: { errors } })
+            .update({ status: "rejected", validation_errors: { errors } })
             .eq("id", row.id)
             .eq("tenant_id", ctx.tenantId);
           continue;
@@ -186,9 +186,9 @@ export async function POST(req: NextRequest) {
 
   // Counts are read back from the database rather than tracked in memory so
   // the batch record matches what is actually stored, including rows that were
-  // marked as errors during upload.
+  // rejected during upload.
   const counts = await Promise.all(
-    ["imported", "error", "pending"].map(async (status) => {
+    ["imported", "rejected", "staged"].map(async (status) => {
       const { count } = await db
         .from("import_batch_rows")
         .select("id", { count: "exact", head: true })
@@ -200,8 +200,8 @@ export async function POST(req: NextRequest) {
   );
   const byStatus = Object.fromEntries(counts) as Record<string, number>;
   const imported = byStatus.imported ?? 0;
-  const errored = byStatus.error ?? 0;
-  const remaining = byStatus.pending ?? 0;
+  const errored = byStatus.rejected ?? 0;
+  const remaining = byStatus.staged ?? 0;
 
   const finished = !aborted && remaining === 0;
   const status = finished ? "completed" : INCOMPLETE_STATUS;

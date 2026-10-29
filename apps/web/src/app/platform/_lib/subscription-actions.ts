@@ -139,3 +139,66 @@ export async function extendSubscriptionPeriod(formData: FormData) {
   })
   revalidateBillingViews()
 }
+
+/**
+ * Moves a tenant's single subscription row to another catalogue plan.
+ * Status is untouched: reassigning a suspended tenant does not reactivate it.
+ * The agreed-price snapshot is also left alone — a plan change is not a
+ * repricing, and overwriting it would destroy a negotiated figure.
+ */
+export async function reassignSubscriptionPlan(formData: FormData) {
+  const admin = await requirePlatformAccess('platform.subscription.manage')
+  const tenantId = String(formData.get('tenantId') ?? '')
+  const planId = String(formData.get('planId') ?? '')
+  if (!tenantId || !planId) return
+
+  const { data: before } = await db()
+    .from('tenant_subscriptions')
+    .select('id, status, plan_id, subscription_plans ( slug )')
+    .eq('tenant_id', tenantId)
+    .maybeSingle()
+  if (!before?.id) {
+    console.warn(`[platform] subscription.plan_changed: tenant ${tenantId} has no tenant_subscriptions row`)
+    return
+  }
+
+  const { data: target } = await db()
+    .from('subscription_plans')
+    .select('id, slug, is_active')
+    .eq('id', planId)
+    .maybeSingle()
+  if (!target?.id || target.is_active === false) {
+    console.warn(`[platform] subscription.plan_changed: plan ${planId} is missing or inactive`)
+    return
+  }
+  if (before.plan_id === target.id) return
+
+  const { error } = await db()
+    .from('tenant_subscriptions')
+    .update({ plan_id: target.id, updated_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
+  if (error) {
+    console.error('[platform] subscription.plan_changed failed:', error.message)
+    return
+  }
+
+  const previousSlug = before.subscription_plans?.slug ?? null
+  await logPlatformEvent({
+    actorId: admin.id,
+    action: 'subscription.plan_changed',
+    entityType: 'tenant_subscriptions',
+    entityId: before.id,
+    tenantId,
+    oldValue: { plan_id: before.plan_id ?? null, plan_slug: previousSlug },
+    metadata: { plan_id: target.id, plan_slug: target.slug },
+  })
+  await logSubscriptionEvent({
+    tenantId,
+    fromStatus: before.status,
+    toStatus: before.status,
+    reason: `plan_changed:${previousSlug ?? 'none'}->${target.slug}`,
+    actor: admin.email,
+    metadata: { plan_id: target.id, plan_slug: target.slug, previous_plan_slug: previousSlug },
+  })
+  revalidateBillingViews()
+}

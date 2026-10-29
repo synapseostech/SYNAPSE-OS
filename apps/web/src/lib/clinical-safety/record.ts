@@ -52,7 +52,8 @@ export async function recordSafetyCheck(input: SafetyRecordInput): Promise<Safet
       hospital_id: input.hospitalId,
       patient_id: input.patientId,
       encounter_id: input.encounterId,
-      created_by: input.actorId,
+      // created_by is an auth.users FK while actorId is a profiles id, so the
+      // actor rides on pharmacist_id and override_by, both profiles FKs.
       pharmacist_id: input.stage === 'dispense' ? input.actorId : null,
       checked_at: new Date().toISOString(),
       drug_orders: input.drugs.map((drug) => ({
