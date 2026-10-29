@@ -173,7 +173,11 @@ export async function POST(req: NextRequest) {
           .update({
             status: "imported",
             imported_record_id: patient?.id ?? null,
-            validation_errors: mapped.warnings.length ? { warnings: mapped.warnings } : null,
+            // validation_errors is NOT NULL with an '[]' default. Writing null
+            // fails the whole update, which leaves the row staged and re-read
+            // on the next page, so the key is omitted when there is nothing to
+            // record.
+            ...(mapped.warnings.length ? { validation_errors: { warnings: mapped.warnings } } : {}),
           })
           .eq("id", row.id)
           .eq("tenant_id", ctx.tenantId);
