@@ -1,11 +1,11 @@
 {
-  "timestamp": "2026-10-26T14:18:31.827Z",
+  "timestamp": "2026-10-29T20:56:11.439Z",
   "git": {
-    "branch": "integration/synapse-2026-10-09",
-    "head": "c9e53e37fc2c6a22c1699e4d331b1a05e5ff659f"
+    "branch": "feat/clinical-intelligence-land",
+    "head": "c208e24df7c2512e8eca6c8225ead0e3aa386adf"
   },
   "migrationCount": {
-    "count": 197,
+    "count": 198,
     "exitCode": 0
   },
   "suites": {
@@ -19,14 +19,14 @@
       "tests": 41,
       "pass": 41,
       "fail": 0,
-      "banner": "SECURITY GATES PASS cutoff=20261003160000 migrations=10 failures=0",
+      "banner": "SECURITY GATES PASS cutoff=20261003160000 migrations=11 failures=0",
       "exitCode": 0
     },
     "hardening": {
       "files": 6,
       "filesTotal": 6,
-      "tests": 72,
-      "testsTotal": 72,
+      "tests": 74,
+      "testsTotal": 74,
       "exitCode": 0
     },
     "tenancy": {
@@ -50,14 +50,14 @@
     }
   },
   "dbAcl": {
-    "definerFunctions": 68,
+    "definerFunctions": 69,
     "publicGrants": 0,
     "possibleImplicitPublic": 20,
     "liveCheck": "SKIPPED_NO_DATABASE_ACL_URL",
     "exitCode": 0
   },
   "routeIntegrity": {
-    "pages": 288,
+    "pages": 289,
     "navLinks": 73,
     "roadmap": 77,
     "exitCode": 0

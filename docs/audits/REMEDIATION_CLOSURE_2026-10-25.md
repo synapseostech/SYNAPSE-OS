@@ -198,22 +198,22 @@ This section records what happened after §10 was written, because §5, §6, B4,
 
 <!-- evidence:begin -->
 source: artifacts/readiness/evidence.json
-timestamp: 2026-10-26T14:18:31.827Z
-git.branch: integration/synapse-2026-10-09
-git.head: c9e53e37fc2c6a22c1699e4d331b1a05e5ff659f
-migrationCount: 197
+timestamp: 2026-10-29T20:56:11.439Z
+git.branch: feat/clinical-intelligence-land
+git.head: c208e24df7c2512e8eca6c8225ead0e3aa386adf
+migrationCount: 198
 suites.rls-tenant-isolation.tests: 21
-suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=10 failures=0
+suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=11 failures=0
 suites.security-gates.exitCode: 0
-suites.hardening.tests: 72
+suites.hardening.tests: 74
 suites.tenancy.tests: 59
 suites.workflow-safety.tests: 59
 suites.rls-matrix.tests: 10
-dbAcl.definerFunctions: 68
+dbAcl.definerFunctions: 69
 dbAcl.publicGrants: 0
 dbAcl.possibleImplicitPublic: 20
 dbAcl.liveCheck: SKIPPED_NO_DATABASE_ACL_URL
-routeIntegrity.pages: 288
+routeIntegrity.pages: 289
 routeIntegrity.navLinks: 73
 routeIntegrity.roadmap: 77
 disposableDb.result: not_provided
