@@ -83,6 +83,9 @@ jobs:
       - name: Pharmacy verification
         run: npm run verify:pharmacy
 
+      - name: Tally import parsers
+        run: npm run test:tally
+
       - name: Control-plane tests
         run: npm run test:control-plane
 
