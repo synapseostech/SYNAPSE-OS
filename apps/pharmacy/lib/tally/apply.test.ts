@@ -6,7 +6,7 @@ import type {
   TallyCutoverSale,
 } from "@synapse/db/tally-normalise"
 import { applyTallyChunk, emptyProgress, type TallyApplyProgress } from "./apply"
-import type { TallyApplyDb } from "./types"
+import { isTallyMirrorNote, type TallyApplyDb } from "./types"
 
 type Operation = {
   table: string
@@ -182,6 +182,9 @@ function purchase(overrides: Partial<TallyCutoverPurchase> = {}): TallyCutoverPu
 
 const PRODUCT = { id: "product-1", sku: "TALLY-1", name: "Test Item A" }
 
+/** What a row created by this importer carries on replay. */
+const MIRROR_NOTE = "Imported from Tally (Test Pharmacy Ltd) — read-only"
+
 function journalsProgress(): TallyApplyProgress {
   return { ...emptyProgress(), stage: "journals" }
 }
@@ -291,7 +294,7 @@ describe("reporting mirrors", () => {
   }
 
   it("repairs a sale whose parent mirror exists but has no items", async () => {
-    const { db, operations } = mirrorDb({ parent: [{ id: "transaction-1" }] })
+    const { db, operations } = mirrorDb({ parent: [{ id: "transaction-1", notes: MIRROR_NOTE }] })
     const result = await applyTallyChunk(db, {
       tenantId: "tenant-1",
       actorId: "user-1",
@@ -313,7 +316,7 @@ describe("reporting mirrors", () => {
 
   it("leaves a complete sale mirror alone on replay", async () => {
     const { db, operations } = mirrorDb({
-      parent: [{ id: "transaction-1" }],
+      parent: [{ id: "transaction-1", notes: MIRROR_NOTE }],
       children: [{ id: "item-1" }],
     })
     const result = await applyTallyChunk(db, {
@@ -335,7 +338,7 @@ describe("reporting mirrors", () => {
   })
 
   it("mirrors a purchase in the plan currency and repairs missing items", async () => {
-    const { db, operations } = mirrorDb({ purchasesParent: [{ id: "purchase-1" }] })
+    const { db, operations } = mirrorDb({ purchasesParent: [{ id: "purchase-1", notes: MIRROR_NOTE }] })
     const result = await applyTallyChunk(db, {
       tenantId: "tenant-1",
       actorId: "user-1",
@@ -357,6 +360,88 @@ describe("reporting mirrors", () => {
       expect.objectContaining({ purchase_id: "purchase-1", product_name: "Test Item A" }),
     ])
     expect(result.progress.counts.purchases).toBe(1)
+  })
+
+  it("leaves the cost of an imported sale line unknown", async () => {
+    const { db, operations } = mirrorDb({ parent: [{ id: "transaction-1", notes: MIRROR_NOTE }] })
+    await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ sales: [sale()] }),
+      progress: journalsProgress(),
+      chunk: { vouchers: [], sales: [sale()], purchases: [] },
+      totalChunks: 2,
+    })
+
+    const items = operations.find(
+      (operation) =>
+        operation.table === "pharmacy_transaction_items" && operation.action === "insert",
+    )
+    expect(items?.payload).toEqual([expect.objectContaining({ cost_price: null })])
+  })
+
+  it("stamps the note the purchases API uses to refuse edits", async () => {
+    const { db, operations } = mirrorDb({ purchasesParent: [{ id: "purchase-1", notes: MIRROR_NOTE }] })
+    await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ purchases: [purchase()] }),
+      progress: journalsProgress(),
+      chunk: { vouchers: [], sales: [], purchases: [purchase()] },
+      totalChunks: 2,
+    })
+
+    const parent = operations.find(
+      (operation) => operation.table === "pharmacy_purchases" && operation.action === "upsert",
+    )
+    const notes = (parent?.payload as Array<{ notes: string }>)[0].notes
+    expect(isTallyMirrorNote(notes)).toBe(true)
+  })
+
+  it("leaves a portal sale alone and reports the collision", async () => {
+    const { db, operations } = mirrorDb({ parent: [{ id: "transaction-1", notes: "Walk-in sale" }] })
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ sales: [sale()] }),
+      progress: journalsProgress(),
+      chunk: { vouchers: [], sales: [sale()], purchases: [] },
+      totalChunks: 2,
+    })
+
+    expect(result.progress.failures).toEqual([expect.objectContaining({ code: "SALE_CONFLICT" })])
+    expect(result.progress.counts.sales).toBe(0)
+    expect(
+      operations.some(
+        (operation) =>
+          operation.table === "pharmacy_transaction_items" && operation.action === "insert",
+      ),
+    ).toBe(false)
+  })
+
+  it("leaves a portal purchase alone and reports the collision", async () => {
+    const { db, operations } = mirrorDb({
+      purchasesParent: [{ id: "purchase-1", notes: "Entered in the portal" }],
+    })
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ purchases: [purchase()] }),
+      progress: journalsProgress(),
+      chunk: { vouchers: [], sales: [], purchases: [purchase()] },
+      totalChunks: 2,
+    })
+
+    expect(result.progress.failures).toEqual([
+      expect.objectContaining({ code: "PURCHASE_CONFLICT" }),
+    ])
+    expect(result.progress.counts.purchases).toBe(0)
+    expect(
+      operations.some(
+        (operation) =>
+          operation.table === "pharmacy_purchase_items" && operation.action === "insert",
+      ),
+    ).toBe(false)
   })
 
   it("records the same failure once across retries", async () => {

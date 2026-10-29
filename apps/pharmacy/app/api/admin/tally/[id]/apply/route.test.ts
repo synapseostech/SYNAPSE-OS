@@ -55,8 +55,12 @@ function progress(overrides: Partial<TallyApplyProgress> = {}): TallyApplyProgre
   }
 }
 
-function row(status: string, mapping: Record<string, unknown> = {}) {
-  return { id: "session-1", status, ai_mapping: mapping }
+function row(
+  status: string,
+  mapping: Record<string, unknown> = {},
+  extra: Record<string, unknown> = {},
+) {
+  return { id: "session-1", status, ai_mapping: mapping, ...extra }
 }
 
 function setup(session: unknown) {
@@ -143,6 +147,17 @@ describe("POST /api/admin/tally/[id]/apply", () => {
     expect(res.status).toBe(409)
     expect((await res.json()).error).toBe("This session has no reviewed plan. Run the preview again.")
     expect(m.applyChunk).not.toHaveBeenCalled()
+  })
+
+  it("refuses a reviewed plan that carries blocking exceptions", async () => {
+    setup(row("review", { summary: { chunkCount: 1 } }, { flagged_rows: 2 }))
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_BLOCKING_EXCEPTIONS" })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
   })
 
   it("resumes from the persisted offset instead of restarting the stage", async () => {

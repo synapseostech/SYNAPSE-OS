@@ -48,7 +48,7 @@ export async function POST(
 
   const { data: row, error } = await db()
     .from("pharmacy_import_sessions")
-    .select("id, status, ai_mapping")
+    .select("id, status, flagged_rows, ai_mapping")
     .eq("id", id)
     .eq("tenant_id", tenantId)
     .maybeSingle()
@@ -77,6 +77,19 @@ export async function POST(
   if (!mapping.summary) {
     return NextResponse.json(
       { error: "This session has no reviewed plan. Run the preview again." },
+      { status: 409 },
+    )
+  }
+
+  // The preview counts blocking exceptions into flagged_rows. Applying anyway
+  // writes history on top of an opening position the plan itself rejects.
+  const blocking = Number(row.flagged_rows ?? 0)
+  if (blocking > 0) {
+    return NextResponse.json(
+      {
+        error: `This plan has ${blocking} blocking exception${blocking === 1 ? "" : "s"}. Correct the export or the mapping, then preview it again.`,
+        code: "TALLY_BLOCKING_EXCEPTIONS",
+      },
       { status: 409 },
     )
   }

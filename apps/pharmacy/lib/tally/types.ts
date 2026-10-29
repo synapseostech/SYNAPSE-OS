@@ -65,3 +65,13 @@ export type TallyPlanChunk = {
   sales: unknown[]
   purchases: unknown[]
 }
+
+/**
+ * Prefix of the note stamped on every reporting mirror. The ledger entry came
+ * from the Tally voucher, so the portal must not edit these rows afterwards.
+ */
+export const TALLY_MIRROR_NOTE_PREFIX = "Imported from Tally"
+
+export function isTallyMirrorNote(note: string | null | undefined): boolean {
+  return typeof note === "string" && note.startsWith(TALLY_MIRROR_NOTE_PREFIX)
+}

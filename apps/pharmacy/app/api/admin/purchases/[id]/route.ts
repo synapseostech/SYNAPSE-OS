@@ -3,6 +3,7 @@ import { requirePharmacyPermission } from "@/lib/api-auth"
 import { mapPurchase } from "@/lib/api-serialize"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { derivePaymentStatus, roundMoney } from "@synapse/db/pharmacy-purchases"
+import { isTallyMirrorNote } from "@/lib/tally/types"
 
 const db = () => supabaseAdmin as any
 
@@ -80,12 +81,26 @@ export async function PATCH(
 
   const { data: purchase, error } = await db()
     .from("pharmacy_purchases")
-    .select("id, status, total, amount_paid, payment_status")
+    .select("id, status, total, amount_paid, payment_status, notes")
     .eq("id", id)
     .eq("tenant_id", tenantId)
     .maybeSingle()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   if (!purchase) return NextResponse.json({ error: "Purchase not found" }, { status: 404 })
+
+  // The Tally mirror is reporting history: its ledger entry came from the
+  // Tally voucher, and the supplier-payment trigger skips rows that are not
+  // RECEIVED, so a payment accepted here would move the mirror and post
+  // nothing. Refuse the edit instead of silently splitting the two.
+  if (isTallyMirrorNote(purchase.notes)) {
+    return NextResponse.json(
+      {
+        error: "This purchase was imported from Tally and is read-only in the portal. Re-exporting the cut-over does not update an existing import.",
+        code: "TALLY_MIRROR_READ_ONLY",
+      },
+      { status: 409 },
+    )
+  }
 
   if (body.status === "CANCELLED") {
     if (purchase.status === "RECEIVED" || purchase.status === "PARTIALLY_RECEIVED") {

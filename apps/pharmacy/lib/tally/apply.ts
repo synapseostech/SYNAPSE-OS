@@ -14,7 +14,12 @@ import type {
   TallyCutoverSale,
   TallyCutoverVoucher,
 } from "@synapse/db/tally-normalise"
-import { TALLY_APPLY_CHUNK, type TallyApplyDb } from "./types"
+import {
+  TALLY_APPLY_CHUNK,
+  TALLY_MIRROR_NOTE_PREFIX,
+  isTallyMirrorNote,
+  type TallyApplyDb,
+} from "./types"
 
 export type TallyApplyStage =
   | "accounts"
@@ -114,8 +119,14 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (match) => `\\${match}`)
 }
 
+// Tally exports calendar dates with no offset but the mirrors land in
+// timestamptz columns, so the offset has to be stated. The portal, the sale
+// RPC and the ledger all read the business day as Africa/Kampala, which is
+// UTC+3 year-round — the same zone the accounting migrations hardcode.
+const KAMPALA_UTC_OFFSET = "+03:00"
+
 function isoDateTime(date: string): string {
-  return `${date}T00:00:00+03:00`
+  return `${date}T00:00:00${KAMPALA_UTC_OFFSET}`
 }
 
 function money(value: number): number {
@@ -201,15 +212,15 @@ async function insertIgnore(
   return (data ?? []) as Array<Record<string, unknown>>
 }
 
-async function findId(
+async function findRow(
   db: TallyApplyDb,
   table: string,
   filters: Record<string, string>,
-): Promise<string | null> {
-  let query = db.from(table).select("id")
+): Promise<{ id: string; notes?: string | null } | null> {
+  let query = db.from(table).select("id, notes")
   for (const [column, value] of Object.entries(filters)) query = query.eq(column, value)
   const { data } = await query.limit(1)
-  return ((data ?? []) as Array<{ id: string }>)[0]?.id ?? null
+  return ((data ?? []) as Array<{ id: string; notes?: string | null }>)[0] ?? null
 }
 
 async function childRowsExist(
@@ -561,7 +572,7 @@ async function mirrorSale(
         net_amount: money(sale.total),
         payment_method: sale.paymentMethod,
         status: "COMPLETED",
-        notes: `Imported from Tally (${input.company ?? "cut-over"}) — read-only`,
+        notes: `${TALLY_MIRROR_NOTE_PREFIX} (${input.company ?? "cut-over"}) — read-only`,
         created_at: isoDateTime(sale.date),
       },
     ],
@@ -571,12 +582,25 @@ async function mirrorSale(
   // on the items, or after a crash before the checkpoint caught up. Repair the
   // missing items instead of returning early and leaving the sale empty.
   const insertedId = (inserted[0] as { id: string } | undefined)?.id
-  const transactionId =
-    insertedId ??
-    (await findId(db, "pharmacy_transactions", {
-      tenant_id: input.tenantId,
-      transaction_no: sale.transactionNumber,
-    }))
+  const existing = insertedId
+    ? null
+    : await findRow(db, "pharmacy_transactions", {
+        tenant_id: input.tenantId,
+        transaction_no: sale.transactionNumber,
+      })
+  // A different row under the same number was entered in the portal. Attaching
+  // the imported items to it would mix the two and leave it editable, so leave
+  // it alone and report the collision.
+  if (!insertedId && existing && !isTallyMirrorNote(existing.notes)) {
+    progress.fail(
+      "journals",
+      sale.sourceId,
+      "SALE_CONFLICT",
+      `Sale ${sale.transactionNumber} already exists in the portal and was not imported from Tally, so it was left untouched.`,
+    )
+    return
+  }
+  const transactionId = insertedId ?? existing?.id
   if (!transactionId) return
 
   let mirrored = inserted.length > 0
@@ -586,7 +610,10 @@ async function mirrorSale(
     product_id: input.products.byName.get(item.stockItemName.trim().toLowerCase())!,
     quantity: Math.round(item.quantity),
     unit_price: money(item.unitPrice),
-    cost_price: money(item.unitPrice),
+    // Tally sales vouchers carry no cost of sale. Copying the selling price
+    // here reported zero gross profit on every imported sale; null keeps the
+    // cost unknown so the profit report falls back to the product's cost.
+    cost_price: null,
     total_price: money(item.lineTotal),
   }))
   if (items.length > 0) {
@@ -655,19 +682,31 @@ async function mirrorPurchase(
         // DRAFT suppresses the ledger trigger: the journal was already posted
         // from the Tally voucher itself.
         status: "DRAFT",
-        notes: `Imported from Tally (${input.company ?? "cut-over"}) — read-only`,
+        notes: `${TALLY_MIRROR_NOTE_PREFIX} (${input.company ?? "cut-over"}) — read-only`,
         created_by: input.actorId,
       },
     ],
     "tenant_id,purchase_no",
   )
   const insertedId = (inserted[0] as { id: string } | undefined)?.id
-  const purchaseId =
-    insertedId ??
-    (await findId(db, "pharmacy_purchases", {
-      tenant_id: input.tenantId,
-      purchase_no: purchase.purchaseNumber,
-    }))
+  const existing = insertedId
+    ? null
+    : await findRow(db, "pharmacy_purchases", {
+        tenant_id: input.tenantId,
+        purchase_no: purchase.purchaseNumber,
+      })
+  // Same collision as a sale: a portal purchase under the same number keeps its
+  // own ledger life, so the import must not graft Tally items onto it.
+  if (!insertedId && existing && !isTallyMirrorNote(existing.notes)) {
+    progress.fail(
+      "journals",
+      purchase.sourceId,
+      "PURCHASE_CONFLICT",
+      `Purchase ${purchase.purchaseNumber} already exists in the portal and was not imported from Tally, so it was left untouched.`,
+    )
+    return
+  }
+  const purchaseId = insertedId ?? existing?.id
   if (!purchaseId) return
 
   let mirrored = inserted.length > 0

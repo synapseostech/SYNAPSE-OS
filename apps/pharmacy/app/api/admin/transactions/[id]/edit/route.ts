@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requirePharmacyTenant } from "@/lib/api-auth"
 import { supabaseAdmin } from "@/lib/supabase/admin"
+import { isTallyMirrorNote } from "@/lib/tally/types"
 
 interface EditItemRequest {
   id: string
@@ -75,6 +76,18 @@ export async function PUT(
 
     if (fetchError || !existingTransaction) {
       return NextResponse.json({ error: "Transaction not found" }, { status: 404 })
+    }
+
+    // A Tally mirror reports history already posted in Tally. Editing it here
+    // would make the portal disagree with the voucher it was imported from.
+    if (isTallyMirrorNote((existingTransaction as { notes?: string | null }).notes)) {
+      return NextResponse.json(
+        {
+          error: "This sale was imported from Tally and is read-only in the portal.",
+          code: "TALLY_MIRROR_READ_ONLY",
+        },
+        { status: 409 },
+      )
     }
 
     // Quantity edits are forbidden. Reverse via refund/void so batches stay authoritative.

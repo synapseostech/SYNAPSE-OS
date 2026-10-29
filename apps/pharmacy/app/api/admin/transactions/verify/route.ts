@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requirePharmacyAdmin } from "@/lib/api-auth"
 import { supabaseAdmin } from "@/lib/supabase/admin"
+import { isTallyMirrorNote } from "@/lib/tally/types"
 
 /**
  * Comprehensive transaction data integrity verification
@@ -93,7 +94,7 @@ export async function GET(request: NextRequest) {
     const { data: allTransactions } = await (supabaseAdmin as any)
       .from("pharmacy_transactions")
       .select(`
-        id, transaction_no, cashier_id, net_amount, total_amount, tax,
+        id, transaction_no, cashier_id, net_amount, total_amount, tax, notes,
         items:pharmacy_transaction_items ( id, cost_price )
       `)
       .eq("tenant_id", tenantId)
@@ -101,6 +102,15 @@ export async function GET(request: NextRequest) {
     // Build a set of valid transaction IDs
     const validTransactionIds = new Set(
       (allTransactions ?? []).map((t: { id: string }) => t.id)
+    )
+
+    // Tally vouchers carry no cost of sale, so the importer stores a null cost
+    // on purpose. Reporting those as integrity failures would drown the real
+    // ones after a cut-over.
+    const tallyMirrorIds = new Set(
+      (allTransactions ?? [])
+        .filter((t: { notes: string | null }) => isTallyMirrorNote(t.notes))
+        .map((t: { id: string }) => t.id),
     )
 
     for (const item of allItems ?? []) {
@@ -137,7 +147,7 @@ export async function GET(request: NextRequest) {
       }
 
       // Missing cost prices
-      if (typedItem.cost_price === null) {
+      if (typedItem.cost_price === null && !tallyMirrorIds.has(typedItem.transaction_id)) {
         report.issues.missingCostPrices.push({
           itemId: typedItem.id,
           transactionId: typedItem.transaction_id,
@@ -188,7 +198,11 @@ export async function GET(request: NextRequest) {
       const itemsWithCosts = typedTx.items.filter(
         (item) => item.cost_price !== null
       )
-      if (itemsWithCosts.length !== typedTx.items.length && typedTx.items.length > 0) {
+      if (
+        itemsWithCosts.length !== typedTx.items.length &&
+        typedTx.items.length > 0 &&
+        !tallyMirrorIds.has(typedTx.id)
+      ) {
         report.issues.inconsistentProfitData.push({
           transactionId: typedTx.id,
           transactionNo: typedTx.transaction_no,

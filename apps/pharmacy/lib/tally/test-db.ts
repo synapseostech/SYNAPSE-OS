@@ -22,6 +22,7 @@ type Chain = {
   update: (payload: unknown) => Chain
   delete: () => Chain
   eq: (column: string, value: unknown) => Chain
+  in: (column: string, values: unknown[]) => Chain
   maybeSingle: () => Promise<FakeResult>
   single: () => Promise<FakeResult>
   then: (
@@ -55,6 +56,10 @@ export function fakeSupabase(resolve: (operation: FakeOperation) => FakeResult) 
       },
       eq: (column, value) => {
         operation.filters.push([column, value])
+        return chain
+      },
+      in: (column, values) => {
+        operation.filters.push([column, values])
         return chain
       },
       maybeSingle: () => Promise.resolve(resolve(operation)),
