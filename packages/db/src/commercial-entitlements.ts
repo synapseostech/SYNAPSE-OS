@@ -11,8 +11,9 @@
  * registry keys have no commercial mapping and stay unentitled.
  *
  * Pharmacy feature keys are already inserted by that migration.
- * OS / Lab keys are prepared in supabase/proposed/20260927_plan_feature_entitlements
- * and are not auto-applied.
+ * OS / Lab keys are prepared in
+ * supabase/migrations/20261029090000_plan_feature_entitlements.sql and take
+ * effect once that migration is applied.
  */
 
 /**
