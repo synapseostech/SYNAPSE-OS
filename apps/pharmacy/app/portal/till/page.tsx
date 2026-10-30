@@ -74,7 +74,8 @@ export default function TillPage() {
       <div>
         <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Till / cashier session</h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Open a till with a cash float, sell, record cash in/out, then count and close with a variance reason.
+          Optional cash-drawer reconciliation. Open with a float, record cash in/out, then count and
+          close with a variance reason. Sales do not require an open till.
         </p>
       </div>
 

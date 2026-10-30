@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireTallyPermission } from "@/lib/tally/auth"
+import { requireTallyAdmin } from "@/lib/tally/auth"
+import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { TALLY_SYSTEM_ACCOUNT_CODES } from "@synapse/db/tally-map"
 import type { TallyAccountOverrides, TallyAccountOverride } from "@synapse/db/tally-map"
@@ -129,10 +130,14 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requireTallyPermission(request, "inventory.write")
+  const auth = await requireTallyAdmin(request, "inventory.write")
   if (!auth.ok) return auth.response
   const { tenantId } = auth
   const { id } = await params
+
+  if (await findCompletedCutover(tenantId)) {
+    return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
+  }
 
   let body: MappingBody
   try {
@@ -207,7 +212,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requireTallyPermission(request, "inventory.write")
+  const auth = await requireTallyAdmin(request, "inventory.write")
   if (!auth.ok) return auth.response
   const { tenantId } = auth
   const { id } = await params

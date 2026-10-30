@@ -189,14 +189,16 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // Validate the open till (and get its session id) without crediting cash yet;
-  // cash is recorded only after the sale RPC commits (see recordTillSale below).
+  // The till is optional: a sale completes without one and simply has no cash to
+  // reconcile. When a till is open its session id is captured here, and cash is
+  // credited only after the sale RPC commits (see recordTillSale below).
   const till = await attachSaleToTill({
     tenantId,
     cashierId,
     paymentMethod,
     amount: 0,
     kind: "sale",
+    required: false,
   })
   if (!till.ok) {
     return NextResponse.json(till.error, { status: httpStatusForPharmacyError(till.error.code) })

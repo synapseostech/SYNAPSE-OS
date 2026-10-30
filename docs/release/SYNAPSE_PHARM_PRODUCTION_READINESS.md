@@ -29,7 +29,7 @@ Date: 2026-08-23
 - PR #49 EAS packaging is on `main` (`215da03`).
 - Live additive SQL: transfer execution, till session columns, identity text-overload compat.
 - Shared pharmacy context: tenant + store + capability.
-- Till lifecycle CLOSED → OPEN → ACTIVE → CLOSING → CLOSED; POS requires an open till; refunds attach cash totals.
+- Till lifecycle CLOSED → OPEN → ACTIVE → CLOSING → CLOSED; the till is optional and POS sales complete without one, but an open till is what cash totals reconcile against; refunds attach cash totals.
 - Financial reports default to `pharmacy_pos_sales` only so one business sale is not double-counted.
 - Offline SyncCommand payloads are AES-GCM encrypted at rest with a per-install SecureStore key.
 - Release gate split: `verify:pharm-release` (local, no skips) and `verify:pharm-release:live` (fails closed).

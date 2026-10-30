@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireTallyPermission, tallyHasCapability } from "@/lib/tally/auth"
+import { requireTallyAdmin, tallyHasCapability } from "@/lib/tally/auth"
+import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import {
   applyTallyChunk,
@@ -32,11 +33,11 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requireTallyPermission(request, "inventory.adjust")
+  const auth = await requireTallyAdmin(request, "inventory.adjust")
   if (!auth.ok) return auth.response
   const { actorId, tenantId } = auth
 
-  // Two capabilities, both required. requireTallyPermission checks only the first.
+  // Two capabilities, both required. requireTallyAdmin checks only the first.
   if (!tallyHasCapability(auth, "reports.financial")) {
     return NextResponse.json(
       { error: "Missing capability: reports.financial" },
@@ -68,6 +69,15 @@ export async function POST(
       reconcile: mapping.reconcile ?? null,
     })
   }
+
+  // One-shot: once any Tally session for this tenant has completed, the cut-over
+  // is over. This session's own completion returned above, so only a second,
+  // still-open session can reach this check.
+  const cutover = await findCompletedCutover(tenantId)
+  if (cutover && cutover.sessionId !== id) {
+    return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
+  }
+
   if (!RESUMABLE.has(row.status)) {
     return NextResponse.json(
       { error: "Preview the file before applying it." },

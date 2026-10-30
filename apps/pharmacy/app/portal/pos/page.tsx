@@ -280,13 +280,15 @@ export default function POSPage() {
     }
   }
 
-  // Save cart to localStorage whenever it changes
+  // Save cart to localStorage whenever it changes. The header badge reads this
+  // key, and `storage` does not fire in the tab that wrote it, so announce it.
   useEffect(() => {
     if (cart.length > 0) {
       localStorage.setItem('pos-cart', JSON.stringify(cart))
     } else {
       localStorage.removeItem('pos-cart')
     }
+    window.dispatchEvent(new Event('pos-cart-changed'))
   }, [cart])
 
   useEffect(() => {

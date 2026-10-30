@@ -47,8 +47,8 @@ function Toggle({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={[
-        "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 focus:ring-offset-[#111117]",
-        checked ? "bg-green-500" : "bg-[#2A2A36]",
+        "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-card",
+        checked ? "bg-emerald-500" : "bg-muted-foreground/30",
         disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
       ].join(" ")}
     >
@@ -189,7 +189,7 @@ export default function NetworkPage() {
   if (isFetching) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-orange-400" />
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
       </div>
     )
   }
@@ -207,9 +207,9 @@ export default function NetworkPage() {
       </div>
 
       {/* ── Section 1: Network Status ───────────────────────────────────────────── */}
-      <div className="bg-[#111117] border border-[#2A2A36] rounded-xl p-6 space-y-6">
+      <div className="bg-card border border-border rounded-xl p-6 space-y-6">
         <div className="flex items-center gap-2">
-          <Wifi className="h-5 w-5 text-orange-400" />
+          <Wifi className="h-5 w-5 text-primary" />
           <h2 className="text-lg font-semibold text-foreground">Network Status</h2>
         </div>
 
@@ -244,7 +244,7 @@ export default function NetworkPage() {
                 setSettings((s) => ({ ...s, networkListingName: e.target.value }))
               }
               placeholder="Your pharmacy name as seen by patients"
-              className="w-full max-w-md rounded-lg border border-[#2A2A36] bg-[#07070A] px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-orange-500"
+              className="w-full max-w-md rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
             />
           </div>
         )}
@@ -264,7 +264,7 @@ export default function NetworkPage() {
         </div>
 
         {/* Footer: last synced + actions */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-2 border-t border-[#2A2A36]">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-2 border-t border-border">
           <p className="text-xs text-muted-foreground">
             Last synced: <span className="text-foreground">{lastSynced}</span>
           </p>
@@ -273,7 +273,7 @@ export default function NetworkPage() {
               type="button"
               onClick={handleSyncNow}
               disabled={isSyncing || !settings.isNetworkMember}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#2A2A36] bg-[#07070A] text-sm text-foreground hover:border-[#3A3A46] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-background text-sm text-foreground hover:border-primary/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSyncing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -286,7 +286,7 @@ export default function NetworkPage() {
               type="button"
               onClick={handleSave}
               disabled={isSaving}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#F97316] hover:bg-orange-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSaving ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -300,7 +300,7 @@ export default function NetworkPage() {
       </div>
 
       {/* ── Section 2: Network Inventory ────────────────────────────────────────── */}
-      <div className="bg-[#111117] border border-[#2A2A36] rounded-xl p-6 space-y-4">
+      <div className="bg-card border border-border rounded-xl p-6 space-y-4">
         <div>
           <h2 className="text-lg font-semibold text-foreground">What patients see in the app</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
@@ -309,14 +309,14 @@ export default function NetworkPage() {
         </div>
 
         {inventory.length === 0 ? (
-          <div className="flex items-center justify-center py-10 text-sm text-muted-foreground border border-dashed border-[#2A2A36] rounded-lg">
+          <div className="flex items-center justify-center py-10 text-sm text-muted-foreground border border-dashed border-border rounded-lg">
             No inventory synced yet — click &quot;Sync Now&quot; to publish your products.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-[#2A2A36]">
+                <tr className="border-b border-border">
                   {["Drug Name", "Dosage Form", "Strength", "In Stock", "Qty", "Last Synced"].map(
                     (col) => (
                       <th
@@ -331,7 +331,7 @@ export default function NetworkPage() {
               </thead>
               <tbody>
                 {inventory.map((row) => (
-                  <tr key={row.id} className="border-b border-[#2A2A36] hover:bg-white/[0.02]">
+                  <tr key={row.id} className="border-b border-border hover:bg-muted/40">
                     <td className="py-3 pr-4 font-medium text-foreground">
                       {row.drug_name}
                       {row.generic_name && (
@@ -376,14 +376,14 @@ export default function NetworkPage() {
 
       {/* ── Section 3: Incoming Refill Requests (conditional) ───────────────────── */}
       {settings.acceptsRefillRequests && (
-        <div className="bg-[#111117] border border-[#2A2A36] rounded-xl p-6 space-y-4">
+        <div className="bg-card border border-border rounded-xl p-6 space-y-4">
           <div>
             <h2 className="text-lg font-semibold text-foreground">Incoming Refill Requests</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
               Refill requests submitted by patients via the Synapse app
             </p>
           </div>
-          <div className="flex items-center justify-center py-10 text-sm text-muted-foreground border border-dashed border-[#2A2A36] rounded-lg">
+          <div className="flex items-center justify-center py-10 text-sm text-muted-foreground border border-dashed border-border rounded-lg">
             Refill request management coming soon
           </div>
         </div>

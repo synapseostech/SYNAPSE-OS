@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
         </div>
         ${message ? `<div style="margin-top:16px;padding:16px;background:rgba(255,255,255,0.04);border-radius:8px;border-left:3px solid #F97316;"><p style="font-size:13px;color:#A0A0B0;margin:0;">${message}</p></div>` : ''}
         <div style="margin-top:24px;">
-          <a href="https://synapseos.tech/admin" style="display:inline-block;background:#F97316;color:#07070A;font-weight:700;font-size:13px;padding:10px 20px;border-radius:8px;text-decoration:none;">View in Admin Dashboard</a>
+          <a href="https://admin.synapseos.tech/applications" style="display:inline-block;background:#F97316;color:#07070A;font-weight:700;font-size:13px;padding:10px 20px;border-radius:8px;text-decoration:none;">View in Admin Dashboard</a>
         </div>
       `,
     }),

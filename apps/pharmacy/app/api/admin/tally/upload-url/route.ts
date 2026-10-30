@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireTallyPermission } from "@/lib/tally/auth"
+import { requireTallyAdmin } from "@/lib/tally/auth"
+import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import {
   createTallyUploadTarget,
@@ -21,7 +22,7 @@ const EXTENSIONS: Record<string, TallySourceExtension> = {
  * No file bytes pass through the request body.
  */
 export async function POST(request: NextRequest) {
-  const auth = await requireTallyPermission(request, "inventory.write")
+  const auth = await requireTallyAdmin(request, "inventory.write")
   if (!auth.ok) return auth.response
   const { actorId, tenantId } = auth
 

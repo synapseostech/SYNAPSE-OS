@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   LayoutDashboard, Stethoscope, UserRound, FlaskConical, Pill,
   Users, ClipboardList, Settings, Menu, X,
-  HeartPulse, Activity, Package,
+  HeartPulse, Activity, Package, ShoppingCart
 } from 'lucide-react'
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
@@ -188,7 +188,17 @@ export function AppSidebar({ children, tenantSlug: slugProp, role }: { children:
           <span className="text-sm font-semibold text-foreground truncate flex-1">
             {navGroups.flatMap(g => g.items).find(item => pathname === item.href || pathname.startsWith(item.href + '/'))?.name ?? 'Synapse OS'}
           </span>
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <Link
+              href={tenantSlug ? `/os/${tenantSlug}/clinical/dispense` : "/pharmacy/dispense"}
+              aria-label="POS Cart"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-border bg-muted/50 text-foreground hover:bg-muted text-xs font-medium transition-colors"
+            >
+              <ShoppingCart className="h-4 w-4 text-primary" />
+              <span className="hidden sm:inline">POS Cart</span>
+            </Link>
+            <ThemeToggle />
+          </div>
         </header>
 
         <main id="main" tabIndex={-1} className="flex-1 p-4 pb-20 outline-none lg:p-6 lg:pb-6">

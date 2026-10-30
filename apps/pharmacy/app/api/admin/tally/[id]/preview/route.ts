@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireTallyPermission } from "@/lib/tally/auth"
+import { requireTallyAdmin } from "@/lib/tally/auth"
+import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { normaliseTallyDocument } from "@synapse/db/tally-normalise"
 import type { TallyAccountOverrides } from "@synapse/db/tally-map"
@@ -31,10 +32,14 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requireTallyPermission(request, "inventory.write")
+  const auth = await requireTallyAdmin(request, "inventory.write")
   if (!auth.ok) return auth.response
   const { tenantId } = auth
   const { id } = await params
+
+  if (await findCompletedCutover(tenantId)) {
+    return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
+  }
 
   const { data: session, error: loadError } = await db()
     .from("pharmacy_import_sessions")

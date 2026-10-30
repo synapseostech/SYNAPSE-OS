@@ -35,7 +35,7 @@ export function TillBanner() {
         </>
       ) : (
         <>
-          No open till. Sales require an open cashier session.{" "}
+          No open till. Sales still complete, but cash will not be reconciled to a session.{" "}
           <Link href="/portal/till" className="underline font-medium">
             Open till
           </Link>

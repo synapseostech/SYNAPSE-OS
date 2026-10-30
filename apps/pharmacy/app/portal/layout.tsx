@@ -100,6 +100,40 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   )
 }
 
+/**
+ * Item count for the header cart. The POS page owns the cart and persists it to
+ * localStorage on every change, so the header reads that key instead of
+ * duplicating cart state. `pos-cart-changed` covers the same tab (storage events
+ * only fire in other tabs).
+ */
+function usePosCartCount(enabled: boolean) {
+  const [count, setCount] = useState(0)
+  useEffect(() => {
+    if (!enabled) return
+    const read = () => {
+      try {
+        const raw = window.localStorage.getItem('pos-cart')
+        const items = raw ? (JSON.parse(raw) as Array<{ cartQuantity?: number }>) : []
+        setCount(
+          Array.isArray(items)
+            ? items.reduce((total, item) => total + (Number(item.cartQuantity) || 0), 0)
+            : 0,
+        )
+      } catch {
+        setCount(0)
+      }
+    }
+    read()
+    window.addEventListener('pos-cart-changed', read)
+    window.addEventListener('storage', read)
+    return () => {
+      window.removeEventListener('pos-cart-changed', read)
+      window.removeEventListener('storage', read)
+    }
+  }, [enabled])
+  return count
+}
+
 function PortalShell({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = usePharmacySession()
   const pathname = usePathname()
@@ -133,6 +167,9 @@ function PortalShell({ children }: { children: React.ReactNode }) {
       permission,
     )
   }
+
+  const showPosCart = hasPermission('MANAGE_POS')
+  const posCartCount = usePosCartCount(showPosCart)
 
   const canUseShortcut = (shortcut: PortalShortcut) =>
     hasPermission(shortcut.capability, shortcut.adminOnly)
@@ -347,6 +384,26 @@ function PortalShell({ children }: { children: React.ReactNode }) {
               {isOnline ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
               <span>{isOnline ? "Online" : "Offline"}</span>
             </div>
+            {showPosCart && (
+              <Link
+                href="/portal/pos"
+                aria-label={
+                  posCartCount > 0
+                    ? `Open POS, ${posCartCount} item${posCartCount === 1 ? "" : "s"} in cart`
+                    : "Open POS"
+                }
+                title="Open POS"
+                className="relative inline-flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-2 text-sm font-medium text-foreground transition-colors hover:border-primary/40 hover:text-primary"
+              >
+                <ShoppingCart className="h-4 w-4" />
+                <span className="hidden xl:inline">POS</span>
+                {posCartCount > 0 && (
+                  <span className="absolute -right-1.5 -top-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+                    {posCartCount > 99 ? "99+" : posCartCount}
+                  </span>
+                )}
+              </Link>
+            )}
             <SynapseThemeToggle variant="segmented" size="sm" />
             <NotificationBell />
             <div className="hidden md:flex flex-col items-end">

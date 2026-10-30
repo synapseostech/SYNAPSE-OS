@@ -41,6 +41,13 @@ export type TallyAuthFailure = { ok: false; response: NextResponse }
 
 export type TallyAuthResult = TallyAuth | TallyAuthFailure
 
+/** Pharmacy roles allowed to start or advance a Tally cut-over. */
+const TALLY_ADMIN_ROLES = new Set(["pharmacy_admin", "pharmacy_ceo"])
+
+export function tallyIsAdmin(auth: TallyAuth): boolean {
+  return auth.isAdmin || TALLY_ADMIN_ROLES.has(auth.pharmacyRole ?? "")
+}
+
 export function tallyHasCapability(auth: TallyAuth, capability: PharmacyCapability): boolean {
   return sessionHasCapability(
     {
@@ -129,6 +136,31 @@ export async function requireTallyPermission(
       ok: false,
       response: NextResponse.json(
         { error: `Missing capability: ${capability}` },
+        { status: 403 },
+      ),
+    }
+  }
+  return auth
+}
+
+/**
+ * Tally cut-over routes are administrator-only: the cut-over writes the whole
+ * chart of accounts, stock and opening balances for the tenant.
+ */
+export async function requireTallyAdmin(
+  request: NextRequest,
+  capability: PharmacyCapability,
+): Promise<TallyAuthResult> {
+  const auth = await requireTallyPermission(request, capability)
+  if (!auth.ok) return auth
+  if (!tallyIsAdmin(auth)) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        {
+          error: "Only the pharmacy administrator can run the Tally cut-over.",
+          code: "TALLY_ADMIN_ONLY",
+        },
         { status: 403 },
       ),
     }

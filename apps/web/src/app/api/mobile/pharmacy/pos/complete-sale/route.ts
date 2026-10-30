@@ -152,10 +152,11 @@ export async function POST(req: NextRequest) {
     tenantId: auth.tenantId,
     cashierId: auth.userId,
     paymentMethod,
-    // Validate the till only; cash is credited after the sale commits (recordTillSale).
+    // Attach to the open till when there is one; cash is credited after the sale
+    // commits (recordTillSale). Optional, so a sale never blocks on a closed till.
     amount: 0,
     kind: 'sale',
-    required: body.syncReplay !== true,
+    required: false,
   })
   if (!till.ok) {
     return NextResponse.json(till.error, { status: httpStatusForPharmacyError(till.error.code) })

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireTallyPermission } from "@/lib/tally/auth"
+import { requireTallyAdmin } from "@/lib/tally/auth"
+import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import type { TallyApplyProgress } from "@/lib/tally/apply"
 import type { TallyPlanSummary } from "@/lib/tally/types"
@@ -13,7 +14,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requireTallyPermission(request, "inventory.read")
+  const auth = await requireTallyAdmin(request, "inventory.read")
   if (!auth.ok) return auth.response
   const { tenantId } = auth
   const { id } = await params
@@ -62,10 +63,15 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requireTallyPermission(request, "inventory.write")
+  const auth = await requireTallyAdmin(request, "inventory.write")
   if (!auth.ok) return auth.response
   const { tenantId } = auth
   const { id } = await params
+
+  // One-shot: nothing to discard once the cut-over has landed.
+  if (await findCompletedCutover(tenantId)) {
+    return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
+  }
 
   const { data: session, error } = await db()
     .from("pharmacy_import_sessions")
