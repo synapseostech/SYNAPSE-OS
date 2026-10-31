@@ -70,9 +70,9 @@ Everything below was run in this working tree after the final edit, and the figu
 
 <!-- evidence:begin -->
 source: artifacts/readiness/evidence.json
-timestamp: 2026-10-31T20:07:08.560Z
+timestamp: 2026-10-31T20:21:16.143Z
 git.branch: feat/clinical-intelligence-land
-git.head: d912a54b7c8d06715940960e84d1209c1d78fbd5
+git.head: 63fb422e5d6a64fbcd3f2ce3be325722722e33a5
 migrationCount: 202
 suites.rls-tenant-isolation.tests: 21
 suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=15 failures=0
