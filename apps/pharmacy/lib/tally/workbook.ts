@@ -81,7 +81,16 @@ export const TALLY_SHEETS: SheetSpec[] = [
     required: true,
     columns: [
       ...cols("name"),
-      ...opt("guid", "parent", "unit", "opening_quantity", "opening_rate", "opening_value"),
+      ...opt(
+        "guid",
+        "parent",
+        "unit",
+        "opening_quantity",
+        "opening_rate",
+        "opening_value",
+        "closing_quantity",
+        "closing_value",
+      ),
     ],
   },
   {
@@ -370,6 +379,8 @@ export function buildTallyDocument(records: TallyTabularRecords): TallyXmlDocume
       openingQuantity: number(row.opening_quantity),
       openingRate: number(row.opening_rate),
       openingValue: number(row.opening_value),
+      closingQuantity: number(row.closing_quantity),
+      closingValue: number(row.closing_value),
       batchWise: batches.length > 0,
       batches,
     })

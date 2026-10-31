@@ -106,6 +106,7 @@ export async function POST(
 
     return NextResponse.json({
       summary,
+      stock: plan.stock,
       preview: {
         accounts: plan.accounts.slice(0, PREVIEW_LIMIT).map((account) => ({
           code: account.code,
@@ -136,6 +137,8 @@ export async function POST(
           name: item.name,
           quantity: item.quantity,
           unit: item.unit,
+          openingValue: item.value,
+          closingValue: item.closingValue,
           batchCount: item.batches.length,
           receivableBatches: item.batches.filter((batch) => batch.receivable).length,
           expiredBatches: item.batches.filter(

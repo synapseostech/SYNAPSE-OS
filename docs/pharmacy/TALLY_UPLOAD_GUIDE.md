@@ -125,7 +125,7 @@ Sheets in the workbook, and their required columns:
 |---|---|---|
 | `Meta` | `key`, `value` | — |
 | `Accounts` | `name`, `parent` | `guid`, `opening_balance`, `closing_balance`, `email`, `phone`, `address` |
-| `StockItems` | `name` | `guid`, `parent`, `unit`, `opening_quantity`, `opening_rate`, `opening_value` |
+| `StockItems` | `name` | `guid`, `parent`, `unit`, `opening_quantity`, `opening_rate`, `opening_value`, `closing_quantity`, `closing_value` |
 | `StockBatches` | `stock_item` | `batch`, `expiry`, `quantity`, `amount`, `godown` |
 | `Vouchers` | `id`, `type`, `date` | `guid`, `number`, `party`, `narration`, `currency`, `cancelled` |
 | `VoucherLines` | `voucher_id`, `ledger` | `debit`, `credit`, `narration`, `party` |
@@ -176,6 +176,23 @@ Unknown or duplicated column headers are rejected per sheet.
 Preview → mapping → reconciliation → apply. Nothing is written to Synapse until
 the administrator applies a validated plan, and a completed cut-over blocks
 further Tally imports for that tenant.
+
+### Opening and closing stock
+
+The review shows the stock valuation Tally's profit and loss account presents
+for the exported period: the total **opening stock** and **closing stock**, and
+each item's opening and closing value. They come from `OPENINGVALUE` and
+`CLOSINGVALUE` on the stock items (or from the template's `opening_value` and
+`closing_value` columns).
+
+These figures are **display and comparison only**. The cut-over posts the opening
+stock you reviewed and the transactions you imported; it never posts a closing
+balance and never adjusts either side to make them agree.
+
+If the export carries opening values but no closing values, the review says so
+and the closing total is left unavailable rather than shown as zero. To get a
+closing figure, export Tally's stock summary, or set the export period to end on
+the cut-over date.
 
 Production support stays disabled until the TallyPrime and Tally.ERP 9 runtime
 gates in the architecture document have recorded evidence. The bridge has **not**

@@ -29,6 +29,7 @@ type StaticPlan = Pick<
   | "accounts"
   | "parties"
   | "stockItems"
+  | "stock"
   | "opening"
   | "counts"
   | "warnings"
@@ -62,6 +63,7 @@ export function summarisePlan(
       totalCredit: plan.opening.totalCredit,
       difference: plan.opening.difference,
     },
+    stock: plan.stock,
     exceptions: plan.exceptions.map((entry) => ({
       code: entry.code,
       message: entry.message,
@@ -92,6 +94,7 @@ export async function writeTallyPlan(
     accounts: plan.accounts,
     parties: plan.parties,
     stockItems: plan.stockItems,
+    stock: plan.stock,
     opening: plan.opening,
     counts: plan.counts,
     warnings: plan.warnings,

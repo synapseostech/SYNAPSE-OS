@@ -106,6 +106,13 @@ function plan(overrides: Partial<TallyCutoverPlan> = {}): TallyCutoverPlan {
     accounts: [],
     parties: [],
     stockItems: [],
+    stock: {
+      openingValue: null,
+      closingValue: null,
+      itemsWithOpeningValue: 0,
+      itemsWithClosingValue: 0,
+      itemCount: 0,
+    },
     opening: {
       date: "2026-04-01",
       currency: "UGX",

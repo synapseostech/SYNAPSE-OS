@@ -46,6 +46,7 @@ export type TallyExceptionCode =
   | "OPENING_STOCK_WITHOUT_VALUE"
   | "OPENING_STOCK_WITHOUT_QUANTITY"
   | "OPENING_STOCK_QUANTITY_MISMATCH"
+  | "STOCK_CLOSING_VALUE_MISSING"
   | "NON_INTEGER_QUANTITY"
   | "PARTY_OPENING_OPPOSITE_SIDE"
   | "PARTY_BILLS_MISMATCH"
@@ -129,7 +130,22 @@ export type TallyCutoverStockItem = {
   quantity?: number
   rate?: number
   value?: number
+  /** Exported closing figures, shown for comparison. Never posted. */
+  closingQuantity?: number
+  closingValue?: number
   batches: TallyCutoverStockBatch[]
+}
+
+/**
+ * Tally's own stock valuation for the exported period, as the profit and loss
+ * account presents it. Read from the export, never recomputed and never posted.
+ */
+export type TallyCutoverStockValuation = {
+  openingValue: number | null
+  closingValue: number | null
+  itemsWithOpeningValue: number
+  itemsWithClosingValue: number
+  itemCount: number
 }
 
 export type TallyCutoverJournalLine = {
@@ -207,6 +223,7 @@ export type TallyCutoverPlan = {
   accounts: TallyCutoverAccount[]
   parties: TallyCutoverParty[]
   stockItems: TallyCutoverStockItem[]
+  stock: TallyCutoverStockValuation
   opening: TallyCutoverOpening
   vouchers: TallyCutoverVoucher[]
   sales: TallyCutoverSale[]
@@ -750,8 +767,31 @@ export function normaliseTallyDocument(
       quantity,
       rate: rate === undefined ? undefined : round2(rate),
       value: value === undefined ? undefined : round2(value),
+      closingQuantity: item.closingQuantity,
+      closingValue: item.closingValue === undefined ? undefined : round2(item.closingValue),
       batches,
     })
+  }
+
+  // Tally's P&L shows the period's opening and closing stock. Report what the
+  // export actually carries; an export without closing figures shows none
+  // rather than a misleading zero.
+  const openingValues = stockItems.filter((item) => item.value !== undefined)
+  const closingValues = stockItems.filter((item) => item.closingValue !== undefined)
+  const sumValues = (items: TallyCutoverStockItem[], field: "value" | "closingValue") =>
+    round2(items.reduce((total, item) => total + (item[field] ?? 0), 0))
+  const stock: TallyCutoverStockValuation = {
+    openingValue: openingValues.length > 0 ? sumValues(openingValues, "value") : null,
+    closingValue: closingValues.length > 0 ? sumValues(closingValues, "closingValue") : null,
+    itemsWithOpeningValue: openingValues.length,
+    itemsWithClosingValue: closingValues.length,
+    itemCount: stockItems.length,
+  }
+  if (stockItems.length > 0 && closingValues.length === 0) {
+    addException(
+      "STOCK_CLOSING_VALUE_MISSING",
+      "This export carries opening stock but no closing stock. Tally's closing stock for the period is shown as unavailable rather than zero; export the stock summary, or set the export period to end on the cut-over date.",
+    )
   }
 
   const sales: TallyCutoverSale[] = []
@@ -893,6 +933,7 @@ export function normaliseTallyDocument(
     accounts: cutoverAccounts,
     parties,
     stockItems,
+    stock,
     opening: {
       date: conversionDate,
       currency,

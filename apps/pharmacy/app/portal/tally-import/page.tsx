@@ -47,6 +47,13 @@ type Summary = {
   format: string
   counts: Counts
   opening: { date: string; totalDebit: number; totalCredit: number; difference: number }
+  stock?: {
+    openingValue: number | null
+    closingValue: number | null
+    itemsWithOpeningValue: number
+    itemsWithClosingValue: number
+    itemCount: number
+  }
   exceptions: Array<{ code: string; message: string; detail?: string; severity: string }>
   chunkCount: number
   chunkSize: number
@@ -72,6 +79,8 @@ type PreviewStockItem = {
   name: string
   quantity?: number
   unit?: string
+  openingValue?: number
+  closingValue?: number
   batchCount: number
   receivableBatches: number
   expiredBatches: number
@@ -815,6 +824,48 @@ export default function TallyImportPage() {
                 )}
               </div>
 
+              {summary.stock && (
+                <div className="rounded-lg border p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-sm font-medium">Stock valuation · Tally profit and loss</p>
+                    <span className="text-xs text-muted-foreground">
+                      {summary.stock.itemCount} stock item
+                      {summary.stock.itemCount === 1 ? "" : "s"} in the export
+                    </span>
+                  </div>
+                  <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Opening stock</p>
+                      <p className="text-lg font-semibold">{money(summary.stock.openingValue, currency)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {summary.stock.itemsWithOpeningValue} of {summary.stock.itemCount} items carry an opening
+                        value
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Closing stock</p>
+                      <p className="text-lg font-semibold">{money(summary.stock.closingValue, currency)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {summary.stock.closingValue === null
+                          ? `Not in this export — ${summary.stock.itemsWithClosingValue} of ${summary.stock.itemCount} items carry a closing value`
+                          : `${summary.stock.itemsWithClosingValue} of ${summary.stock.itemCount} items carry a closing value`}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    These are Tally&apos;s own figures for the exported period. The cut-over posts opening stock and
+                    the history you imported; it does not post a closing balance, and nothing here is adjusted to
+                    make the two sides agree.
+                  </p>
+                  {summary.stock.closingValue === null && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      To see closing stock, export the stock summary, or set the Tally export period to end on the
+                      cut-over date.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {summary.exceptions.length > 0 && (
                 <div className="rounded-lg border border-[#E8B84B]/50 bg-[#E8B84B]/10 p-4">
                   <p className="flex items-center gap-2 text-sm font-semibold">
@@ -908,6 +959,8 @@ export default function TallyImportPage() {
                           <TableHead>SKU</TableHead>
                           <TableHead>Item</TableHead>
                           <TableHead>Qty</TableHead>
+                          <TableHead>Opening value</TableHead>
+                          <TableHead>Closing value</TableHead>
                           <TableHead>Batches</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -919,6 +972,8 @@ export default function TallyImportPage() {
                             <TableCell className="text-xs">
                               {item.quantity ?? "—"} {item.unit ?? ""}
                             </TableCell>
+                            <TableCell className="text-xs">{money(item.openingValue, currency)}</TableCell>
+                            <TableCell className="text-xs">{money(item.closingValue, currency)}</TableCell>
                             <TableCell className="text-xs">
                               {item.receivableBatches} receivable
                               {item.expiredBatches > 0 && (

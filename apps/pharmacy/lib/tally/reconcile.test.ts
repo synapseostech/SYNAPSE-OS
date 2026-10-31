@@ -36,6 +36,13 @@ function plan(overrides: Partial<TallyCutoverPlan> = {}): TallyCutoverPlan {
         ],
       },
     ] as unknown as TallyCutoverPlan["stockItems"],
+    stock: {
+      openingValue: 500,
+      closingValue: null,
+      itemsWithOpeningValue: 1,
+      itemsWithClosingValue: 0,
+      itemCount: 1,
+    },
     opening: {
       date: "2026-04-01",
       totalDebit: 1000,

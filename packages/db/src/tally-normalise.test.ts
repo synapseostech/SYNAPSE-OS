@@ -322,6 +322,57 @@ describe("normaliseTallyDocument", () => {
     assert.equal(result.opening.difference, 0)
   })
 
+  it("reports the exported opening and closing stock valuation without posting it", () => {
+    const result = plan(`
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><OPENINGBALANCE>1800.00</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="Inventory"><PARENT>Current Assets</PARENT><OPENINGBALANCE>1800.00</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="Capital"><PARENT>Capital Account</PARENT><OPENINGBALANCE>-3600.00</OPENINGBALANCE></LEDGER>
+      <STOCKITEM NAME="Test Item A">
+        <OPENINGBALANCE>10 Strip</OPENINGBALANCE>
+        <OPENINGRATE>100.00</OPENINGRATE>
+        <OPENINGVALUE>1000.00</OPENINGVALUE>
+        <CLOSEBALANCE>4 Strip</CLOSEBALANCE>
+        <CLOSINGVALUE>400.00</CLOSINGVALUE>
+      </STOCKITEM>
+      <STOCKITEM NAME="Test Item B">
+        <OPENINGBALANCE>8 Strip</OPENINGBALANCE>
+        <OPENINGRATE>100.00</OPENINGRATE>
+        <OPENINGVALUE>800.00</OPENINGVALUE>
+        <CLOSEBALANCE>6 Strip</CLOSEBALANCE>
+        <CLOSINGVALUE>600.00</CLOSINGVALUE>
+      </STOCKITEM>
+    `)
+
+    assert.deepEqual(result.stock, {
+      openingValue: 1800,
+      closingValue: 1000,
+      itemsWithOpeningValue: 2,
+      itemsWithClosingValue: 2,
+      itemCount: 2,
+    })
+    assert.equal(result.stockItems[0].closingValue, 400)
+    assert.equal(result.stockItems[0].closingQuantity, 4)
+    assert.ok(!result.exceptions.some((entry) => entry.code === "STOCK_CLOSING_VALUE_MISSING"))
+  })
+
+  it("leaves closing stock unavailable when the export carries no closing values", () => {
+    const result = plan(`
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><OPENINGBALANCE>500.00</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="Inventory"><PARENT>Current Assets</PARENT><OPENINGBALANCE>500.00</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="Capital"><PARENT>Capital Account</PARENT><OPENINGBALANCE>-1000.00</OPENINGBALANCE></LEDGER>
+      <STOCKITEM NAME="Test Item A">
+        <OPENINGBALANCE>5 Strip</OPENINGBALANCE>
+        <OPENINGRATE>100.00</OPENINGRATE>
+        <OPENINGVALUE>500.00</OPENINGVALUE>
+      </STOCKITEM>
+    `)
+
+    assert.equal(result.stock.openingValue, 500)
+    assert.equal(result.stock.closingValue, null)
+    assert.equal(result.stock.itemsWithClosingValue, 0)
+    assert.ok(result.exceptions.some((entry) => entry.code === "STOCK_CLOSING_VALUE_MISSING"))
+  })
+
   it("uses a stable content identity when Tally exports no voucher GUID", () => {
     const inner = `
       <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><OPENINGBALANCE>100.00</OPENINGBALANCE></LEDGER>

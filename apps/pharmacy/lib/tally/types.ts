@@ -47,6 +47,14 @@ export type TallyPlanSummary = {
     totalCredit: number
     difference: number
   }
+  /** Absent on summaries prepared before the stock valuation was recorded. */
+  stock?: {
+    openingValue: number | null
+    closingValue: number | null
+    itemsWithOpeningValue: number
+    itemsWithClosingValue: number
+    itemCount: number
+  }
   exceptions: Array<{
     code: string
     message: string
