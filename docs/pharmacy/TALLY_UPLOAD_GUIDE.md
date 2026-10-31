@@ -40,11 +40,30 @@ $env:SYNAPSE_TALLY_EXECUTABLE = "C:\Program Files\TallyPrime\tally.exe"
 npm run start --workspace @synapse/tally-bridge
 ```
 
-Then in the portal: **Tally Cut-over → paste the token → Connect and review**.
-
 What it does: asks Tally for exactly two reports, `All Masters` and `Day Book`
 (bounded by `SYNAPSE_TALLY_FROM_DATE`, default `19000101`), combines them, and
 pushes the result through the same preview as a manual upload.
+
+Then in the portal: **Tally Cut-over**. The page shows this same command with the
+portal's own origin already filled in, behind a **Copy command** button — use it
+when the bridge runs on the same computer as the browser.
+
+Paste the token into the token field and press **Check bridge** before
+**Connect and review**. It makes one read-only request to the bridge — it does not
+export anything — and reports which layer is failing:
+
+| Result on the page | Meaning |
+|---|---|
+| Bridge is running and Tally answered | ready to connect |
+| Bridge is running, but nothing answered at `http://127.0.0.1:9000` | Tally is closed, or its HTTP server is disabled |
+| The bridge is running, but it did not accept this token | the field and the command hold different tokens |
+| Nothing answered at `127.0.0.1:17890` | the bridge is not running on this computer, or it does not allow this page's origin |
+
+The last line covers two causes because the browser cannot read a cross-origin
+failure: a bridge that is stopped and a bridge that rejects the origin look
+identical from the page. If the bridge is running, check that
+`SYNAPSE_TALLY_ALLOWED_ORIGINS` names this page's origin exactly, with no
+trailing slash.
 
 | Variable | Meaning |
 |---|---|

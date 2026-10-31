@@ -346,7 +346,7 @@ export function createTallyBridgeServer(config, fetchImpl = fetch, tallyLifecycl
 
     const corsHeaders = {
       "access-control-allow-origin": origin,
-      "access-control-allow-methods": "POST, OPTIONS",
+      "access-control-allow-methods": "GET, POST, OPTIONS",
       "access-control-allow-headers": "content-type, x-synapse-tally-bridge-token",
       "access-control-max-age": "600",
       vary: "Origin",
@@ -360,7 +360,9 @@ export function createTallyBridgeServer(config, fetchImpl = fetch, tallyLifecycl
       response.end()
       return
     }
-    if (request.method !== "POST" || request.url !== "/api/tally/export") {
+    const isExport = request.method === "POST" && request.url === "/api/tally/export"
+    const isStatus = request.method === "GET" && request.url === "/api/tally/status"
+    if (!isExport && !isStatus) {
       sendJson(response, 404, { error: "Not found." }, corsHeaders)
       return
     }
@@ -368,6 +370,24 @@ export function createTallyBridgeServer(config, fetchImpl = fetch, tallyLifecycl
       sendJson(response, 401, { error: "Invalid bridge token." }, corsHeaders)
       return
     }
+
+    if (isStatus) {
+      // A reachability probe so the portal can name the failing layer before an
+      // export runs. It reads nothing from Tally and returns no company data.
+      const reachable = await (tallyLifecycle.probe ?? canConnectToTally)(config.tallyUrl)
+      sendJson(
+        response,
+        200,
+        {
+          bridge: "ok",
+          tally: reachable ? "reachable" : "unreachable",
+          target: config.tallyUrl.origin,
+        },
+        corsHeaders,
+      )
+      return
+    }
+
     if (Number(request.headers["content-length"] ?? 0) > 0 || request.headers["transfer-encoding"]) {
       sendJson(response, 400, { error: "This endpoint does not accept a request body." }, corsHeaders)
       return
@@ -385,7 +405,7 @@ export function createTallyBridgeServer(config, fetchImpl = fetch, tallyLifecycl
         "cache-control": "no-store",
         "x-content-type-options": "nosniff",
         "access-control-allow-origin": origin,
-        "access-control-allow-methods": "POST, OPTIONS",
+        "access-control-allow-methods": "GET, POST, OPTIONS",
         "access-control-allow-headers": "content-type, x-synapse-tally-bridge-token",
         vary: "Origin",
       })
