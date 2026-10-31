@@ -31,22 +31,31 @@ a Tally server on the private LAN.
 **Folder:** `apps/tally-bridge` in this repository.
 
 ```powershell
-npm install
-$env:SYNAPSE_TALLY_BRIDGE_TOKEN = "<64 hex characters>"
+cd C:\SynapseOS
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$bytes = New-Object byte[] 32
+$rng.GetBytes($bytes)
+$env:SYNAPSE_TALLY_BRIDGE_TOKEN = -join ($bytes | ForEach-Object { $_.ToString("x2") })
+$rng.Dispose()
+
 $env:SYNAPSE_TALLY_ALLOWED_ORIGINS = "https://pharm.synapseos.tech"
 $env:SYNAPSE_TALLY_TARGET_HOST = "127.0.0.1"
 $env:SYNAPSE_TALLY_TARGET_PORT = "9000"
-$env:SYNAPSE_TALLY_EXECUTABLE = "C:\Program Files\TallyPrime\tally.exe"
-npm run start --workspace @synapse/tally-bridge
+$env:SYNAPSE_TALLY_EXECUTABLE = "C:\Program Files\TallyPrime\tally.exe"   # optional
+# $env:SYNAPSE_TALLY_FROM_DATE = "20200401"                                # optional; omit for full history
+
+Write-Host "Copy this token into the portal: $env:SYNAPSE_TALLY_BRIDGE_TOKEN"
+node apps\tally-bridge\src\cli.mjs
 ```
 
 What it does: asks Tally for exactly two reports, `All Masters` and `Day Book`
 (bounded by `SYNAPSE_TALLY_FROM_DATE`, default `19000101`), combines them, and
 pushes the result through the same preview as a manual upload.
 
-Then in the portal: **Tally Cut-over**. The page shows this same command with the
-portal's own origin already filled in, behind a **Copy command** button — use it
-when the bridge runs on the same computer as the browser.
+Then in the portal: **Tally Cut-over**. The page builds this same command from
+the portal's own origin plus the Tally host, port, program path and start date
+you enter above it, behind a **Copy command** button — so you never type the
+token or the origin by hand.
 
 Paste the token into the token field and press **Check bridge** before
 **Connect and review**. It makes one read-only request to the bridge — it does not

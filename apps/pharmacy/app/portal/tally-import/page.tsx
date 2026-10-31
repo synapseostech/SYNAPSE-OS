@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useToast } from "@/hooks/use-toast"
+import { buildBridgeCommand } from "@/lib/tally/bridge-command"
 
 export const dynamic = "force-dynamic"
 
@@ -186,6 +187,10 @@ export default function TallyImportPage() {
   const [bridgeCheck, setBridgeCheck] = useState<BridgeCheck | null>(null)
   const [checkingBridge, setCheckingBridge] = useState(false)
   const [portalOrigin, setPortalOrigin] = useState("")
+  const [tallyHost, setTallyHost] = useState("127.0.0.1")
+  const [tallyPort, setTallyPort] = useState("9000")
+  const [tallyExecutable, setTallyExecutable] = useState("")
+  const [tallyFromDate, setTallyFromDate] = useState("")
   const [busy, setBusy] = useState<"idle" | "connecting" | "uploading" | "preview" | "applying" | "saving">("idle")
 
   const blocking = useMemo(
@@ -200,10 +205,17 @@ export default function TallyImportPage() {
     blocking.length === 0 &&
     busy === "idle"
 
-  const bridgeCommand =
-    `$env:SYNAPSE_TALLY_BRIDGE_TOKEN="<64-hex-token>"; ` +
-    `$env:SYNAPSE_TALLY_ALLOWED_ORIGINS="${portalOrigin || "https://pharm.synapseos.tech"}"; ` +
-    `npm run start --workspace @synapse/tally-bridge`
+  const bridgeCommand = useMemo(
+    () =>
+      buildBridgeCommand({
+        origin: portalOrigin,
+        host: tallyHost,
+        port: tallyPort,
+        executable: tallyExecutable,
+        fromDate: tallyFromDate,
+      }),
+    [portalOrigin, tallyHost, tallyPort, tallyExecutable, tallyFromDate],
+  )
 
   useEffect(() => {
     setPortalOrigin(window.location.origin)
@@ -569,9 +581,64 @@ export default function TallyImportPage() {
               <p className="text-sm font-medium">Start the bridge on this computer</p>
             </div>
             <p className="text-xs text-muted-foreground">
-              Node.js 22 is required. Open Tally, sign in, and select the company being cut over before running this.
+              Node.js 22 is required and there is nothing to install. Run this from the repository root.
+              Open Tally, sign in, and select the company being cut over before running it.
               The bridge listens only on 127.0.0.1 and cannot type a Tally password or choose a company for you.
             </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="tally-host">Tally host</Label>
+                <Input
+                  id="tally-host"
+                  value={tallyHost}
+                  onChange={(event) => setTallyHost(event.target.value)}
+                  placeholder="127.0.0.1"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">
+                  This PC, or the Tally PC&apos;s private IPv4 address.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tally-port">Tally HTTP port</Label>
+                <Input
+                  id="tally-port"
+                  value={tallyPort}
+                  onChange={(event) => setTallyPort(event.target.value)}
+                  placeholder="9000"
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">Tally&apos;s XML/HTTP server, 9000 by default.</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tally-executable">Tally program path (optional)</Label>
+                <Input
+                  id="tally-executable"
+                  value={tallyExecutable}
+                  onChange={(event) => setTallyExecutable(event.target.value)}
+                  placeholder="C:\Program Files\TallyPrime\tally.exe"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Launched only when nothing answers on the port above.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tally-from-date">History from (optional)</Label>
+                <Input
+                  id="tally-from-date"
+                  value={tallyFromDate}
+                  onChange={(event) => setTallyFromDate(event.target.value)}
+                  placeholder="20200401"
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">
+                  YYYYMMDD. Leave blank to read the full Day Book history.
+                </p>
+              </div>
+            </div>
             <div className="rounded-md bg-muted p-3">
               <pre className="overflow-x-auto whitespace-pre-wrap break-all text-xs">{bridgeCommand}</pre>
             </div>
@@ -580,7 +647,8 @@ export default function TallyImportPage() {
                 <Copy className="h-4 w-4" /> Copy command
               </Button>
               <span className="text-xs text-muted-foreground">
-                Replace the token placeholder with the one you paste below.
+                Run it, then paste the token it prints below. The token is generated on this computer and never
+                leaves it.
               </span>
             </div>
           </div>
