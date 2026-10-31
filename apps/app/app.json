@@ -40,8 +40,8 @@
             "compileSdkVersion": 37,
             "targetSdkVersion": 36,
             "buildToolsVersion": "37.0.0",
-            "enableMinifyInReleaseBuilds": true,
-            "enableShrinkResourcesInReleaseBuilds": true,
+            "enableMinifyInReleaseBuilds": false,
+            "enableShrinkResourcesInReleaseBuilds": false,
             "buildArchs": [
               "arm64-v8a",
               "armeabi-v7a"
