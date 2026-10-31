@@ -223,3 +223,33 @@ describe("DELETE /api/admin/tally/[id]", () => {
     expect((await remove()).status).toBe(404)
   })
 })
+
+describe("Tally cut-over kill switch", () => {
+  beforeEach(() => {
+    m.auth = AUTHORISED
+    setup(sessionRow("importing", { progress: progress(0) }))
+  })
+
+  it("closes the route before it reads the session", async () => {
+    process.env.SYNAPSE_TALLY_CUTOVER_ENABLED = "false"
+    try {
+      const res = await get()
+
+      expect(res.status).toBe(503)
+      expect(await res.json()).toMatchObject({ code: "TALLY_CUTOVER_DISABLED" })
+      expect(m.db.operations).toHaveLength(0)
+    } finally {
+      delete process.env.SYNAPSE_TALLY_CUTOVER_ENABLED
+    }
+  })
+
+  it("still answers an unauthenticated caller with 401 while closed", async () => {
+    process.env.SYNAPSE_TALLY_CUTOVER_ENABLED = "false"
+    m.auth = { ok: false, response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) }
+    try {
+      expect((await get()).status).toBe(401)
+    } finally {
+      delete process.env.SYNAPSE_TALLY_CUTOVER_ENABLED
+    }
+  })
+})

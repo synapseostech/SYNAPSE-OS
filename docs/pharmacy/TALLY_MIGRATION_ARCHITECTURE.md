@@ -51,11 +51,10 @@ Use Node.js 22 on the Windows computer where the pharmacy portal browser runs.
 That computer can also run Tally, or reach a Tally HTTP server on the private
 pharmacy LAN. The bridge itself listens only on `127.0.0.1`.
 
-In PowerShell from the repository root:
+The bridge has no dependencies, so there is no install step: Node.js 22 plus
+the `apps/tally-bridge` folder is enough. In PowerShell from the repository root:
 
 ```powershell
-npm install
-
 $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
 $bytes = New-Object byte[] 32
 $rng.GetBytes($bytes)
@@ -74,7 +73,7 @@ $env:SYNAPSE_TALLY_EXECUTABLE = "C:\Program Files\TallyPrime\tally.exe"
 
 # Print the one-time token so it can be pasted into the admin portal.
 Write-Host "Copy this token into the portal: $env:SYNAPSE_TALLY_BRIDGE_TOKEN"
-npm run start --workspace @synapse/tally-bridge
+node apps\tally-bridge\src\cli.mjs
 ```
 
 Keep the terminal open. Sign in to the pharmacy portal as the pharmacy
@@ -151,6 +150,10 @@ gate.
 
 Production support must remain disabled until all three runtime/edition gates
 above have evidence and the open rollback/reconciliation work is accepted.
+`SYNAPSE_TALLY_CUTOVER_ENABLED` is that control: the cut-over is closed in
+production unless the variable is explicitly `true`, and the cut-over API routes
+answer `503 TALLY_CUTOVER_DISABLED` while it is closed. The template download
+stays open because it reads and writes nothing.
 
 ## Required flow
 

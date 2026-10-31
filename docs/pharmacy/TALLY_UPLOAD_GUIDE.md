@@ -28,16 +28,18 @@ takes a single file.
 Run this on the Windows PC where the pharmacy portal is used. It can also reach
 a Tally server on the private LAN.
 
-**Folder:** `apps/tally-bridge` in this repository.
+**Folder:** `apps/tally-bridge` in this repository — that folder alone. The
+bridge imports nothing outside Node.js, so there is no `npm install` step and no
+need for the rest of the repository. Node.js 22 is the only prerequisite.
 
 ```powershell
-npm install
+cd C:\SynapseOS
 $env:SYNAPSE_TALLY_BRIDGE_TOKEN = "<64 hex characters>"
 $env:SYNAPSE_TALLY_ALLOWED_ORIGINS = "https://pharm.synapseos.tech"
 $env:SYNAPSE_TALLY_TARGET_HOST = "127.0.0.1"
 $env:SYNAPSE_TALLY_TARGET_PORT = "9000"
 $env:SYNAPSE_TALLY_EXECUTABLE = "C:\Program Files\TallyPrime\tally.exe"
-npm run start --workspace @synapse/tally-bridge
+node apps\tally-bridge\src\cli.mjs
 ```
 
 What it does: asks Tally for exactly two reports, `All Masters` and `Day Book`
@@ -167,6 +169,22 @@ Unknown or duplicated column headers are rejected per sheet.
 Preview → mapping → reconciliation → apply. Nothing is written to Synapse until
 the administrator applies a validated plan, and a completed cut-over blocks
 further Tally imports for that tenant.
+
+## Turning the cut-over on
+
+The cut-over is **closed by default in production**. While it is closed, every
+cut-over route answers `503` with `code: "TALLY_CUTOVER_DISABLED"`, and this page
+shows the closed state instead of the upload and bridge controls. The Excel and
+CSV template downloads stay available — they read nothing and write nothing.
+
+| Environment | Default | How to change it |
+|---|---|---|
+| production | closed | set `SYNAPSE_TALLY_CUTOVER_ENABLED=true` and redeploy |
+| anything else | open | set `SYNAPSE_TALLY_CUTOVER_ENABLED=false` to close |
+
+The flag is checked on every request, but a server-side variable change reaches
+the running deployment only when it is redeployed. Setting the variable back to
+`false`, or removing it, closes the cut-over again the same way.
 
 Production support stays disabled until the TallyPrime and Tally.ERP 9 runtime
 gates in the architecture document have recorded evidence. The bridge has **not**

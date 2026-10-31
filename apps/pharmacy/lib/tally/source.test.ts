@@ -52,6 +52,13 @@ describe("detectTallyFormat", () => {
   it("refuses anything else rather than guessing", () => {
     expect(() => detectTallyFormat(encode("plain text with no header"))).toThrow(TallySourceError)
   })
+
+  it("names Tally's company data folder when it refuses an unrecognised file", () => {
+    const refusal = () => detectTallyFormat(encode("\u0000\u0001binary company data\u0000"))
+
+    expect(refusal).toThrow(/company data folder is not an export/)
+    expect(refusal).toThrow(/export All Masters and Day Book/)
+  })
 })
 
 describe("readTallyDocument", () => {

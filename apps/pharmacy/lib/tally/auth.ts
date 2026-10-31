@@ -60,7 +60,44 @@ export function tallyHasCapability(auth: TallyAuth, capability: PharmacyCapabili
   )
 }
 
+/**
+ * Runtime kill switch for the Tally cut-over.
+ *
+ * It fails closed: anything other than an explicit "true" disables the cut-over
+ * in production, and an explicit "false" disables it everywhere. Outside
+ * production the default stays on so local runs and the test suite can exercise
+ * the routes.
+ */
+export function tallyCutoverEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  const flag = env.SYNAPSE_TALLY_CUTOVER_ENABLED?.trim().toLowerCase()
+  if (flag === "true") return true
+  if (flag === "false") return false
+  return env.NODE_ENV !== "production"
+}
+
+function cutoverDisabled(): TallyAuthFailure {
+  return {
+    ok: false,
+    response: NextResponse.json(
+      {
+        error: "The Tally cut-over is disabled in this environment.",
+        code: "TALLY_CUTOVER_DISABLED",
+      },
+      { status: 503 },
+    ),
+  }
+}
+
 export async function requireTallyPermission(
+  request: NextRequest,
+  capability: PharmacyCapability,
+): Promise<TallyAuthResult> {
+  const auth = await authenticateTally(request, capability)
+  if (!auth.ok) return auth
+  return tallyCutoverEnabled() ? auth : cutoverDisabled()
+}
+
+async function authenticateTally(
   request: NextRequest,
   capability: PharmacyCapability,
 ): Promise<TallyAuthResult> {
