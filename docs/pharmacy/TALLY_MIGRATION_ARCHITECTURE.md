@@ -96,7 +96,9 @@ allow port 9000 only from the bridge computer on the private network. Never
 expose Tally's HTTP port to the public internet. `SYNAPSE_TALLY_COMPANY` may be
 set to pin the company name; otherwise the active Tally company is used and must
 be checked in the preview. `SYNAPSE_TALLY_FROM_DATE` accepts `YYYYMMDD` and
-defaults to `19000101`.
+defaults to `19000101`; `SYNAPSE_TALLY_TO_DATE` accepts `YYYYMMDD` and defaults
+to today. Both reports are requested for that range, because Tally reports a
+ledger's or stock item's closing balance only when `SVTODATE` is set.
 
 The bridge is a user-started, one-shot migration tool, not a Windows service or
 continuous synchronizer. The combined result is subject to the existing 25 MB

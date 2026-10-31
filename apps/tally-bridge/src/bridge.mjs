@@ -99,6 +99,7 @@ export function readBridgeConfig(env = process.env) {
       env.SYNAPSE_TALLY_FROM_DATE ?? DEFAULT_TALLY_FROM_DATE,
       "FROM_DATE",
     ),
+    toDate: env.SYNAPSE_TALLY_TO_DATE ? validTallyDate(env.SYNAPSE_TALLY_TO_DATE, "TO_DATE") : "",
   }
 }
 
@@ -116,9 +117,10 @@ export function buildTallyExportRequest(report, { company, fromDate, toDate }) {
   const companyTag = company
     ? `<SVCURRENTCOMPANY>${escapeXml(company)}</SVCURRENTCOMPANY>`
     : ""
-  const dateTags = report === "Day Book"
-    ? `<SVFROMDATE>${validTallyDate(fromDate, "FROM_DATE")}</SVFROMDATE><SVTODATE>${validTallyDate(toDate, "TO_DATE")}</SVTODATE>`
-    : ""
+  // Masters carry the period too: Tally only reports each ledger's and stock
+  // item's closing balance when SVTODATE is part of the request, and a
+  // balances-only cut-over has nothing to read without it.
+  const dateTags = `<SVFROMDATE>${validTallyDate(fromDate, "FROM_DATE")}</SVFROMDATE><SVTODATE>${validTallyDate(toDate, "TO_DATE")}</SVTODATE>`
 
   return [
     "<ENVELOPE>",
@@ -306,8 +308,8 @@ export async function exportTallyCompany(
     String(now.getMonth() + 1).padStart(2, "0"),
     String(now.getDate()).padStart(2, "0"),
   ].join("")
-  const masterXml = await fetchReport(fetchImpl, config, "All Masters", today)
-  const voucherXml = await fetchReport(fetchImpl, config, "Day Book", today)
+  const masterXml = await fetchReport(fetchImpl, config, "All Masters", config.toDate || today)
+  const voucherXml = await fetchReport(fetchImpl, config, "Day Book", config.toDate || today)
   return combineTallyExports(masterXml, voucherXml)
 }
 

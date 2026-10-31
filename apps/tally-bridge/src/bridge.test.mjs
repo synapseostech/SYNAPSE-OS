@@ -51,6 +51,8 @@ describe("Tally bridge configuration", () => {
     assert.throws(() => config({ SYNAPSE_TALLY_TARGET_HOST: "203.0.113.12" }), /private LAN IP/)
     assert.throws(() => config({ SYNAPSE_TALLY_TARGET_HOST: "fc.example.com" }), /private LAN IP/)
     assert.equal(config({ SYNAPSE_TALLY_TARGET_HOST: "192.168.1.22" }).tallyUrl.hostname, "192.168.1.22")
+    assert.throws(() => config({ SYNAPSE_TALLY_TO_DATE: "2026-02-30" }), /TO_DATE_INVALID/)
+    assert.equal(config({ SYNAPSE_TALLY_TO_DATE: "20260331" }).toDate, "20260331")
   })
 
   it("builds fixed XML export requests and escapes a configured company name", () => {
@@ -63,6 +65,15 @@ describe("Tally bridge configuration", () => {
     assert.match(request, /<ID>Day Book<\/ID>/)
     assert.match(request, /Pharmacy &amp; &lt;Co&gt;/)
     assert.match(request, /<SVFROMDATE>19000101<\/SVFROMDATE>/)
+
+    const masters = buildTallyExportRequest("All Masters", {
+      company: "",
+      fromDate: "19000101",
+      toDate: "20261030",
+    })
+    assert.match(masters, /<SVFROMDATE>19000101<\/SVFROMDATE>/)
+    assert.match(masters, /<SVTODATE>20261030<\/SVTODATE>/)
+
     assert.throws(
       () => buildTallyExportRequest("All Ledgers", { company: "", fromDate: "19000101", toDate: "20261030" }),
       /REPORT_UNSUPPORTED/,
@@ -231,10 +242,29 @@ describe("Tally export", () => {
     assert.equal(typeof requests[0].body, "string")
     assert.match(requests[0].body, /<ID>All Masters<\/ID>/)
     assert.match(requests[1].body, /<ID>Day Book<\/ID>/)
+    assert.match(requests[0].body, new RegExp(`<SVTODATE>${expectedLocalDate}</SVTODATE>`))
     assert.match(requests[1].body, new RegExp(`<SVTODATE>${expectedLocalDate}</SVTODATE>`))
     assert.equal(requests[0].redirect, "error")
     assert.match(xml, /<COMPANYNAME>Test Pharmacy<\/COMPANYNAME>/)
     assert.match(xml, /<VOUCHER>/)
+  })
+
+  it("pins both reports to SYNAPSE_TALLY_TO_DATE when it is set", async () => {
+    const requests = []
+    await exportTallyCompany(
+      config({ SYNAPSE_TALLY_TO_DATE: "20260331" }),
+      async (_url, options) => {
+        requests.push({ body: options.body })
+        return new Response(requests.length === 1 ? masterReply : voucherReply, { status: 200 })
+      },
+      new Date("2026-10-30T12:00:00.000Z"),
+      { probe: async () => true },
+    )
+
+    assert.equal(requests.length, 2)
+    for (const request of requests) {
+      assert.match(request.body, /<SVTODATE>20260331<\/SVTODATE>/)
+    }
   })
 
   it("distinguishes malformed response encoding and HTTP failures from connection errors", async () => {

@@ -43,14 +43,20 @@ $env:SYNAPSE_TALLY_TARGET_HOST = "127.0.0.1"
 $env:SYNAPSE_TALLY_TARGET_PORT = "9000"
 $env:SYNAPSE_TALLY_EXECUTABLE = "C:\Program Files\TallyPrime\tally.exe"   # optional
 # $env:SYNAPSE_TALLY_FROM_DATE = "20200401"                                # optional; omit for full history
+# $env:SYNAPSE_TALLY_TO_DATE = "20260331"                                  # optional; defaults to today
 
 Write-Host "Copy this token into the portal: $env:SYNAPSE_TALLY_BRIDGE_TOKEN"
 node apps\tally-bridge\src\cli.mjs
 ```
 
-What it does: asks Tally for exactly two reports, `All Masters` and `Day Book`
-(bounded by `SYNAPSE_TALLY_FROM_DATE`, default `19000101`), combines them, and
-pushes the result through the same preview as a manual upload.
+What it does: asks Tally for exactly two reports, `All Masters` and `Day Book`,
+for one date range, combines them, and pushes the result through the same
+preview as a manual upload. The range starts at `SYNAPSE_TALLY_FROM_DATE`
+(default `19000101`) and ends at `SYNAPSE_TALLY_TO_DATE` (default today). The
+masters request carries the end date because Tally only reports each ledger's
+and stock item's **closing balance** when `SVTODATE` is part of the request —
+which is what a balances-only cut-over reads. Set `SYNAPSE_TALLY_TO_DATE` to the
+date the balances should close on.
 
 Then in the portal: **Tally Cut-over**. The page builds this same command from
 the portal's own origin plus the Tally host, port, program path and start date
@@ -82,6 +88,7 @@ trailing slash.
 | `SYNAPSE_TALLY_COMPANY` | optional; pins the company, otherwise the open company is used |
 | `SYNAPSE_TALLY_EXECUTABLE` | optional; Tally is launched only if port 9000 is not already accepting |
 | `SYNAPSE_TALLY_FROM_DATE` | optional; `YYYYMMDD` |
+| `SYNAPSE_TALLY_TO_DATE` | optional; `YYYYMMDD`; the date closing balances are reported as at, default today |
 
 The bridge listens only on `127.0.0.1:17890`. It cannot type a Tally password or
 pick a company — open Tally, sign in, select the correct company, then connect.

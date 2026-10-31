@@ -16,6 +16,7 @@ export type BridgeCommandInput = {
   port: string
   executable: string
   fromDate: string
+  toDate?: string
 }
 
 function cleanHost(value: string): string {
@@ -40,7 +41,7 @@ function cleanExecutable(value: string): string {
   return /["$`\u0000-\u001f]/.test(path) ? "" : path
 }
 
-function cleanFromDate(value: string): string {
+function cleanTallyDate(value: string): string {
   return /^\d{8}$/.test(value.trim()) ? value.trim() : ""
 }
 
@@ -61,8 +62,11 @@ export function buildBridgeCommand(input: BridgeCommandInput): string {
   const executable = cleanExecutable(input.executable)
   if (executable) lines.push(`$env:SYNAPSE_TALLY_EXECUTABLE = "${executable}"`)
 
-  const fromDate = cleanFromDate(input.fromDate)
+  const fromDate = cleanTallyDate(input.fromDate)
   if (fromDate) lines.push(`$env:SYNAPSE_TALLY_FROM_DATE = "${fromDate}"`)
+
+  const toDate = cleanTallyDate(input.toDate ?? "")
+  if (toDate) lines.push(`$env:SYNAPSE_TALLY_TO_DATE = "${toDate}"`)
 
   lines.push(
     "",

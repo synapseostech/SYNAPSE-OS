@@ -28,6 +28,15 @@ describe("buildBridgeCommand", () => {
     const command = buildBridgeCommand(base)
     expect(command).not.toContain("SYNAPSE_TALLY_EXECUTABLE")
     expect(command).not.toContain("SYNAPSE_TALLY_FROM_DATE")
+    expect(command).not.toContain("SYNAPSE_TALLY_TO_DATE")
+  })
+
+  it("pins the closing date when one is given", () => {
+    const command = buildBridgeCommand({ ...base, toDate: "20260331" })
+    expect(command).toContain('$env:SYNAPSE_TALLY_TO_DATE = "20260331"')
+
+    const rejected = buildBridgeCommand({ ...base, toDate: "31/03/2026" })
+    expect(rejected).not.toContain("SYNAPSE_TALLY_TO_DATE")
   })
 
   it("keeps a quoted Windows path and an eight-digit start date", () => {

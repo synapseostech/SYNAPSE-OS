@@ -202,6 +202,7 @@ export default function TallyImportPage() {
   const [tallyPort, setTallyPort] = useState("9000")
   const [tallyExecutable, setTallyExecutable] = useState("")
   const [tallyFromDate, setTallyFromDate] = useState("")
+  const [tallyToDate, setTallyToDate] = useState("")
   const [busy, setBusy] = useState<"idle" | "connecting" | "uploading" | "preview" | "applying" | "saving">("idle")
 
   const blocking = useMemo(
@@ -224,8 +225,9 @@ export default function TallyImportPage() {
         port: tallyPort,
         executable: tallyExecutable,
         fromDate: tallyFromDate,
+        toDate: tallyToDate,
       }),
-    [portalOrigin, tallyHost, tallyPort, tallyExecutable, tallyFromDate],
+    [portalOrigin, tallyHost, tallyPort, tallyExecutable, tallyFromDate, tallyToDate],
   )
 
   useEffect(() => {
@@ -648,6 +650,20 @@ export default function TallyImportPage() {
                 />
                 <p className="text-xs text-muted-foreground">
                   YYYYMMDD. Leave blank to read the full Day Book history.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tally-to-date">Balances close on (optional)</Label>
+                <Input
+                  id="tally-to-date"
+                  value={tallyToDate}
+                  onChange={(event) => setTallyToDate(event.target.value)}
+                  placeholder="20260331"
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">
+                  YYYYMMDD. The date Tally reports closing balances for. Leave blank for today.
                 </p>
               </div>
             </div>
