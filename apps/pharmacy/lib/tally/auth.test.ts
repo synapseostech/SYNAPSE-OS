@@ -22,7 +22,7 @@ vi.mock("@synapse/auth", () => ({
   validateSession: m.validateSession,
 }))
 
-import { requireTallyPermission } from "./auth"
+import { requireTallyAdmin, requireTallyPermission, tallyCutoverEnabled } from "./auth"
 
 const ADMIN_TOKEN = {
   sub: "user-1",
@@ -178,5 +178,62 @@ describe("requireTallyPermission", () => {
 
     expect(auth.ok).toBe(false)
     if (!auth.ok) expect(auth.response.status).toBe(401)
+  })
+
+  it("closes the cut-over to an authorized caller when the switch is off", async () => {
+    process.env.SYNAPSE_TALLY_CUTOVER_ENABLED = "false"
+    try {
+      const auth = await requireTallyPermission(bearer(), "inventory.read")
+
+      expect(auth.ok).toBe(false)
+      if (!auth.ok) {
+        expect(auth.response.status).toBe(503)
+        expect(await auth.response.json()).toMatchObject({ code: "TALLY_CUTOVER_DISABLED" })
+      }
+    } finally {
+      delete process.env.SYNAPSE_TALLY_CUTOVER_ENABLED
+    }
+  })
+
+  it("closes the admin routes too, not only the status route", async () => {
+    process.env.SYNAPSE_TALLY_CUTOVER_ENABLED = "false"
+    try {
+      const auth = await requireTallyAdmin(bearer(), "inventory.write")
+
+      expect(auth.ok).toBe(false)
+      if (!auth.ok) expect(auth.response.status).toBe(503)
+    } finally {
+      delete process.env.SYNAPSE_TALLY_CUTOVER_ENABLED
+    }
+  })
+
+  it("answers an unauthenticated caller before the switch is consulted", async () => {
+    process.env.SYNAPSE_TALLY_CUTOVER_ENABLED = "false"
+    m.verifyToken.mockRejectedValue(new Error("bad signature"))
+    try {
+      const auth = await requireTallyPermission(bearer(), "inventory.write")
+
+      expect(auth.ok).toBe(false)
+      if (!auth.ok) expect(auth.response.status).toBe(401)
+    } finally {
+      delete process.env.SYNAPSE_TALLY_CUTOVER_ENABLED
+    }
+  })
+})
+
+describe("tallyCutoverEnabled", () => {
+  it("defaults to enabled outside production", () => {
+    expect(tallyCutoverEnabled({ NODE_ENV: "test" })).toBe(true)
+    expect(tallyCutoverEnabled({})).toBe(true)
+  })
+
+  it("defaults to disabled in production", () => {
+    expect(tallyCutoverEnabled({ NODE_ENV: "production" })).toBe(false)
+  })
+
+  it("lets an explicit flag override the environment default", () => {
+    expect(tallyCutoverEnabled({ NODE_ENV: "production", SYNAPSE_TALLY_CUTOVER_ENABLED: "true" })).toBe(true)
+    expect(tallyCutoverEnabled({ NODE_ENV: "development", SYNAPSE_TALLY_CUTOVER_ENABLED: "false" })).toBe(false)
+    expect(tallyCutoverEnabled({ NODE_ENV: "production", SYNAPSE_TALLY_CUTOVER_ENABLED: " FALSE " })).toBe(false)
   })
 })

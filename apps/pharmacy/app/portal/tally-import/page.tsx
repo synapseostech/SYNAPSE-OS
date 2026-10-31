@@ -193,7 +193,7 @@ export default function TallyImportPage() {
   const [reconcile, setReconcile] = useState<ReconcileCheck[] | null>(null)
   const [conversionDate, setConversionDate] = useState("")
   const [mode, setMode] = useState<"opening" | "closing">("opening")
-  const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "error">("checking")
+  const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "disabled" | "error">("checking")
   const [bridgeToken, setBridgeToken] = useState("")
   const [bridgeCheck, setBridgeCheck] = useState<BridgeCheck | null>(null)
   const [checkingBridge, setCheckingBridge] = useState(false)
@@ -242,6 +242,10 @@ export default function TallyImportPage() {
         const data = await response.json()
         if (!active) return
         if (!response.ok) {
+          if (response.status === 503 && data.code === "TALLY_CUTOVER_DISABLED") {
+            setCutoverAccess("disabled")
+            return
+          }
           setCutoverAccess(response.status === 403 ? "denied" : "error")
           return
         }
@@ -343,6 +347,14 @@ export default function TallyImportPage() {
       })
       const data = await previewResponse.json()
       if (!previewResponse.ok) {
+        if (data.code === "TALLY_FORMAT_UNSUPPORTED") {
+          toast({
+            variant: "destructive",
+            title: "That file is not a Tally export",
+            description: data.error,
+          })
+          return
+        }
         toast({ variant: "destructive", title: data.error ?? "The file could not be read" })
         return
       }
@@ -545,6 +557,8 @@ export default function TallyImportPage() {
             "Tally cut-over is already complete for this pharmacy. The import is locked."}
           {cutoverAccess === "denied" &&
             "Only the pharmacy administrator can access the Tally cut-over workspace."}
+          {cutoverAccess === "disabled" &&
+            "The Tally cut-over is currently disabled for this deployment. Nothing can be uploaded or applied until it is turned back on."}
           {cutoverAccess === "error" &&
             "Could not verify Tally cut-over access. Reload the page before continuing."}
         </div>

@@ -200,19 +200,20 @@ export async function POST(request: NextRequest) {
       kampalaToday(),
     )
     const allocatedQuantity = allocations.reduce((sum, allocation) => sum + allocation.quantity, 0)
-    if (allocatedQuantity !== quantity) {
-      return NextResponse.json(
-        { error: "Batch stock changed. Refresh the cart and retry.", code: "INSUFFICIENT_STOCK" },
-        { status: 409 },
-      )
-    }
+    // Stock may go negative on a sale. The shortfall is charged at the catalog
+    // price and carried by the RPC's NEG-STOCK overdraft batch, so an empty
+    // shelf no longer blocks the till.
+    const shortfall = Math.max(0, quantity - allocatedQuantity)
 
-    const listTotal = allocations.reduce(
-      (sum, allocation) => sum + allocation.quantity * Number(allocation.sellingPrice ?? basePrice),
-      0,
-    )
+    const listTotal =
+      allocations.reduce(
+        (sum, allocation) => sum + allocation.quantity * Number(allocation.sellingPrice ?? basePrice),
+        0,
+      ) + shortfall * basePrice
     const weightedUnitPrice = listTotal / quantity
-    const snapshot = raw.batchAllocations
+    // A line that already outran its batches cannot match the snapshot the cart
+    // took; server-side FEFO is authoritative for it.
+    const snapshot = shortfall > 0 ? undefined : raw.batchAllocations
     if (snapshot !== undefined) {
       const incoming = Array.isArray(snapshot) ? snapshot : []
       if (incoming.some((allocation) => !allocation || typeof allocation !== "object")) {
@@ -274,29 +275,41 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const splitItems = splitBatchSaleLine(
-      allocations.map((allocation) => ({
-        batchId: allocation.batchId,
-        quantity: allocation.quantity,
-        listPrice: Number(allocation.sellingPrice ?? basePrice),
-      })),
-      validated.rpcItem.discount_amount,
-    )
-    if (splitItems.length !== allocations.length) {
-      return NextResponse.json(
-        { error: "Discount exceeds the batch-priced line total", code: "INVALID_DISCOUNT" },
-        { status: 400 },
-      )
-    }
-    for (const item of splitItems) {
+    if (shortfall > 0) {
+      // One line at the blended price; the RPC walks FEFO itself and takes only
+      // the remainder negative.
       rpcItems.push({
         ...validated.rpcItem,
-        batch_id: item.batch_id,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        list_price: item.unit_price,
-        discount_amount: item.discount_amount,
+        batch_id: null,
+        unit_price: weightedUnitPrice,
+        list_price: weightedUnitPrice,
+        allow_overdraft: true,
       })
+    } else {
+      const splitItems = splitBatchSaleLine(
+        allocations.map((allocation) => ({
+          batchId: allocation.batchId,
+          quantity: allocation.quantity,
+          listPrice: Number(allocation.sellingPrice ?? basePrice),
+        })),
+        validated.rpcItem.discount_amount,
+      )
+      if (splitItems.length !== allocations.length) {
+        return NextResponse.json(
+          { error: "Discount exceeds the batch-priced line total", code: "INVALID_DISCOUNT" },
+          { status: 400 },
+        )
+      }
+      for (const item of splitItems) {
+        rpcItems.push({
+          ...validated.rpcItem,
+          batch_id: item.batch_id,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          list_price: item.unit_price,
+          discount_amount: item.discount_amount,
+        })
+      }
     }
   }
 

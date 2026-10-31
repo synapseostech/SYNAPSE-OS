@@ -268,7 +268,7 @@ describe('durable pharmacy sync runtime', () => {
     expect(classifyApplyHttpFailure(422)).toBe('rejected')
   })
 
-  it('blocks a second offline sale that would oversell the cached snapshot (case D)', async () => {
+  it('carries a second offline sale past the cached snapshot into the overdraft batch (case D)', async () => {
     const path = databasePath()
     const connection = new NodeSQLiteConnection(path)
     const store = new SQLiteSyncOutboxStore(connection)
@@ -306,14 +306,19 @@ describe('durable pharmacy sync runtime', () => {
       },
     })
     second.payloadHash = await hashPayload(second.payload)
-    await expect(
-      store.persistSale(second, [{ productId, quantity: 3, batchId }]),
-    ).rejects.toMatchObject({
-      code: 'INSUFFICIENT_STOCK',
-      sellableQuantity: 2,
-      requestedQuantity: 3,
-    })
-    expect(await store.get(second.commandId)).toBeNull()
+    await store.persistSale(second, [{ productId, quantity: 3, batchId }])
+
+    expect(await store.get(second.commandId)).not.toBeNull()
+    const reservations = await connection.getAllAsync<{ batch_id: string; quantity: number }>(
+      'SELECT batch_id, quantity FROM synapse_stock_reservations WHERE command_id = ?',
+      [second.commandId],
+    )
+    expect(reservations).toEqual(
+      expect.arrayContaining([
+        { batch_id: batchId, quantity: 2 },
+        { batch_id: 'NEG-STOCK', quantity: 1 },
+      ]),
+    )
     connection.close()
   })
 

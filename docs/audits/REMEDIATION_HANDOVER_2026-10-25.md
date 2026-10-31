@@ -70,18 +70,18 @@ Everything below was run in this working tree after the final edit, and the figu
 
 <!-- evidence:begin -->
 source: artifacts/readiness/evidence.json
-timestamp: 2026-10-31T17:02:42.789Z
+timestamp: 2026-10-31T20:21:16.143Z
 git.branch: feat/clinical-intelligence-land
-git.head: dd5c68d276d130f43b3b7516f67f3d7fa58a87b2
-migrationCount: 201
+git.head: 63fb422e5d6a64fbcd3f2ce3be325722722e33a5
+migrationCount: 202
 suites.rls-tenant-isolation.tests: 21
-suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=14 failures=0
+suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=15 failures=0
 suites.security-gates.exitCode: 0
 suites.hardening.tests: 74
 suites.tenancy.tests: 59
 suites.workflow-safety.tests: 60
 suites.rls-matrix.tests: 10
-dbAcl.definerFunctions: 73
+dbAcl.definerFunctions: 74
 dbAcl.publicGrants: 0
 dbAcl.possibleImplicitPublic: 21
 dbAcl.liveCheck: SKIPPED_NO_DATABASE_ACL_URL

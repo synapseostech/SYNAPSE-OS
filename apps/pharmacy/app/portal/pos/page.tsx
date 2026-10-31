@@ -527,11 +527,13 @@ export default function POSPage() {
   }, [products, productsLoaded, repriceCart])
 
   const addToCart = (product: Product, selectedPackage?: ProductPackage | null) => {
-    // Stock may never go negative on a sale (server enforces INSUFFICIENT_STOCK too).
+    // Stock may go negative: an out-of-stock item is still sellable, and the
+    // balance is taken below zero rather than the sale being refused.
     if (Number(product.quantity ?? 0) <= 0) {
-      setLiveMessage(`${product.name} is out of stock`)
-      toast({ title: "Out of stock", description: `${product.name} has no sellable stock. Receive stock first.`, variant: "destructive" })
-      return
+      toast({
+        title: "Selling below zero stock",
+        description: `${product.name} has no sellable stock. This sale takes the balance negative.`,
+      })
     }
     setLiveMessage(`${product.name} added to cart`)
     const existingItem = cart.find((item) => item.id === product.id &&
@@ -1639,7 +1641,7 @@ export default function POSPage() {
                           </span>
                         ) : product.quantity === 0 ? (
                           <span className="text-amber-700 font-medium">
-                            Out of stock · cannot be sold
+                            Out of stock · sells below zero
                           </span>
                         ) : (
                           <span>Stock: {product.quantity}</span>

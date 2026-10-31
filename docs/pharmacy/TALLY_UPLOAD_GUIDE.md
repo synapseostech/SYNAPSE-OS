@@ -28,7 +28,9 @@ takes a single file.
 Run this on the Windows PC where the pharmacy portal is used. It can also reach
 a Tally server on the private LAN.
 
-**Folder:** `apps/tally-bridge` in this repository.
+**Folder:** `apps/tally-bridge` in this repository — that folder alone. The
+bridge imports nothing outside Node.js, so there is no `npm install` step and no
+need for the rest of the repository. Node.js 22 is the only prerequisite.
 
 ```powershell
 cd C:\SynapseOS
@@ -219,6 +221,22 @@ If the export carries opening values but no closing values, the review says so
 and the closing total is left unavailable rather than shown as zero. To get a
 closing figure, export Tally's stock summary, or set the export period to end on
 the cut-over date.
+
+## Turning the cut-over on
+
+The cut-over is **closed by default in production**. While it is closed, every
+cut-over route answers `503` with `code: "TALLY_CUTOVER_DISABLED"`, and this page
+shows the closed state instead of the upload and bridge controls. The Excel and
+CSV template downloads stay available — they read nothing and write nothing.
+
+| Environment | Default | How to change it |
+|---|---|---|
+| production | closed | set `SYNAPSE_TALLY_CUTOVER_ENABLED=true` and redeploy |
+| anything else | open | set `SYNAPSE_TALLY_CUTOVER_ENABLED=false` to close |
+
+The flag is checked on every request, but a server-side variable change reaches
+the running deployment only when it is redeployed. Setting the variable back to
+`false`, or removing it, closes the cut-over again the same way.
 
 Production support stays disabled until the TallyPrime and Tally.ERP 9 runtime
 gates in the architecture document have recorded evidence. The bridge has **not**

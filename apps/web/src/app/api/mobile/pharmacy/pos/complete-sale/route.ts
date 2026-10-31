@@ -156,10 +156,10 @@ export async function POST(req: NextRequest) {
       pinBatchId: requestedBatchId,
     })
     const allocatedQuantity = allocations.reduce((sum, allocation) => sum + allocation.quantity, 0)
-    if (
-      allocatedQuantity !== quantity ||
-      allocations.some((allocation) => !allocation.batchId)
-    ) {
+    // An out-of-stock line is still sellable: the RPC carries the shortfall into
+    // the product's NEG-STOCK overdraft batch and book stock goes negative.
+    const shortfall = Math.max(0, quantity - allocatedQuantity)
+    if (allocations.some((allocation) => !allocation.batchId)) {
       return NextResponse.json(
         { error: 'Batch stock changed. Refresh the cart and retry.', code: 'INSUFFICIENT_STOCK' },
         { status: 409 },
@@ -185,12 +185,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Could not verify batch prices' }, { status: 500 })
     }
 
-    const listTotal = pricedAllocations.reduce(
-      (sum, allocation) => sum + allocation.quantity * allocation.listPrice,
-      0,
-    )
+    const listTotal =
+      pricedAllocations.reduce(
+        (sum, allocation) => sum + allocation.quantity * allocation.listPrice,
+        0,
+      ) + shortfall * Number(product.price ?? 0)
     const weightedUnitPrice = listTotal / quantity
-    const incomingAllocations = raw.batchAllocations
+    // A line that outran its batches cannot match the snapshot the cart took.
+    const incomingAllocations = shortfall > 0 ? undefined : raw.batchAllocations
     const suppliedUnitPrice = Number(raw.unitPrice)
     if (incomingAllocations !== undefined) {
       const currentById = new Map(pricedAllocations.map((allocation) => [allocation.batchId, allocation]))
@@ -218,6 +220,7 @@ export async function POST(req: NextRequest) {
         )
       }
     } else if (
+      shortfall === 0 &&
       Number.isFinite(suppliedUnitPrice) &&
       Math.abs(suppliedUnitPrice - weightedUnitPrice) >= 0.005
     ) {
@@ -248,22 +251,34 @@ export async function POST(req: NextRequest) {
         { status: line.status },
       )
     }
-    const splitItems = splitBatchSaleLine(
-      pricedAllocations,
-      line.rpcItem.discount_amount,
-    )
-    if (splitItems.length !== pricedAllocations.length) {
-      return NextResponse.json(
-        { error: 'Discount exceeds the batch-priced line total', code: 'INVALID_DISCOUNT' },
-        { status: 400 },
-      )
-    }
-    for (const item of splitItems) {
+    if (shortfall > 0) {
+      // One line at the blended price; the RPC walks FEFO itself and takes only
+      // the remainder negative.
       rpcItems.push({
         ...line.rpcItem,
-        ...item,
-        list_price: item.unit_price,
+        batch_id: null,
+        unit_price: weightedUnitPrice,
+        list_price: weightedUnitPrice,
+        allow_overdraft: true,
       })
+    } else {
+      const splitItems = splitBatchSaleLine(
+        pricedAllocations,
+        line.rpcItem.discount_amount,
+      )
+      if (splitItems.length !== pricedAllocations.length) {
+        return NextResponse.json(
+          { error: 'Discount exceeds the batch-priced line total', code: 'INVALID_DISCOUNT' },
+          { status: 400 },
+        )
+      }
+      for (const item of splitItems) {
+        rpcItems.push({
+          ...line.rpcItem,
+          ...item,
+          list_price: item.unit_price,
+        })
+      }
     }
   }
 

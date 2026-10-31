@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-31T17:02:42.457Z",
-  "security_definer_count": 73,
+  "generated_at": "2026-10-31T20:21:15.802Z",
+  "security_definer_count": 74,
   "public_or_anon_execute_grants": [],
   "unexpected_public_execute": [],
   "possible_implicit_public_exec": [
@@ -383,6 +383,10 @@
     },
     {
       "file": "20261030140000_pharmacy_batch_selling_price.sql",
+      "fn": "public.complete_pharmacy_sale"
+    },
+    {
+      "file": "20261031120000_pharmacy_sale_allow_negative_stock.sql",
       "fn": "public.complete_pharmacy_sale"
     }
   ]

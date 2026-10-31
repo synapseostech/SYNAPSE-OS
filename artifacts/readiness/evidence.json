@@ -1,11 +1,11 @@
 {
-  "timestamp": "2026-10-31T17:02:42.789Z",
+  "timestamp": "2026-10-31T20:21:16.143Z",
   "git": {
     "branch": "feat/clinical-intelligence-land",
-    "head": "dd5c68d276d130f43b3b7516f67f3d7fa58a87b2"
+    "head": "63fb422e5d6a64fbcd3f2ce3be325722722e33a5"
   },
   "migrationCount": {
-    "count": 201,
+    "count": 202,
     "exitCode": 0
   },
   "suites": {
@@ -19,7 +19,7 @@
       "tests": 41,
       "pass": 41,
       "fail": 0,
-      "banner": "SECURITY GATES PASS cutoff=20261003160000 migrations=14 failures=0",
+      "banner": "SECURITY GATES PASS cutoff=20261003160000 migrations=15 failures=0",
       "exitCode": 0
     },
     "hardening": {
@@ -50,7 +50,7 @@
     }
   },
   "dbAcl": {
-    "definerFunctions": 73,
+    "definerFunctions": 74,
     "publicGrants": 0,
     "possibleImplicitPublic": 21,
     "liveCheck": "SKIPPED_NO_DATABASE_ACL_URL",

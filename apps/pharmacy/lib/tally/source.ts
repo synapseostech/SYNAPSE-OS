@@ -40,7 +40,11 @@ export function detectTallyFormat(bytes: Uint8Array, fileName?: string): TallySo
     // .xlsx is a zip; anything else zipped is not a workbook we can read.
     const name = (fileName ?? "").toLowerCase()
     if (name && !name.endsWith(".xlsx")) {
-      throw new TallySourceError("Only .xlsx workbooks are supported, not other archive files.")
+      throw new TallySourceError(
+        "Only .xlsx workbooks are supported, not other archive files. " +
+          "A zipped Tally company folder is not an export: " +
+          "export All Masters and Day Book from Tally, or use the Tally Bridge.",
+      )
     }
     return "xlsx"
   }
@@ -60,7 +64,9 @@ export function detectTallyFormat(bytes: Uint8Array, fileName?: string): TallySo
   if (head.includes("record_type")) return "csv"
 
   throw new TallySourceError(
-    "File is not Tally XML, an .xlsx workbook, or a flat CSV with a record_type column.",
+    "File is not Tally XML, an .xlsx workbook, or a flat CSV with a record_type column. " +
+      "Tally's company data folder is not an export and cannot be read here: " +
+      "export All Masters and Day Book from Tally, or use the Tally Bridge.",
   )
 }
 
