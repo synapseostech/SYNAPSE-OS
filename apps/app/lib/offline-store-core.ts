@@ -129,6 +129,8 @@ export class OfflineStockError extends Error {
 
 const READY_STATUSES = "'queued','syncing','applied'"
 const HOLD_STATUSES = "'queued','syncing','applied'"
+/** Batch the sale RPC creates when a line outruns sellable stock. */
+const OVERDRAFT_BATCH = 'NEG-STOCK'
 const ACK_RESULT =
   {} as Extract<SyncApplyResult, { outcome: 'applied' | 'replay' }>
 
@@ -158,7 +160,9 @@ function snapshotKey(productId: string, batchId: string): string {
 
 /**
  * Allocate remaining snapshot stock FEFO-first. Specified batch ids are honored;
- * missing batch ids consume earliest-expiry remaining quantity.
+ * missing batch ids consume earliest-expiry remaining quantity. A shortfall is
+ * reserved against the server's overdraft batch, because selling below zero
+ * stock is allowed.
  */
 export function allocateLocalFefo(
   remaining: Map<string, { productId: string; batchId: string; quantity: number; expiryDate: string | null }>,
@@ -177,37 +181,25 @@ export function allocateLocalFefo(
     const key = snapshotKey(line.productId, line.batchId)
     const row = remaining.get(key)
     const available = row?.quantity ?? 0
-    if (available < requested) {
-      throw new OfflineStockError(
-        'INSUFFICIENT_STOCK',
-        `Only ${available} units are reserved as sellable on this device.`,
-        {
-          productId: line.productId,
-          requestedQuantity: requested,
-          sellableQuantity: available,
-        },
-      )
+    const taken = Math.min(available, requested)
+    if (row) row.quantity -= taken
+    const reservations: StockReservation[] = []
+    if (taken > 0) {
+      reservations.push({ productId: line.productId, batchId: line.batchId, quantity: taken })
     }
-    row!.quantity -= requested
-    return [{ productId: line.productId, batchId: line.batchId, quantity: requested }]
+    if (taken < requested) {
+      reservations.push({
+        productId: line.productId,
+        batchId: OVERDRAFT_BATCH,
+        quantity: requested - taken,
+      })
+    }
+    return reservations
   }
 
   const candidates = [...remaining.values()]
     .filter((row) => row.productId === line.productId && row.quantity > 0)
     .sort((a, b) => String(a.expiryDate ?? '9999').localeCompare(String(b.expiryDate ?? '9999')))
-
-  const sellable = candidates.reduce((sum, row) => sum + row.quantity, 0)
-  if (sellable < requested) {
-    throw new OfflineStockError(
-      'INSUFFICIENT_STOCK',
-      `Only ${sellable} units are reserved as sellable on this device.`,
-      {
-        productId: line.productId,
-        requestedQuantity: requested,
-        sellableQuantity: sellable,
-      },
-    )
-  }
 
   let left = requested
   const allocated: StockReservation[] = []
@@ -217,6 +209,9 @@ export function allocateLocalFefo(
     row.quantity -= take
     left -= take
     allocated.push({ productId: line.productId, batchId: row.batchId, quantity: take })
+  }
+  if (left > 0) {
+    allocated.push({ productId: line.productId, batchId: OVERDRAFT_BATCH, quantity: left })
   }
   return allocated
 }

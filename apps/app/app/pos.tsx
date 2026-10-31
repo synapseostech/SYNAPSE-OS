@@ -356,17 +356,14 @@ export default function PosScreen() {
   }
 
   const addProduct = (p: PosProduct) => {
-    if (p.quantity <= 0) {
-      Alert.alert('Out of stock', `${p.name} has no sellable quantity.`)
-      return
-    }
     const pkgs = p.packages.filter((x) => x.unitsPerPackage > 0 && x.price >= 0)
     if (pkgs.length === 0) {
       chooseBatchThenAdd(p, { units: 1, packageLabel: null })
       return
     }
     const fefoUnitPrice = p.batches[0]?.sellingPrice ?? p.price
-    Alert.alert('Sell as', p.name, [
+    // Out of stock is not a blocker: the sale takes the balance negative.
+    Alert.alert(p.quantity <= 0 ? 'Sell below zero stock' : 'Sell as', p.name, [
       {
         text: `Unit · from UGX ${fefoUnitPrice.toLocaleString()}`,
         onPress: () =>
