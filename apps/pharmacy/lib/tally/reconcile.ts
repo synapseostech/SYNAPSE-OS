@@ -88,7 +88,7 @@ export function reconcileTallyPlan(
       "Cost of goods sold",
       null,
       null,
-      "Tally sales vouchers carry no cost of sale, so historical margin stays unknown until the pharmacy supplies it. Opening and closing stock, when the export carries them, are shown in the review and are never posted.",
+      "Tally sales vouchers carry no cost of sale, so historical margin stays unknown until the pharmacy supplies it. Opening and closing stock, when the export carries them, are shown in the review; whichever one the cut-over starts from is posted as opening stock.",
     ),
   ]
 }

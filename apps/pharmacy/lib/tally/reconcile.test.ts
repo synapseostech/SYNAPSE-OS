@@ -22,6 +22,7 @@ function plan(overrides: Partial<TallyCutoverPlan> = {}): TallyCutoverPlan {
     companyKey: "test",
     currency: "UGX",
     conversionDate: "2026-04-01",
+    mode: "opening",
     accounts: [],
     parties: [],
     stockItems: [

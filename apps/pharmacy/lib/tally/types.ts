@@ -29,6 +29,8 @@ export type TallyPlanSummary = {
   companyKey: string
   currency: string
   conversionDate: string
+  /** Absent on summaries prepared before the balances-only mode existed. */
+  mode?: "opening" | "closing"
   format: "xml" | "xlsx" | "xls" | "csv"
   counts: {
     ledgers: number

@@ -44,6 +44,7 @@ type Summary = {
   companyKey: string
   currency: string
   conversionDate: string
+  mode?: "opening" | "closing"
   format: string
   counts: Counts
   opening: { date: string; totalDebit: number; totalCredit: number; difference: number }
@@ -191,6 +192,7 @@ export default function TallyImportPage() {
   const [progress, setProgress] = useState<Progress | null>(null)
   const [reconcile, setReconcile] = useState<ReconcileCheck[] | null>(null)
   const [conversionDate, setConversionDate] = useState("")
+  const [mode, setMode] = useState<"opening" | "closing">("opening")
   const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "error">("checking")
   const [bridgeToken, setBridgeToken] = useState("")
   const [bridgeCheck, setBridgeCheck] = useState<BridgeCheck | null>(null)
@@ -262,6 +264,7 @@ export default function TallyImportPage() {
       if (data.progress) setProgress(data.progress as Progress)
       if (data.reconcile) setReconcile(data.reconcile as ReconcileCheck[])
       if (data.conversionDate) setConversionDate(data.conversionDate as string)
+      if (data.mode === "closing" || data.mode === "opening") setMode(data.mode)
     },
     [],
   )
@@ -334,7 +337,7 @@ export default function TallyImportPage() {
       const previewResponse = await fetch(`/api/admin/tally/${start.sessionId}/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(conversionDate ? { conversionDate } : {}),
+        body: JSON.stringify({ ...(conversionDate ? { conversionDate } : {}), mode }),
       })
       const data = await previewResponse.json()
       if (!previewResponse.ok) {
@@ -462,7 +465,7 @@ export default function TallyImportPage() {
       const response = await fetch(`/api/admin/tally/${sessionId}/mapping`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversionDate }),
+        body: JSON.stringify({ conversionDate, mode }),
       })
       const data = await response.json()
       if (!response.ok) {
@@ -472,7 +475,7 @@ export default function TallyImportPage() {
       const previewResponse = await fetch(`/api/admin/tally/${sessionId}/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversionDate }),
+        body: JSON.stringify({ conversionDate, mode }),
       })
       const previewData = await previewResponse.json()
       if (!previewResponse.ok) {
@@ -728,6 +731,35 @@ export default function TallyImportPage() {
             <span className="h-px flex-1 bg-border" />
           </div>
 
+          <div className="space-y-1.5">
+            <Label>What this export carries</Label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={mode === "opening" ? "default" : "outline"}
+                onClick={() => setMode("opening")}
+                disabled={cutoverAccess !== "ready" || busy !== "idle"}
+              >
+                Opening balances and history
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={mode === "closing" ? "default" : "outline"}
+                onClick={() => setMode("closing")}
+                disabled={cutoverAccess !== "ready" || busy !== "idle"}
+              >
+                Closing balances only
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {mode === "opening"
+                ? "Tally's opening balances are posted, then the Day Book vouchers are replayed on top."
+                : "The balances the export closes on become the opening in Synapse, and no voucher is posted. Use this when you are starting Synapse from Tally's closing position rather than rebuilding the history."}
+            </p>
+          </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="tally-file">Tally XML, workbook or CSV (max 25 MB)</Label>
@@ -749,7 +781,9 @@ export default function TallyImportPage() {
               )}
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="cutover-date">Cut-over date</Label>
+              <Label htmlFor="cutover-date">
+                {mode === "closing" ? "Balances as at" : "Cut-over date"}
+              </Label>
               <Input
                 id="cutover-date"
                 type="date"
@@ -757,7 +791,9 @@ export default function TallyImportPage() {
                 onChange={(event) => setConversionDate(event.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Balances are read as at this date. Vouchers before it are flagged, never double-posted.
+                {mode === "closing"
+                  ? "The export's closing balances are taken as at this date and become the opening in Synapse."
+                  : "Balances are read as at this date. Vouchers before it are flagged, never double-posted."}
               </p>
             </div>
           </div>
@@ -790,6 +826,11 @@ export default function TallyImportPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <p className="text-xs text-muted-foreground">
+                {summary.mode === "closing"
+                  ? `Balances as at ${summary.conversionDate} — no Tally voucher is posted.`
+                  : `Opening balances as at ${summary.conversionDate}, then ${summary.counts.postedVouchers} vouchers replayed.`}
+              </p>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <Stat label="Ledger accounts" value={String(summary.counts.ledgers)} />
                 <Stat label="Stock items" value={String(summary.counts.stockItems)} />
@@ -804,7 +845,10 @@ export default function TallyImportPage() {
               <div className="rounded-lg border p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="text-sm font-medium">Opening trial balance · {summary.opening.date}</p>
+                    <p className="text-sm font-medium">
+                      {summary.mode === "closing" ? "Trial balance carried forward" : "Opening trial balance"} ·{" "}
+                      {summary.opening.date}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       Debit {money(summary.opening.totalDebit, currency)} · Credit{" "}
                       {money(summary.opening.totalCredit, currency)}
@@ -853,9 +897,9 @@ export default function TallyImportPage() {
                     </div>
                   </div>
                   <p className="mt-3 text-xs text-muted-foreground">
-                    These are Tally&apos;s own figures for the exported period. The cut-over posts opening stock and
-                    the history you imported; it does not post a closing balance, and nothing here is adjusted to
-                    make the two sides agree.
+                    {summary.mode === "closing"
+                      ? "In closing-balances mode these figures become the opening in Synapse: the closing stock is posted as opening stock and no voucher is replayed."
+                      : "These are Tally's own figures for the exported period. The cut-over posts opening stock and the history you imported; it does not post a closing balance, and nothing here is adjusted to make the two sides agree."}
                   </p>
                   {summary.stock.closingValue === null && (
                     <p className="mt-1 text-xs text-muted-foreground">
@@ -886,7 +930,9 @@ export default function TallyImportPage() {
 
               <div className="flex flex-wrap items-end gap-2">
                 <div className="space-y-1.5">
-                  <Label htmlFor="cutover-date-2">Cut-over date</Label>
+                  <Label htmlFor="cutover-date-2">
+                    {mode === "closing" ? "Balances as at" : "Cut-over date"}
+                  </Label>
                   <Input
                     id="cutover-date-2"
                     type="date"

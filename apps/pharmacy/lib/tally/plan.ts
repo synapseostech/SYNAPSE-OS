@@ -26,6 +26,7 @@ type StaticPlan = Pick<
   | "companyKey"
   | "currency"
   | "conversionDate"
+  | "mode"
   | "accounts"
   | "parties"
   | "stockItems"
@@ -55,6 +56,7 @@ export function summarisePlan(
     companyKey: plan.companyKey,
     currency: plan.currency,
     conversionDate: plan.conversionDate,
+    mode: plan.mode,
     format,
     counts: plan.counts,
     opening: {
@@ -91,6 +93,7 @@ export async function writeTallyPlan(
     companyKey: plan.companyKey,
     currency: plan.currency,
     conversionDate: plan.conversionDate,
+    mode: plan.mode,
     accounts: plan.accounts,
     parties: plan.parties,
     stockItems: plan.stockItems,

@@ -19,6 +19,7 @@ type MappingState = {
   path?: string
   bucket?: string
   conversionDate?: string
+  mode?: "opening" | "closing"
   accountOverrides?: TallyAccountOverrides
   productSkuOverrides?: Record<string, string>
 }
@@ -57,12 +58,18 @@ export async function POST(
     )
   }
 
-  let body: { conversionDate?: string } = {}
+  let body: { conversionDate?: string; mode?: unknown } = {}
   try {
     const text = await request.text()
-    if (text.trim()) body = JSON.parse(text) as { conversionDate?: string }
+    if (text.trim()) body = JSON.parse(text) as { conversionDate?: string; mode?: unknown }
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
+  }
+  if (body.mode !== undefined && body.mode !== "opening" && body.mode !== "closing") {
+    return NextResponse.json(
+      { error: "mode must be either \"opening\" or \"closing\"" },
+      { status: 400 },
+    )
   }
 
   const mapping = (session.ai_mapping ?? {}) as MappingState
@@ -77,6 +84,7 @@ export async function POST(
 
     const plan = normaliseTallyDocument(document, {
       conversionDate: body.conversionDate ?? mapping.conversionDate,
+      mode: body.mode ?? mapping.mode,
       currency: document.currency,
       accountOverrides: mapping.accountOverrides,
       productSkuOverrides: mapping.productSkuOverrides,
@@ -96,6 +104,7 @@ export async function POST(
           format,
           path,
           conversionDate: plan.conversionDate,
+          mode: plan.mode,
           summary,
           preparedAt: summary.preparedAt,
         },

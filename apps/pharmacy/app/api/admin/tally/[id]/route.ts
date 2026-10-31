@@ -53,6 +53,7 @@ export async function GET(
     completedAt: session.completed_at,
     format: mapping.format ?? null,
     conversionDate: mapping.conversionDate ?? null,
+    mode: mapping.mode ?? "opening",
     preparedAt: mapping.preparedAt ?? null,
     summary,
     reconcile,

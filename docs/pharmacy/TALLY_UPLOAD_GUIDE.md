@@ -171,6 +171,24 @@ Unknown or duplicated column headers are rejected per sheet.
 
 ---
 
+## Two ways to start
+
+The page asks what the export carries before it reads the file.
+
+| Mode | What it posts | When to use it |
+|---|---|---|
+| **Opening balances and history** | Tally's opening balances, then every Day Book voucher replayed on top | You want the pharmacy's history in Synapse — reports, customer debt and stock movement from the Tally period onwards. |
+| **Closing balances only** | The balances the export closes on, taken as the opening; no voucher is posted | You want to start Synapse from where Tally stands today and keep the history in Tally. Nothing from the Day Book is posted. |
+
+In closing mode the cut-over date defaults to the date the export closes on
+(`SVTODATE`). If it closes on a different date from the one you chose, the
+review blocks until the two agree. Ledgers without a closing balance are
+reported and left at zero. Stock items whose master batches were taken at the
+period start rather than at the close are dropped, because those quantities are
+not today's stock; supply the closing batches in the `StockBatches` sheet.
+
+---
+
 ## After the upload
 
 Preview → mapping → reconciliation → apply. Nothing is written to Synapse until
@@ -185,9 +203,10 @@ each item's opening and closing value. They come from `OPENINGVALUE` and
 `CLOSINGVALUE` on the stock items (or from the template's `opening_value` and
 `closing_value` columns).
 
-These figures are **display and comparison only**. The cut-over posts the opening
-stock you reviewed and the transactions you imported; it never posts a closing
-balance and never adjusts either side to make them agree.
+These figures are shown for comparison and are never adjusted to make the two
+sides agree. In opening-balances mode the cut-over posts the opening stock you
+reviewed and the transactions you imported; it never posts a closing balance. In
+closing-balances mode the closing figures are what it posts, as the opening.
 
 If the export carries opening values but no closing values, the review says so
 and the closing total is left unavailable rather than shown as zero. To get a

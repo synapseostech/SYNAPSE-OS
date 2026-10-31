@@ -17,6 +17,7 @@ const PARTY_TYPES = new Set(["customer", "supplier"])
 
 type MappingBody = {
   conversionDate?: string
+  mode?: string
   accountOverrides?: unknown
   productSkuOverrides?: unknown
 }
@@ -152,6 +153,12 @@ export async function PUT(
       { status: 400 },
     )
   }
+  if (body.mode !== undefined && body.mode !== "opening" && body.mode !== "closing") {
+    return NextResponse.json(
+      { error: "Mode must be either \"opening\" or \"closing\"." },
+      { status: 400 },
+    )
+  }
 
   const accounts = cleanAccountOverrides(body.accountOverrides)
   if (!accounts.ok) return NextResponse.json({ error: accounts.error }, { status: 400 })
@@ -180,6 +187,7 @@ export async function PUT(
   const merged = {
     ...mapping,
     ...(body.conversionDate !== undefined ? { conversionDate: body.conversionDate } : {}),
+    ...(body.mode !== undefined ? { mode: body.mode } : {}),
     ...(body.accountOverrides !== undefined ? { accountOverrides: accounts.value } : {}),
     ...(body.productSkuOverrides !== undefined ? { productSkuOverrides: skus.value } : {}),
     mappingUpdatedAt: new Date().toISOString(),
@@ -201,6 +209,7 @@ export async function PUT(
   return NextResponse.json({
     saved: true,
     conversionDate: merged.conversionDate ?? null,
+    mode: merged.mode ?? "opening",
     accountOverrideCount: Object.keys(accounts.value).length,
     productSkuOverrideCount: Object.keys(skus.value).length,
     needsPreview: true,
@@ -232,6 +241,7 @@ export async function GET(
   return NextResponse.json({
     status: session.status,
     conversionDate: mapping.conversionDate ?? null,
+    mode: mapping.mode ?? "opening",
     accountOverrides: mapping.accountOverrides ?? {},
     productSkuOverrides: mapping.productSkuOverrides ?? {},
     systemAccountCodes: TALLY_SYSTEM_ACCOUNT_CODES,
