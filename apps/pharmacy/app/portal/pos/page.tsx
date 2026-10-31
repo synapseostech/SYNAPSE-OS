@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useMemo, useCallback, useRef } from "react"
+import { useRouter } from "next/navigation"
 import { usePharmacySession } from "@/hooks/use-pharmacy-session"
 
 // Force dynamic rendering
@@ -17,7 +18,11 @@ import { Search, ShoppingCart, Trash2, Printer, Clock, Eye, Calculator, Package,
 import { getPendingActions, saveMetadata, getMetadata } from "@/lib/offlineStorage"
 import { LiveRegion } from "@synapse/ui"
 import { TillBanner } from "@/components/till-banner"
-import { usePosKeyboardShortcuts, POS_SHORTCUT_CHEATSHEET } from "@/lib/pos/keyboard"
+import {
+  resolvePosEnterAction,
+  usePosKeyboardShortcuts,
+  POS_SHORTCUT_CHEATSHEET,
+} from "@/lib/pos/keyboard"
 import { settlePayment } from "@/lib/pos/partial-payment"
 import {
   allocateFefoBatches,
@@ -59,7 +64,8 @@ interface ProductBatch {
   batchNumber: string
   quantity: number
   expiryDate: string
-  costPrice: number
+  costPrice: number | null
+  sellingPrice: number
   manufacturer?: string | null
 }
 
@@ -89,9 +95,11 @@ interface CartItem extends Product {
   cartQuantity: number
   /** Catalog unit/package price — locked for cashiers */
   listPrice: number
+  unitListPrice: number
   costPrice: number
   /** Effective sold unit price after discount */
   sellingPrice: number
+  unitSellingPrice: number
   subtotal: number
   discountAmount: number
   discountReason: DiscountReasonValue | ""
@@ -145,9 +153,11 @@ function formatPaymentLabel(method: string) {
 }
 
 export default function POSPage() {
+  const router = useRouter()
   const { user } = usePharmacySession()
   const cashierCanEditPrice = Boolean(user?.isAdmin || user?.pharmacyRole === "pharmacy_admin")
   const [products, setProducts] = useState<Product[]>([])
+  const [productsLoaded, setProductsLoaded] = useState(false)
   const [cart, setCart] = useState<CartItem[]>([])
   const [searchQuery, setSearchQuery] = useState("")
   const [paymentMethod, setPaymentMethod] = useState<string>("CASH")
@@ -195,9 +205,13 @@ export default function POSPage() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
   const { toast } = useToast()
   const productSearchRef = useRef<HTMLInputElement>(null)
+  const firstProductResultRef = useRef<HTMLButtonElement>(null)
   const paymentRef = useRef<HTMLSelectElement>(null)
   const patientRef = useRef<HTMLInputElement>(null)
   const amountPaidRef = useRef<HTMLInputElement>(null)
+  const creditCustomerRef = useRef<HTMLSelectElement>(null)
+  const creditDueDateRef = useRef<HTMLInputElement>(null)
+  const completeSaleRef = useRef<HTMLButtonElement>(null)
   const [liveMessage, setLiveMessage] = useState("")
 
   // Debounce search query for better performance
@@ -364,6 +378,7 @@ export default function POSPage() {
           const data = await response.json()
           const productList = Array.isArray(data) ? data : []
           setProducts(productList)
+          setProductsLoaded(true)
           saveMetadata('products', productList)
           return
         }
@@ -371,11 +386,17 @@ export default function POSPage() {
       }
       // Offline fallback
       const cachedProducts = await getMetadata('products')
-      if (Array.isArray(cachedProducts)) setProducts(cachedProducts as Product[])
+      if (Array.isArray(cachedProducts)) {
+        setProducts(cachedProducts as Product[])
+        setProductsLoaded(true)
+      }
     } catch (error) {
       console.error("Failed to fetch products:", error)
       const cachedProducts = await getMetadata('products')
-      if (Array.isArray(cachedProducts)) setProducts(cachedProducts as Product[])
+      if (Array.isArray(cachedProducts)) {
+        setProducts(cachedProducts as Product[])
+        setProductsLoaded(true)
+      }
 
       if (navigator.onLine) {
         toast({
@@ -407,7 +428,7 @@ export default function POSPage() {
 
   const hasMoreProducts = !debouncedSearchQuery && displayCount < products.length
 
-  const rebuildCartLine = (
+  const rebuildCartLine = useCallback((
     base: Product,
     opts: {
       cartQuantity: number
@@ -416,11 +437,9 @@ export default function POSPage() {
       discountReason?: DiscountReasonValue | ""
       discountReasonOther?: string
       discountApprovedBy?: string | null
-      listPrice?: number
     },
   ): CartItem => {
     const selectedPackage = opts.selectedPackage ?? null
-    const listPrice = opts.listPrice ?? (selectedPackage ? selectedPackage.price : base.price)
     const cartQuantity = opts.cartQuantity
     const baseUnits = selectedPackage ? cartQuantity * selectedPackage.unitsPerPackage : cartQuantity
     const allocations = allocateFefoBatches(
@@ -431,20 +450,35 @@ export default function POSPage() {
         expiryDate: b.expiryDate,
         manufacturer: b.manufacturer,
         costPrice: b.costPrice,
+        sellingPrice: b.sellingPrice ?? base.price,
       })),
       baseUnits,
     )
+    const allocatedUnits = allocations.reduce((total, allocation) => total + allocation.quantity, 0)
+    const baseListTotal =
+      allocations.reduce(
+        (total, allocation) => total + allocation.quantity * (allocation.sellingPrice ?? base.price),
+        0,
+      ) +
+      Math.max(0, baseUnits - allocatedUnits) * base.price
+    const unitListPrice = baseUnits > 0 ? baseListTotal / baseUnits : base.price
+    const listPrice = selectedPackage
+      ? unitListPrice * selectedPackage.unitsPerPackage
+      : unitListPrice
     const discountAmount = Math.max(0, opts.discountAmount ?? 0)
     const lineListTotal = listPrice * cartQuantity
     const soldTotal = Math.max(0, lineListTotal - discountAmount)
     const sellingPrice = cartQuantity > 0 ? soldTotal / cartQuantity : listPrice
+    const unitSellingPrice = baseUnits > 0 ? soldTotal / baseUnits : unitListPrice
     const first = allocations[0]
     return {
       ...base,
       cartQuantity,
       listPrice,
+      unitListPrice,
       costPrice: first?.costPrice ?? base.costPrice,
       sellingPrice,
+      unitSellingPrice,
       subtotal: soldTotal,
       discountAmount,
       discountReason: opts.discountReason ?? "",
@@ -458,7 +492,39 @@ export default function POSPage() {
       expiryDate: first?.expiryDate ?? base.expiryDate,
       batchAllocations: allocations,
     }
-  }
+  }, [])
+
+  const repriceCart = useCallback((items: CartItem[]) => {
+    const productsById = new Map(products.map((product) => [product.id, product]))
+    const repriced: CartItem[] = []
+    for (const item of items) {
+      const product = productsById.get(item.id)
+      // The catalogue lists active products only. A line left over from an
+      // earlier visit whose product has since been deactivated or merged away
+      // can never be sold, and would reject the whole sale with
+      // "Product not found" — drop it instead of carrying it forward.
+      if (!product) continue
+      const selectedPackage =
+        product.packages?.find(
+          (pkg) => pkg.id === item.selectedPackage?.id || pkg.name === item.selectedPackage?.name,
+        ) ?? null
+      repriced.push(
+        rebuildCartLine(product, {
+          cartQuantity: item.cartQuantity,
+          selectedPackage,
+          discountAmount: item.discountAmount,
+          discountReason: item.discountReason,
+          discountReasonOther: item.discountReasonOther,
+          discountApprovedBy: item.discountApprovedBy,
+        }),
+      )
+    }
+    return repriced
+  }, [products, rebuildCartLine])
+
+  useEffect(() => {
+    if (productsLoaded) setCart((current) => repriceCart(current))
+  }, [products, productsLoaded, repriceCart])
 
   const addToCart = (product: Product, selectedPackage?: ProductPackage | null) => {
     // Stock may never go negative on a sale (server enforces INSUFFICIENT_STOCK too).
@@ -480,7 +546,6 @@ export default function POSPage() {
         discountReason: existingItem.discountReason,
         discountReasonOther: existingItem.discountReasonOther,
         discountApprovedBy: existingItem.discountApprovedBy,
-        listPrice: existingItem.listPrice,
       })
       setCart([
         updatedItem,
@@ -519,7 +584,6 @@ export default function POSPage() {
           discountReason: item.discountReason,
           discountReasonOther: item.discountReasonOther,
           discountApprovedBy: item.discountApprovedBy,
-          listPrice: item.listPrice,
         })
       })
     )
@@ -543,7 +607,6 @@ export default function POSPage() {
           discountReason: patch.discountReason ?? item.discountReason,
           discountReasonOther: patch.discountReasonOther ?? item.discountReasonOther,
           discountApprovedBy: null,
-          listPrice: item.listPrice,
         })
       }),
     )
@@ -611,6 +674,22 @@ export default function POSPage() {
     setShowClientDetailsBeforeSaleDialog(true)
   }
 
+  // A new sale starts from a clean slate: nothing from the previous one (items,
+  // tender, method, credit customer, staff, discount approval) carries over.
+  const startNewSale = useCallback(() => {
+    setCart([])
+    localStorage.removeItem("pos-cart")
+    setSelectedStaff(null)
+    setAmountPaid("")
+    setPaymentMethod("CASH")
+    setCreditCustomerId("")
+    setCreditDueDate("")
+    setClientDetailsBeforeSale({ name: "", phone: "", address: "" })
+    setDiscountApprovedBy(null)
+    setSearchQuery("")
+    setTimeout(() => productSearchRef.current?.focus(), 0)
+  }, [])
+
   const processTransaction = async (
     staffForReceipt: StaffMember | null,
     client: { name: string; phone: string; address: string },
@@ -659,8 +738,13 @@ export default function POSPage() {
         return {
           productId: item.id,
           quantity: item.baseUnitsTotal || item.cartQuantity,
-          listPrice: item.listPrice,
-          unitPrice: item.sellingPrice,
+          listPrice: item.unitListPrice,
+          unitPrice: item.unitSellingPrice,
+          batchAllocations: item.batchAllocations.map((allocation) => ({
+            batchId: allocation.batchId,
+            quantity: allocation.quantity,
+            sellingPrice: allocation.sellingPrice,
+          })),
           discountAmount: item.discountAmount,
           discountReason: reason,
           discountApprovedBy: effectiveApproval,
@@ -724,6 +808,15 @@ export default function POSPage() {
               ? `Payment completed. Sale ${sale.receipt_number}`
               : "Payment completed",
           )
+          if (data.creditWarning) {
+            // The sale went through but the receivable did not — never leave
+            // this as a silent success.
+            toast({
+              variant: "destructive",
+              title: "Credit not recorded",
+              description: String(data.creditWarning),
+            })
+          }
 
           const printTxn = {
             id: sale?.sale_id ?? sale?.id ?? `sale-${Date.now()}`,
@@ -739,7 +832,7 @@ export default function POSPage() {
             items: cart.map((item, idx) => ({
               id: `item-${idx}`,
               quantity: item.baseUnitsTotal || item.cartQuantity,
-              unitPrice: item.sellingPrice,
+              unitPrice: item.unitSellingPrice,
               totalPrice: item.subtotal,
               packageName: item.selectedPackage?.name || null,
               packageQuantity: item.packageQuantity || null,
@@ -775,20 +868,31 @@ export default function POSPage() {
             setShowPrintPrompt(true)
           }
 
-          setCart([])
-          localStorage.removeItem('pos-cart')
-          setSelectedStaff(null)
-          setAmountPaid("")
-          setCreditCustomerId("")
-          setCreditDueDate("")
-          setDiscountApprovedBy(null)
+          startNewSale()
           fetchProducts()
         } else {
-          toast({
-            variant: "destructive",
-            title: "Error",
-            description: data.error || "Failed to process transaction",
-          })
+          const missingId = String(data.error ?? "")
+            .match(/^Product not found: (.+)$/)?.[1]
+            ?.trim()
+          if (response.status === 404 && missingId) {
+            // The catalogue moved on while this cart was open — the item was
+            // removed or deactivated. Drop the dead line so the rest of the
+            // sale can go through instead of failing again on every retry.
+            setCart((current) => current.filter((line) => line.id !== missingId))
+            fetchProducts()
+            toast({
+              variant: "destructive",
+              title: "Item no longer available",
+              description:
+                "It was removed from the cart. Check the sale and try again.",
+            })
+          } else {
+            toast({
+              variant: "destructive",
+              title: "Error",
+              description: data.error || "Failed to process transaction",
+            })
+          }
         }
       } catch (error) {
         toast({
@@ -921,6 +1025,90 @@ export default function POSPage() {
     setShowOrderDialog(true)
   }
 
+  const handlePosEnterKeyDown = (
+    event: React.KeyboardEvent<HTMLInputElement | HTMLSelectElement>,
+    field:
+      | "productSearch"
+      | "cartQuantity"
+      | "paymentMethod"
+      | "amountPaid"
+      | "creditCustomer"
+      | "creditDueDate",
+    lineIndex?: number,
+  ) => {
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      event.nativeEvent.isComposing
+    ) {
+      return
+    }
+
+    const query = searchQuery.trim()
+    const normalizedQuery = query.toLowerCase()
+    const matches = field === "productSearch" && normalizedQuery
+      ? products.filter(
+          (product) =>
+            product.name.toLowerCase().includes(normalizedQuery) ||
+            product.sku.toLowerCase().includes(normalizedQuery) ||
+            Boolean(product.barcode?.toLowerCase().includes(normalizedQuery)),
+        )
+      : []
+    const action = resolvePosEnterAction(field, {
+      matches: field === "productSearch" ? matches.length : 0,
+      cartCount: cart.length,
+      query,
+      paymentMethod,
+      lineIndex,
+      lineCount: cart.length,
+    })
+
+    if (!action) return
+
+    if (action === "chooseProduct" && !firstProductResultRef.current) return
+    event.preventDefault()
+
+    switch (action) {
+      case "addProduct":
+        if (matches[0]) {
+          addToCart(matches[0])
+          setSearchQuery("")
+          productSearchRef.current?.focus()
+        }
+        break
+      case "chooseProduct":
+        firstProductResultRef.current?.focus()
+        break
+      case "focusNextQuantity":
+        if (event.currentTarget instanceof HTMLInputElement) {
+          const inputs = Array.from(
+            document.querySelectorAll<HTMLInputElement>("[data-pos-cart-quantity]"),
+          )
+          const currentIndex = inputs.indexOf(event.currentTarget)
+          inputs[currentIndex + 1]?.focus()
+        }
+        break
+      case "focusPayment":
+        paymentRef.current?.focus()
+        break
+      case "focusAmountPaid":
+        amountPaidRef.current?.focus()
+        break
+      case "focusCreditCustomer":
+        creditCustomerRef.current?.focus()
+        break
+      case "focusCreditDueDate":
+        creditDueDateRef.current?.focus()
+        break
+      case "completeSale":
+        completeSaleRef.current?.click()
+        break
+    }
+  }
+
   usePosKeyboardShortcuts({
     onPatientSearch: () => patientRef.current?.focus(),
     onProductSearch: () => productSearchRef.current?.focus(),
@@ -983,7 +1171,8 @@ export default function POSPage() {
         return
       }
       try {
-        setCart(JSON.parse(held))
+        const heldItems = JSON.parse(held) as CartItem[]
+        setCart(repriceCart(heldItems))
         setLiveMessage("Held sale resumed")
         toast({ title: "Sale resumed" })
       } catch {
@@ -991,11 +1180,25 @@ export default function POSPage() {
       }
     },
     onClose: () => {
+      const dialogOpen =
+        showMobileCart ||
+        showReceiptPreview ||
+        showClientDetailsBeforeSaleDialog ||
+        showOrderDialog ||
+        showPrintPrompt ||
+        showClientNameBeforePrintDialog ||
+        showSupervisorDialog ||
+        showStaffDialog
       setShowMobileCart(false)
       setShowReceiptPreview(false)
       setShowClientDetailsBeforeSaleDialog(false)
       setShowOrderDialog(false)
-      setShowPrintPrompt(false)
+      setShowSupervisorDialog(false)
+      setShowStaffDialog(false)
+      if (showPrintPrompt || showClientNameBeforePrintDialog) resetPendingPrintFlow()
+      // Escape closes the open dialog first; on a bare till it goes back, like
+      // the browser Back button, instead of trapping the cashier on the page.
+      if (!dialogOpen) router.back()
     },
   })
 
@@ -1021,6 +1224,7 @@ export default function POSPage() {
           <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Point of Sale</h1>
           <p className="text-muted-foreground mt-1 sm:mt-2 text-sm sm:text-base">
             Tally-style keys: F8 Sales · Ctrl+A Accept · F5 Payment · F6 Receipt · Alt+C Customer · Ctrl+D Del line · F9 Order.
+            {" "}Enter adds a unique product match, advances cart quantity lines and checkout fields, then completes from the final field.
             {isSynapsePharmAccount && selectedStaff && (
               <span className="ml-2 text-primary font-medium">
                 {" "}Selling as: {selectedStaff.name}
@@ -1385,6 +1589,7 @@ export default function POSPage() {
                 <Input
                   id="pos-product-search"
                   ref={productSearchRef}
+                  onKeyDown={(event) => handlePosEnterKeyDown(event, "productSearch")}
                   placeholder="Search by name, SKU, or scan barcode..."
                   value={searchQuery}
                   onChange={(e) => {
@@ -1402,12 +1607,13 @@ export default function POSPage() {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3 max-h-[600px] overflow-y-auto">
-                {filteredProducts.map((product) => (
+                {filteredProducts.map((product, index) => (
                   <div
                     key={product.id}
                     className="p-4 border rounded-lg hover:bg-muted/20 text-left transition-colors"
                   >
                     <button
+                      ref={index === 0 ? firstProductResultRef : undefined}
                       type="button"
                       onClick={() => addToCart(product)}
                       className="w-full text-left"
@@ -1515,7 +1721,7 @@ export default function POSPage() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4 max-h-[400px] overflow-y-auto">
-                {cart.map((item) => (
+                {cart.map((item, lineIndex) => (
                   <div key={`${item.id}-${item.selectedPackage?.id || 'base'}`} className="border rounded-lg p-3">
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
@@ -1534,6 +1740,7 @@ export default function POSPage() {
                             manufacturer: null,
                             quantity: item.baseUnitsTotal || item.cartQuantity,
                             costPrice: item.costPrice,
+                            sellingPrice: item.price,
                           }]).map((alloc) => {
                             const tone = expiryTone(alloc.expiryDate)
                             return (
@@ -1547,6 +1754,7 @@ export default function POSPage() {
                                   ? ` · Exp ${new Date(alloc.expiryDate).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}`
                                   : ""}
                                 {alloc.manufacturer ? ` · ${alloc.manufacturer}` : " · Mfg —"}
+                                {` · ${formatCurrency(alloc.sellingPrice ?? item.price)}/unit`}
                                 {item.batchAllocations?.length > 1 ? ` · ×${alloc.quantity}` : ""}
                               </div>
                             )
@@ -1579,6 +1787,10 @@ export default function POSPage() {
                           type="number"
                           min="1"
                           value={item.cartQuantity}
+                          data-pos-cart-quantity
+                          onKeyDown={(event) =>
+                            handlePosEnterKeyDown(event, "cartQuantity", lineIndex)
+                          }
                           onChange={(e) =>
                             updateCartQuantity(item.id, parseInt(e.target.value), item.selectedPackage?.id)
                           }
@@ -1681,6 +1893,7 @@ export default function POSPage() {
                   <select
                     id="pos-payment"
                     ref={paymentRef}
+                    onKeyDown={(event) => handlePosEnterKeyDown(event, "paymentMethod")}
                     value={paymentMethod}
                     onChange={(e) => setPaymentMethod(e.target.value)}
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -1699,6 +1912,8 @@ export default function POSPage() {
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Credit Customer</label>
                       <select
+                        ref={creditCustomerRef}
+                        onKeyDown={(event) => handlePosEnterKeyDown(event, "creditCustomer")}
                         value={creditCustomerId}
                         onChange={(e) => setCreditCustomerId(e.target.value)}
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -1716,6 +1931,8 @@ export default function POSPage() {
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Due Date (optional)</label>
                       <Input
+                        ref={creditDueDateRef}
+                        onKeyDown={(event) => handlePosEnterKeyDown(event, "creditDueDate")}
                         type="date"
                         value={creditDueDate}
                         onChange={(e) => setCreditDueDate(e.target.value)}
@@ -1735,6 +1952,7 @@ export default function POSPage() {
                     </label>
                     <Input
                       ref={amountPaidRef}
+                      onKeyDown={(event) => handlePosEnterKeyDown(event, "amountPaid")}
                       type="number"
                       placeholder="Enter amount paid"
                       value={amountPaid}
@@ -1768,16 +1986,7 @@ export default function POSPage() {
                 )}
 
                 <Button
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => setShowReceiptPreview(true)}
-                  disabled={cart.length === 0}
-                >
-                  <Eye className="h-4 w-4 mr-2" />
-                  Preview Receipt
-                </Button>
-
-                <Button
+                  ref={completeSaleRef}
                   onClick={handleCompleteSale}
                   className="w-full"
                   disabled={isProcessing || cart.length === 0}
@@ -2140,6 +2349,8 @@ function ReceiptPreviewDialog({
   const contact     = settings?.contact     || ""
   const email       = settings?.email       || ""
   const footer      = settings?.footerText  || "Thank you for your purchase!"
+  const paperWidth  = (settings?.receiptPaperWidth || "80").toLowerCase()
+  const fontScale   = settings?.receiptFontScale && settings.receiptFontScale > 0 ? settings.receiptFontScale : 1
   const now         = new Date()
   const dateStr     = now.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
   const timeStr     = now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
@@ -2173,7 +2384,10 @@ function ReceiptPreviewDialog({
 
         {/* Thermal receipt preview — matches exact print output */}
         <div className="print-area rounded shadow-lg overflow-hidden">
-          <div className="thermal-receipt">
+          <div
+            className={`thermal-receipt paper-${paperWidth === "58" || paperWidth === "a4" ? paperWidth : "80"}`}
+            style={{ ["--receipt-font-scale" as string]: String(fontScale) }}
+          >
             {/* Header */}
             {settings?.logo && (
               <div className="tr-center" style={{ padding: "2px 0" }}>
@@ -2181,8 +2395,8 @@ function ReceiptPreviewDialog({
                   src={settings.logo} 
                   alt={`${pharmName} logo`} 
                   style={{ 
-                    maxWidth: "110px",
-                    maxHeight: "48px",
+                    maxWidth: paperWidth === "58" ? "90px" : paperWidth === "a4" ? "160px" : "110px",
+                    maxHeight: "32px",
                     objectFit: "contain",
                     margin: "0 auto",
                     display: "block"
@@ -2205,8 +2419,7 @@ function ReceiptPreviewDialog({
 
             {/* Meta */}
             <div className="tr-row"><span>Receipt #</span><span>TXN-PREVIEW</span></div>
-            <div className="tr-row"><span>Date</span><span>{dateStr}</span></div>
-            <div className="tr-row"><span>Time</span><span>{timeStr}</span></div>
+            <div className="tr-row"><span>Date / time</span><span>{dateStr} {timeStr}</span></div>
 
             {/* Items */}
             <div className="tr-dash" />
@@ -2316,7 +2529,14 @@ function TransactionReceipt({
   const dateStr = receiptDate.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
   const timeStr = receiptDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
 
-  const hasClient = transaction?.clientName || transaction?.clientPhone || transaction?.clientAddress
+  const receiptText = (value: unknown) => {
+    const text = value == null ? "" : String(value).trim()
+    return ["", "-", "—", "n/a", "null"].includes(text.toLowerCase()) ? "" : text
+  }
+  const clientName = receiptText(transaction?.clientName)
+  const clientPhone = receiptText(transaction?.clientPhone)
+  const clientAddress = receiptText(transaction?.clientAddress)
+  const hasClient = Boolean(clientName || clientPhone || clientAddress)
 
   return (
     <div
@@ -2332,7 +2552,7 @@ function TransactionReceipt({
             alt={`${pharmName} logo`} 
             style={{ 
               maxWidth: paperWidth === "58" ? "90px" : paperWidth === "a4" ? "160px" : "110px",
-              maxHeight: "48px",
+              maxHeight: "32px",
               objectFit: "contain",
               margin: "0 auto",
               display: "block"
@@ -2355,16 +2575,15 @@ function TransactionReceipt({
 
       {/* ── Transaction meta ── */}
       <div className="tr-row"><span>Receipt #</span><span>{transaction?.transactionNo || "—"}</span></div>
-      <div className="tr-row"><span>Date</span><span>{dateStr}</span></div>
-      <div className="tr-row"><span>Time</span><span>{timeStr}</span></div>
+      <div className="tr-row"><span>Date / time</span><span>{dateStr} {timeStr}</span></div>
 
       {/* ── Client info ── */}
       {hasClient && (
         <>
           <div className="tr-dash" />
-          {transaction.clientName    && <div className="tr-row"><span>Client</span><span>{transaction.clientName}</span></div>}
-          {transaction.clientPhone   && <div className="tr-row"><span>Phone</span><span>{transaction.clientPhone}</span></div>}
-          {transaction.clientAddress && <div className="tr-row"><span>Address</span><span>{transaction.clientAddress}</span></div>}
+          {clientName && <div className="tr-row"><span>Client</span><span>{clientName}</span></div>}
+          {clientPhone && <div className="tr-row"><span>Phone</span><span>{clientPhone}</span></div>}
+          {clientAddress && <div className="tr-row"><span>Address</span><span>{clientAddress}</span></div>}
         </>
       )}
 
@@ -2451,7 +2670,6 @@ function TransactionReceipt({
       <p className="tr-center tr-sm">By: <strong>{staffName}</strong></p>
       {footer && <p className="tr-center tr-sm">{footer}</p>}
       <div className="tr-dash" />
-      <p className="tr-center tr-mono tr-sm">{transaction?.transactionNo || ""}</p>
     </div>
   )
 }

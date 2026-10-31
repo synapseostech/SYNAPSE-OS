@@ -103,7 +103,7 @@ export default function SuppliersScreen() {
               ) : (
                 <Button label="Add supplier" onPress={() => setShowAdd(true)} style={{ marginBottom: spacing.md }} />
               )
-            ) : null
+            ) : undefined
           }
           ListEmptyComponent={<EmptyState title="No suppliers" body="Add suppliers to raise purchase orders and receive stock." icon="business" />}
           renderItem={({ item }) => (

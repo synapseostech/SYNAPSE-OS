@@ -153,16 +153,51 @@ async function loadAccounts(db: TallyApplyDb, tenantId: string): Promise<Map<str
   return map
 }
 
+function productNameKey(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, " ")
+}
+
 async function loadProducts(db: TallyApplyDb, tenantId: string): Promise<{ bySku: Map<string, string>; byName: Map<string, string> }> {
   const { data } = await db
     .from("pharmacy_products")
-    .select("id, sku, name")
+    .select("id, sku, name, strength, dosage_form, active_ingredient")
     .eq("tenant_id", tenantId)
   const bySku = new Map<string, string>()
-  const byName = new Map<string, string>()
-  for (const row of (data ?? []) as Array<{ id: string; sku: string; name: string }>) {
+  const groupedByName = new Map<
+    string,
+    Array<{
+      id: string
+      strength?: string | null
+      dosage_form?: string | null
+      active_ingredient?: string | null
+    }>
+  >()
+  for (const row of (data ?? []) as Array<{
+    id: string
+    sku: string
+    name: string
+    strength?: string | null
+    dosage_form?: string | null
+    active_ingredient?: string | null
+  }>) {
     bySku.set(row.sku.toLowerCase(), row.id)
-    byName.set(row.name.trim().toLowerCase(), row.id)
+    const key = productNameKey(row.name)
+    const group = groupedByName.get(key) ?? []
+    group.push(row)
+    groupedByName.set(key, group)
+  }
+  const byName = new Map<string, string>()
+  for (const [key, products] of groupedByName) {
+    const [product] = products
+    if (
+      products.length === 1 &&
+      product &&
+      !product.strength?.trim() &&
+      !product.dosage_form?.trim() &&
+      !product.active_ingredient?.trim()
+    ) {
+      byName.set(key, product.id)
+    }
   }
   return { bySku, byName }
 }
@@ -469,7 +504,7 @@ async function stageOpeningStock(
   for (const item of plan.stockItems) {
     const productId =
       products.bySku.get(item.sku.trim().toLowerCase()) ??
-      products.byName.get(item.name.trim().toLowerCase())
+      products.byName.get(productNameKey(item.name))
     if (!productId) {
       progress.fail("opening-stock", item.sku, "PRODUCT_MISSING", "Product was not created; no stock received.")
       continue
@@ -505,7 +540,6 @@ async function stageOpeningStock(
         quantity,
         expiryDate,
         costPrice,
-        sellingPrice: costPrice,
         receivedBy: actorId,
         supplierRef: `Tally opening ${plan.company ?? ""}`.trim(),
         reason: `Tally cut-over ${plan.conversionDate}`,
@@ -528,7 +562,7 @@ function saleItemsFor(
   return sale.items.filter((item) => {
     const quantity = Math.round(item.quantity)
     if (quantity <= 0) return false
-    return products.byName.has(item.stockItemName.trim().toLowerCase())
+    return products.byName.has(productNameKey(item.stockItemName))
   })
 }
 

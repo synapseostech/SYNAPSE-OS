@@ -40,6 +40,7 @@ interface ProductBatch {
   quantity: number
   expiryDate: string
   costPrice: number
+  sellingPrice?: number | null
 }
 
 interface Supplier {
@@ -80,7 +81,6 @@ export default function InventoryPage() {
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showBulkUpload, setShowBulkUpload] = useState(false)
   const [showEditDialog, setShowEditDialog] = useState(false)
-  const [showUpdateStock, setShowUpdateStock] = useState(false)
   const [showPhysicalStock, setShowPhysicalStock] = useState(false)
   const [historyProduct, setHistoryProduct] = useState<Product | null>(null)
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
@@ -151,12 +151,6 @@ export default function InventoryPage() {
       } else {
         setProducts([])
       }
-
-      const suppliersResponse = await resilientFetch("/api/admin/suppliers")
-      const suppliersData = await suppliersResponse.json()
-      if (Array.isArray(suppliersData)) {
-        setSuppliers(suppliersData)
-      }
     } catch (error) {
       toast({
         variant: "destructive",
@@ -166,6 +160,18 @@ export default function InventoryPage() {
       setProducts([])
     } finally {
       setIsLoading(false)
+    }
+
+    // The supplier dropdown needs purchasing.manage. A stock-only user must
+    // still get the product table, so this failure stays local to the dropdown.
+    try {
+      const suppliersResponse = await resilientFetch("/api/admin/suppliers")
+      const suppliersData = await suppliersResponse.json()
+      if (Array.isArray(suppliersData)) {
+        setSuppliers(suppliersData)
+      }
+    } catch {
+      setSuppliers([])
     }
   }
 
@@ -259,11 +265,6 @@ export default function InventoryPage() {
             <span className="hidden sm:inline">Physical Stock</span>
             <span className="sm:hidden">Physical</span>
           </Button>
-          <Button variant="outline" onClick={() => setShowUpdateStock(true)} className="flex-1 sm:flex-none text-xs sm:text-sm px-2 sm:px-4">
-            <PackagePlus className="h-4 w-4 sm:mr-2" />
-            <span className="hidden sm:inline">Update Stock</span>
-            <span className="sm:hidden">Adjust</span>
-          </Button>
           <Button variant="outline" onClick={() => setShowBulkUpload(true)} className="flex-1 sm:flex-none text-xs sm:text-sm px-2 sm:px-4">
             <Upload className="h-4 w-4 sm:mr-2" />
             <span className="hidden sm:inline">Bulk Upload</span>
@@ -329,7 +330,7 @@ export default function InventoryPage() {
               </div>
             )}
             <p className="text-xs text-amber-800">
-              Fix by receiving via Purchase Orders or Update Stock with the real supplier batch and expiry — there is no fabricate action.
+              Fix by receiving the goods through Purchases or a purchase order, with the real supplier batch and expiry — there is no fabricate action.
             </p>
           </CardContent>
         </Card>
@@ -404,17 +405,6 @@ export default function InventoryPage() {
           onSuccess={() => {
             setShowEditDialog(false)
             setSelectedProduct(null)
-            fetchProducts()
-          }}
-        />
-      )}
-
-      {showUpdateStock && (
-        <UpdateStockDialog
-          products={products}
-          onClose={() => setShowUpdateStock(false)}
-          onSuccess={() => {
-            setShowUpdateStock(false)
             fetchProducts()
           }}
         />
@@ -755,8 +745,16 @@ function CreateProductDialog({ onClose, onSuccess, suppliers }: CreateProductDia
   const [newPackage, setNewPackage] = useState({ name: "", unitsPerPackage: "", price: "" })
 
   // Section 3: Batch/Stock Tracking
-  const [batches, setBatches] = useState<{ batchNumber: string; quantity: string; expiryDate: string; costPrice: string }[]>([])
-  const [newBatch, setNewBatch] = useState({ batchNumber: "", quantity: "", expiryDate: "", costPrice: "" })
+  const [batches, setBatches] = useState<
+    { batchNumber: string; quantity: string; expiryDate: string; costPrice: string; sellingPrice: string }[]
+  >([])
+  const [newBatch, setNewBatch] = useState({
+    batchNumber: "",
+    quantity: "",
+    expiryDate: "",
+    costPrice: "",
+    sellingPrice: "",
+  })
 
   const [showPackages, setShowPackages] = useState(false)
   const [showBatches, setShowBatches] = useState(true)
@@ -789,8 +787,9 @@ function CreateProductDialog({ onClose, onSuccess, suppliers }: CreateProductDia
       return
     }
     const batchCost = newBatch.costPrice || formData.costPrice
-    setBatches([...batches, { ...newBatch, costPrice: batchCost }])
-    setNewBatch({ batchNumber: "", quantity: "", expiryDate: "", costPrice: "" })
+    const batchSellingPrice = newBatch.sellingPrice || formData.price
+    setBatches([...batches, { ...newBatch, costPrice: batchCost, sellingPrice: batchSellingPrice }])
+    setNewBatch({ batchNumber: "", quantity: "", expiryDate: "", costPrice: "", sellingPrice: "" })
 
     // Update total quantity
     const newTotal = batches.reduce((sum, b) => sum + (parseFloat(b.quantity) || 0), 0) + (parseFloat(newBatch.quantity) || 0)
@@ -825,6 +824,7 @@ function CreateProductDialog({ onClose, onSuccess, suppliers }: CreateProductDia
             quantity: parseInt(b.quantity),
             expiryDate: b.expiryDate,
             costPrice: parseFloat(b.costPrice),
+            sellingPrice: parseFloat(b.sellingPrice),
           })),
         }),
       })
@@ -1071,6 +1071,7 @@ function CreateProductDialog({ onClose, onSuccess, suppliers }: CreateProductDia
                           <TableHead>Qty</TableHead>
                           <TableHead>Expiry</TableHead>
                           <TableHead>Cost</TableHead>
+                          <TableHead>Selling Price</TableHead>
                           <TableHead></TableHead>
                         </TableRow>
                       </TableHeader>
@@ -1081,6 +1082,7 @@ function CreateProductDialog({ onClose, onSuccess, suppliers }: CreateProductDia
                             <TableCell>{batch.quantity}</TableCell>
                             <TableCell>{new Date(batch.expiryDate).toLocaleDateString()}</TableCell>
                             <TableCell>{formatCurrency(parseFloat(batch.costPrice))}</TableCell>
+                            <TableCell>{formatCurrency(parseFloat(batch.sellingPrice))}</TableCell>
                             <TableCell>
                               <Button type="button" variant="ghost" size="sm" onClick={() => {
                                 const removed = batches[idx]
@@ -1113,6 +1115,10 @@ function CreateProductDialog({ onClose, onSuccess, suppliers }: CreateProductDia
                     <div className="w-28">
                       <Label className="text-xs">Cost/unit</Label>
                       <Input type="number" placeholder={formData.costPrice || "Cost"} value={newBatch.costPrice} onChange={(e) => setNewBatch({ ...newBatch, costPrice: e.target.value })} />
+                    </div>
+                    <div className="w-28">
+                      <Label className="text-xs">Sell/unit</Label>
+                      <Input type="number" placeholder={formData.price || "Sell"} value={newBatch.sellingPrice} onChange={(e) => setNewBatch({ ...newBatch, sellingPrice: e.target.value })} />
                     </div>
                     <Button type="button" onClick={addBatch} size="sm"><Plus className="h-4 w-4" /></Button>
                   </div>
@@ -1359,17 +1365,27 @@ function EditProductDialog({ product, onClose, onSuccess, suppliers }: EditProdu
   const [deletedPackageIds, setDeletedPackageIds] = useState<string[]>([])
 
   // Section 3: Batch/Stock Tracking (load from product)
-  const [batches, setBatches] = useState<{ id?: string; batchNumber: string; quantity: string; expiryDate: string; costPrice: string }[]>(
+  const [batches, setBatches] = useState<
+    { id?: string; batchNumber: string; quantity: string; expiryDate: string; costPrice: string; sellingPrice: string }[]
+  >(
     product.batches?.map(b => ({
       id: b.id,
       batchNumber: b.batchNumber,
       quantity: b.quantity.toString(),
       expiryDate: b.expiryDate?.split("T")[0] || "",
       costPrice: b.costPrice.toString(),
+      sellingPrice: String(b.sellingPrice ?? product.price),
     })) || []
   )
-  const [newBatch, setNewBatch] = useState({ batchNumber: "", quantity: "", expiryDate: "", costPrice: "" })
+  const [newBatch, setNewBatch] = useState({
+    batchNumber: "",
+    quantity: "",
+    expiryDate: "",
+    costPrice: "",
+    sellingPrice: "",
+  })
   const [deletedBatchIds, setDeletedBatchIds] = useState<string[]>([])
+  const [savingBatchPriceId, setSavingBatchPriceId] = useState<string | null>(null)
 
   const [showPackages, setShowPackages] = useState((product.packages?.length || 0) > 0)
   const [showBatches, setShowBatches] = useState(true)
@@ -1429,8 +1445,36 @@ function EditProductDialog({ product, onClose, onSuccess, suppliers }: EditProdu
       return
     }
     const batchCost = newBatch.costPrice || formData.costPrice
-    setBatches([...batches, { ...newBatch, costPrice: batchCost }])
-    setNewBatch({ batchNumber: "", quantity: "", expiryDate: "", costPrice: "" })
+    const batchSellingPrice = newBatch.sellingPrice || formData.price
+    setBatches([...batches, { ...newBatch, costPrice: batchCost, sellingPrice: batchSellingPrice }])
+    setNewBatch({ batchNumber: "", quantity: "", expiryDate: "", costPrice: "", sellingPrice: "" })
+  }
+
+  const saveBatchSellingPrice = async (batch: (typeof batches)[number]) => {
+    const sellingPrice = Number(batch.sellingPrice)
+    if (!batch.id || !Number.isFinite(sellingPrice) || sellingPrice < 0) {
+      toast({ variant: "destructive", title: "Invalid selling price", description: "Enter a non-negative price for an existing batch." })
+      return
+    }
+    setSavingBatchPriceId(batch.id)
+    try {
+      const response = await resilientFetch("/api/admin/inventory/batches", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: batch.id, sellingPrice }),
+      })
+      if (!response.ok) {
+        const data = await response.json()
+        toast({ variant: "destructive", title: "Could not update batch price", description: data.error || "Try again." })
+        return
+      }
+      toast({ title: "Batch selling price updated" })
+      onSuccess()
+    } catch (error) {
+      toast({ variant: "destructive", title: "Could not update batch price", description: "Check the connection and try again." })
+    } finally {
+      setSavingBatchPriceId(null)
+    }
   }
 
   const removeBatch = (idx: number) => {
@@ -1469,6 +1513,7 @@ function EditProductDialog({ product, onClose, onSuccess, suppliers }: EditProdu
             quantity: parseInt(b.quantity),
             expiryDate: b.expiryDate,
             costPrice: parseFloat(b.costPrice),
+            sellingPrice: parseFloat(b.sellingPrice),
           })),
           deletedPackageIds,
           deletedBatchIds,
@@ -1685,8 +1730,9 @@ function EditProductDialog({ product, onClose, onSuccess, suppliers }: EditProdu
                           <TableHead>Qty</TableHead>
                           <TableHead>Expiry</TableHead>
                           <TableHead>Cost</TableHead>
-                          <TableHead></TableHead>
-                        </TableRow>
+                              <TableHead>Selling Price</TableHead>
+                              <TableHead></TableHead>
+                            </TableRow>
                       </TableHeader>
                       <TableBody>
                         {batches.map((batch, idx) => (
@@ -1695,6 +1741,35 @@ function EditProductDialog({ product, onClose, onSuccess, suppliers }: EditProdu
                             <TableCell>{batch.quantity}</TableCell>
                             <TableCell>{batch.expiryDate ? new Date(batch.expiryDate).toLocaleDateString() : '-'}</TableCell>
                             <TableCell>{formatCurrency(parseFloat(batch.costPrice))}</TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-1">
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  aria-label={`Selling price for batch ${batch.batchNumber}`}
+                                  value={batch.sellingPrice}
+                                  onChange={(event) =>
+                                    setBatches((current) =>
+                                      current.map((entry, entryIndex) =>
+                                        entryIndex === idx
+                                          ? { ...entry, sellingPrice: event.target.value }
+                                          : entry,
+                                      ),
+                                    )
+                                  }
+                                />
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={!batch.id || savingBatchPriceId === batch.id}
+                                  onClick={() => void saveBatchSellingPrice(batch)}
+                                >
+                                  {savingBatchPriceId === batch.id ? "Saving" : "Save"}
+                                </Button>
+                              </div>
+                            </TableCell>
                             <TableCell><Button type="button" variant="ghost" size="sm" onClick={() => removeBatch(idx)}><X className="h-4 w-4 text-destructive" /></Button></TableCell>
                           </TableRow>
                         ))}
@@ -1706,6 +1781,7 @@ function EditProductDialog({ product, onClose, onSuccess, suppliers }: EditProdu
                     <div className="w-28"><Label className="text-xs">Qty in {formData.unitOfMeasure}s *</Label><Input type="number" placeholder="e.g. 500" value={newBatch.quantity} onChange={(e) => setNewBatch({ ...newBatch, quantity: e.target.value })} /></div>
                     <div className="w-32"><Label className="text-xs">Expiry Date *</Label><Input type="date" value={newBatch.expiryDate} onChange={(e) => setNewBatch({ ...newBatch, expiryDate: e.target.value })} /></div>
                     <div className="w-24"><Label className="text-xs">Cost/unit</Label><Input type="number" placeholder={formData.costPrice} value={newBatch.costPrice} onChange={(e) => setNewBatch({ ...newBatch, costPrice: e.target.value })} /></div>
+                    <div className="w-24"><Label className="text-xs">Sell/unit</Label><Input type="number" placeholder={formData.price} value={newBatch.sellingPrice} onChange={(e) => setNewBatch({ ...newBatch, sellingPrice: e.target.value })} /></div>
                     <Button type="button" onClick={addBatch} size="sm"><Plus className="h-4 w-4" /></Button>
                   </div>
                   {batches.length > 0 && (
@@ -1728,278 +1804,6 @@ function EditProductDialog({ product, onClose, onSuccess, suppliers }: EditProdu
               <Button type="submit" disabled={isLoading}>{isLoading ? "Saving..." : "Save Changes"}</Button>
             </div>
           </form>
-        </CardContent>
-      </Card>
-    </div>
-  )
-}
-
-interface UpdateStockDialogProps {
-  products: Product[]
-  onClose: () => void
-  onSuccess: () => void
-}
-
-function UpdateStockDialog({ products, onClose, onSuccess }: UpdateStockDialogProps) {
-  const [searchQuery, setSearchQuery] = useState("")
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
-  const [unitsToAdd, setUnitsToAdd] = useState("")
-  const [batchNumber, setBatchNumber] = useState("")
-  const [expiryDate, setExpiryDate] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
-  const { toast } = useToast()
-
-  const filteredProducts = products.filter(
-    (p) =>
-      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.sku.toLowerCase().includes(searchQuery.toLowerCase())
-  )
-
-  // When product is selected, populate existing batch/expiry
-  const handleSelectProduct = (product: Product) => {
-    setSelectedProduct(product)
-    setBatchNumber(product.batchNumber || "")
-    setExpiryDate(product.expiryDate ? product.expiryDate.split("T")[0] : "")
-  }
-
-  const handleUpdateStock = async () => {
-    if (!selectedProduct || !unitsToAdd) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Please select a product and enter quantity to add",
-      })
-      return
-    }
-
-    const addQuantity = parseInt(unitsToAdd)
-    if (isNaN(addQuantity) || addQuantity <= 0) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Please enter a valid positive number",
-      })
-      return
-    }
-
-    if (!batchNumber.trim() || !expiryDate) {
-      toast({
-        variant: "destructive",
-        title: "Batch data required",
-        description:
-          "Stock increases need a genuine batch number and expiry date from the supplier pack. This prevents phantom sellable stock.",
-      })
-      return
-    }
-
-    setIsLoading(true)
-
-    try {
-      const response = await resilientFetch("/api/admin/inventory/stock", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          productId: selectedProduct.id,
-          quantity: addQuantity,
-          type: "INCREASE",
-          reason: "Stock replenishment",
-          batchNumber: batchNumber.trim(),
-          expiryDate,
-        }),
-      })
-
-      if (response.ok) {
-        toast({
-          title: "Success",
-          description: `Received ${addQuantity} units of ${selectedProduct.name} into batch ${batchNumber.trim()}.`,
-        })
-        onSuccess()
-      } else {
-        const data = await response.json()
-        const requiresBatch = data.code === "REQUIRES_BATCH"
-        toast({
-          variant: "destructive",
-          title: requiresBatch ? "Batch data required" : "Error",
-          description:
-            data.error ||
-            (requiresBatch
-              ? "Stock increases require a genuine batch number and future expiry date."
-              : "Failed to update stock"),
-        })
-      }
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "An error occurred",
-      })
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const incrementUnits = (amount: number) => {
-    const current = parseInt(unitsToAdd) || 0
-    setUnitsToAdd((current + amount).toString())
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <Card className="w-full max-w-lg">
-        <CardHeader>
-          <CardTitle className="flex items-center">
-            <PackagePlus className="h-5 w-5 mr-2" />
-            Update Stock
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {!selectedProduct ? (
-            <>
-              <div className="space-y-2">
-                <Label>Search Product</Label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Search by name or SKU..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10"
-                  />
-                </div>
-              </div>
-
-              <div className="max-h-64 overflow-y-auto border rounded-lg">
-                {filteredProducts.length === 0 ? (
-                  <div className="p-4 text-center text-muted-foreground">
-                    No products found
-                  </div>
-                ) : (
-                  filteredProducts.map((product) => (
-                    <button
-                      key={product.id}
-                      onClick={() => handleSelectProduct(product)}
-                      className="w-full p-3 text-left hover:bg-muted/20 border-b last:border-b-0 transition-colors"
-                    >
-                      <div className="font-medium">{product.name}</div>
-                      <div className="text-sm text-muted-foreground">
-                        SKU: {product.sku} | Current Stock: {product.quantity} {product.unitOfMeasure}
-                      </div>
-                    </button>
-                  ))
-                )}
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h3 className="font-semibold text-blue-900">{selectedProduct.name}</h3>
-                <p className="text-sm text-blue-800">SKU: {selectedProduct.sku}</p>
-                <p className="text-sm text-blue-800 mt-2">
-                  Current Stock: <strong>{selectedProduct.quantity} {selectedProduct.unitOfMeasure}</strong>
-                </p>
-                {selectedProduct.batchNumber && (
-                  <p className="text-sm text-blue-800">Batch: {selectedProduct.batchNumber}</p>
-                )}
-                {selectedProduct.expiryDate && (
-                  <p className="text-sm text-blue-800">Expiry: {new Date(selectedProduct.expiryDate).toLocaleDateString()}</p>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="units-to-add">Basic Units to Add</Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="units-to-add"
-                    type="number"
-                    min="1"
-                    value={unitsToAdd}
-                    onChange={(e) => setUnitsToAdd(e.target.value)}
-                    placeholder="Enter quantity"
-                    className="flex-1"
-                  />
-                </div>
-                <div className="flex gap-2 flex-wrap">
-                  <Button type="button" variant="outline" size="sm" onClick={() => incrementUnits(10)}>
-                    +10
-                  </Button>
-                  <Button type="button" variant="outline" size="sm" onClick={() => incrementUnits(25)}>
-                    +25
-                  </Button>
-                  <Button type="button" variant="outline" size="sm" onClick={() => incrementUnits(50)}>
-                    +50
-                  </Button>
-                  <Button type="button" variant="outline" size="sm" onClick={() => incrementUnits(100)}>
-                    +100
-                  </Button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="batch-number">Batch Number *</Label>
-                  <Input
-                    id="batch-number"
-                    value={batchNumber}
-                    onChange={(e) => setBatchNumber(e.target.value)}
-                    placeholder="e.g., BATCH-2026-001"
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="expiry-date">Expiry Date *</Label>
-                  <Input
-                    id="expiry-date"
-                    type="date"
-                    value={expiryDate}
-                    onChange={(e) => setExpiryDate(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Use the batch and expiry printed on the pack. Increases without batch data are blocked.
-              </p>
-
-              {unitsToAdd && parseInt(unitsToAdd) > 0 && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                  <p className="text-sm text-green-800">
-                    New Stock after update: <strong>{selectedProduct.quantity + parseInt(unitsToAdd)} {selectedProduct.unitOfMeasure}</strong>
-                  </p>
-                </div>
-              )}
-
-              <Button
-                variant="outline"
-                className="w-full"
-                onClick={() => {
-                  setSelectedProduct(null)
-                  setUnitsToAdd("")
-                  setBatchNumber("")
-                  setExpiryDate("")
-                }}
-              >
-                ← Select Different Product
-              </Button>
-            </>
-          )}
-
-          <div className="flex justify-end space-x-2 pt-4 border-t">
-            <Button type="button" variant="outline" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleUpdateStock}
-              disabled={
-                isLoading ||
-                !selectedProduct ||
-                !unitsToAdd ||
-                !batchNumber.trim() ||
-                !expiryDate
-              }
-            >
-              {isLoading ? "Receiving..." : "Receive stock"}
-            </Button>
-          </div>
         </CardContent>
       </Card>
     </div>

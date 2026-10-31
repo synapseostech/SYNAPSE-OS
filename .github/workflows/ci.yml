@@ -194,14 +194,28 @@ jobs:
       - name: Readiness evidence gate behavioral tests
         run: npm run test:readiness-report
 
+  tally-bridge-windows:
+    name: Tally bridge (Windows / Node 22)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Windows bridge tests
+        run: npm test --workspace @synapse/tally-bridge
+
   required:
-    needs: verify
+    needs: [verify, tally-bridge-windows]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Fail if any required gate failed
         run: |
-          if [ "${{ needs.verify.result }}" != "success" ]; then
+          if [ "${{ needs.verify.result }}" != "success" ] || [ "${{ needs['tally-bridge-windows'].result }}" != "success" ]; then
             echo "CI / required failed"
             exit 1
           fi

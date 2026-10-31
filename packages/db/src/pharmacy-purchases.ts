@@ -105,6 +105,7 @@ export type CatalogProduct = {
   brandName?: string | null
   strength?: string | null
   dosageForm?: string | null
+  activeIngredient?: string | null
   manufacturer?: string | null
   price?: number | null
   costPrice?: number | null
@@ -121,6 +122,7 @@ export type ProductMatchQuery = {
   brandName?: string | null
   strength?: string | null
   dosageForm?: string | null
+  activeIngredient?: string | null
   manufacturer?: string | null
 }
 
@@ -225,6 +227,8 @@ export function catalogProductFromRow(row: Record<string, unknown>): CatalogProd
     brandName: (row.brand as string | null) ?? (row.brandName as string | null) ?? (row.name as string | null) ?? null,
     strength: (row.strength as string | null) ?? null,
     dosageForm: (row.dosage_form as string | null) ?? (row.dosageForm as string | null) ?? null,
+    activeIngredient:
+      (row.active_ingredient as string | null) ?? (row.activeIngredient as string | null) ?? null,
     manufacturer: (row.manufacturer as string | null) ?? null,
     price: row.price != null ? Number(row.price) : row.sellingPrice != null ? Number(row.sellingPrice) : null,
     costPrice: row.cost_price != null ? Number(row.cost_price) : row.costPrice != null ? Number(row.costPrice) : null,
@@ -245,8 +249,8 @@ export function matchCatalogProducts(
 
 /**
  * Import / migration matching: barcode ? SKU ? name.
- * Name matches MUST NOT silently merge clinically distinct products
- * (e.g. Amoxicillin 250 mg vs 500 mg) when strength or dosage form differ.
+ * Name matches merge only when strength, dosage form, and active ingredient match
+ * exactly after normalization.
  */
 export type ImportCatalogMatch =
   | { kind: "match"; product: CatalogProduct; via: "barcode" | "sku" | "name" }
@@ -254,18 +258,44 @@ export type ImportCatalogMatch =
   | { kind: "none" }
 
 function clinicalFieldsCompatible(
-  incoming: { strength?: string | null; dosageForm?: string | null },
+  incoming: {
+    strength?: string | null
+    dosageForm?: string | null
+    activeIngredient?: string | null
+  },
   existing: CatalogProduct,
 ): boolean {
-  const inStrength = norm(incoming.strength)
-  const exStrength = norm(existing.strength)
-  if (inStrength && exStrength && inStrength !== exStrength) return false
+  return (
+    norm(incoming.strength) === norm(existing.strength) &&
+    norm(incoming.dosageForm) === norm(existing.dosageForm) &&
+    norm(incoming.activeIngredient) === norm(existing.activeIngredient)
+  )
+}
 
-  const inForm = norm(incoming.dosageForm)
-  const exForm = norm(existing.dosageForm)
-  if (inForm && exForm && inForm !== exForm) return false
-
-  return true
+export function sameMedicineIdentity(
+  left: {
+    name?: string | null
+    strength?: string | null
+    dosageForm?: string | null
+    activeIngredient?: string | null
+  },
+  right: {
+    name?: string | null
+    strength?: string | null
+    dosageForm?: string | null
+    activeIngredient?: string | null
+  },
+): boolean {
+  return (
+    norm(left.name) === norm(right.name) &&
+    clinicalFieldsCompatible(left, {
+      id: "",
+      name: String(right.name ?? ""),
+      strength: right.strength,
+      dosageForm: right.dosageForm,
+      activeIngredient: right.activeIngredient,
+    })
+  )
 }
 
 export function resolveImportCatalogMatch(
@@ -275,19 +305,28 @@ export function resolveImportCatalogMatch(
     name?: string | null
     strength?: string | null
     dosageForm?: string | null
+    activeIngredient?: string | null
   },
   existingProducts: CatalogProduct[],
 ): ImportCatalogMatch {
   const barcode = values.barcode?.trim()
   if (barcode) {
     const match = existingProducts.find((p) => norm(p.barcode) === norm(barcode))
-    if (match) return { kind: "match", product: match, via: "barcode" }
+    if (match) {
+      return sameMedicineIdentity(values, match)
+        ? { kind: "match", product: match, via: "barcode" }
+        : { kind: "ambiguous_name", candidates: [match] }
+    }
   }
 
   const sku = values.sku?.trim()
   if (sku) {
     const match = existingProducts.find((p) => norm(p.sku) === norm(sku))
-    if (match) return { kind: "match", product: match, via: "sku" }
+    if (match) {
+      return sameMedicineIdentity(values, match)
+        ? { kind: "match", product: match, via: "sku" }
+        : { kind: "ambiguous_name", candidates: [match] }
+    }
   }
 
   const name = values.name?.trim()
@@ -324,6 +363,7 @@ export type CreatedPurchaseProduct = {
   price: number
   costPrice: number | null
   genericName: string | null
+  activeIngredient: string | null
   strength: string | null
   dosageForm: string | null
   manufacturer: string | null
@@ -335,6 +375,7 @@ export type CreatePurchaseProductInput = {
   name: string
   genericName?: string | null
   brand?: string | null
+  activeIngredient?: string | null
   strength?: string | null
   dosageForm?: string | null
   unit?: string | null
@@ -364,7 +405,7 @@ export async function createPurchaseCatalogProduct(
   const catalog = await client
     .from("pharmacy_products")
     .select(
-      "id, name, sku, barcode, generic_name, strength, dosage_form, manufacturer, price, cost_price, unit_of_measure, category, reorder_level",
+      "id, name, sku, barcode, generic_name, active_ingredient, strength, dosage_form, manufacturer, price, cost_price, unit_of_measure, category, reorder_level",
     )
     .eq("tenant_id", input.tenantId)
     .eq("is_active", true)
@@ -382,6 +423,7 @@ export async function createPurchaseCatalogProduct(
       sku: input.sku ?? null,
       strength: input.strength ?? null,
       dosageForm: input.dosageForm ?? null,
+      activeIngredient: input.activeIngredient ?? null,
       manufacturer: input.manufacturer ?? null,
     },
     products,
@@ -428,6 +470,7 @@ export async function createPurchaseCatalogProduct(
       manufacturer: String(input.manufacturer ?? "").trim() || null,
       strength: String(input.strength ?? "").trim() || null,
       dosage_form: String(input.dosageForm ?? "").trim() || null,
+      active_ingredient: String(input.activeIngredient ?? "").trim() || null,
       generic_name: String(input.genericName ?? "").trim() || null,
       expiry_required: input.expiryRequired === false ? false : true,
     })
@@ -468,6 +511,7 @@ export async function createPurchaseCatalogProduct(
       genericName: (product.generic_name as string | null) ?? null,
       strength: (product.strength as string | null) ?? null,
       dosageForm: (product.dosage_form as string | null) ?? null,
+      activeIngredient: (product.active_ingredient as string | null) ?? null,
       manufacturer: (product.manufacturer as string | null) ?? null,
     },
   }

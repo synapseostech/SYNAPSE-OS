@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requirePharmacyTenant } from "@/lib/api-auth"
+import { requirePharmacyPermission } from "@/lib/api-auth"
 import { supabaseAdmin } from '@/lib/supabase/admin'
 
 const db = supabaseAdmin as any
 
 // GET /api/admin/network — fetch network settings + inventory
 export async function GET() {
-  const auth = await requirePharmacyTenant()
+  // Nav gates this page on MANAGE_SETTINGS; the route must match, otherwise any
+  // signed-in cashier can read the network listing.
+  const auth = await requirePharmacyPermission("settings.manage")
   if (!auth.ok) return auth.response
-  const { session, tenantId } = auth
-
+  const { tenantId } = auth
 
   const [{ data: tenant }, { data: inventory }] = await Promise.all([
     db.from('tenants')
@@ -33,9 +34,9 @@ export async function GET() {
 
 // POST /api/admin/network — save settings or sync
 export async function POST(req: NextRequest) {
-  const auth = await requirePharmacyTenant()
+  const auth = await requirePharmacyPermission("settings.manage")
   if (!auth.ok) return auth.response
-  const { session, tenantId } = auth
+  const { tenantId } = auth
 
   const body = await req.json()
 

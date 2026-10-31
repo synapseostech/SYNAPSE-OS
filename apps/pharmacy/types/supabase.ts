@@ -185,6 +185,7 @@ export type Database = {
           expiry_date: string
           received_date: string | null
           cost_price: number
+          selling_price: number | null
           is_active: boolean | null
           notes: string | null
           created_at: string | null
@@ -200,6 +201,7 @@ export type Database = {
           expiry_date: string
           received_date?: string | null
           cost_price: number
+          selling_price?: number | null
           is_active?: boolean | null
           notes?: string | null
           created_at?: string | null
@@ -215,6 +217,7 @@ export type Database = {
           expiry_date?: string
           received_date?: string | null
           cost_price?: number
+          selling_price?: number | null
           is_active?: boolean | null
           notes?: string | null
           created_at?: string | null

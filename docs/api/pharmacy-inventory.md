@@ -25,7 +25,16 @@ Next.js routes, React Native, and tests.
 `GET /api/mobile/pharmacy/pos/products` and `GET /api/admin/inventory` now also return per product:
 `sellableQuantity`, `physicalQuantity`, `expiredQuantity`, `unbatchedQuantity`, `hasPhantomStock`.
 `quantity` is retained for backwards compatibility. `batches[]` now lists **only sellable** batches
-(active + in-date + positive). **POS clients must validate against `sellableQuantity`.**
+(active + in-date + positive) and includes each batch's `sellingPrice`. A product may have different
+selling prices per batch; the POS price is calculated from the FEFO allocation, not from the shared
+catalogue price. **POS clients must validate against `sellableQuantity` and treat the returned
+batch allocation/prices as a checkout snapshot.**
+
+`POST /api/admin/pos/complete-sale` and `POST /api/mobile/pharmacy/pos/complete-sale` revalidate
+that allocation server-side. The sale RPC payload must contain one line per allocated batch with
+`batch_id`, the batch's pre-discount `unit_price`, and that batch's portion of `discount_amount`.
+Clients must not send a product-wide price for a multi-batch line. Clinical dispensing uses the
+same FEFO batch allocation and batch prices.
 
 ## HTTP: checkout error (updated, additive field)
 `POST /api/mobile/pharmacy/pos/complete-sale` and `POST /api/admin/pos/complete-sale` — on a stock
@@ -64,5 +73,6 @@ failure the JSON now includes `stockError` (the `StructuredStockError` above) al
 - `report_unbatched_positive_stock(p_tenant_id uuid)` → legacy phantom-stock report.
 - `receive_pharmacy_stock(p_tenant_id, p_product_id, p_batch_number, p_quantity, p_expiry_date,
   p_cost_price?, p_received_by?, p_supplier_ref?) → jsonb` — the sanctioned way to add sellable stock.
-- `complete_pharmacy_sale(...)` — unchanged signature; excludes non-`active` batches; structured
-  `INSUFFICIENT_STOCK` message.
+- `complete_pharmacy_sale(...)` — unchanged function signature; each item must identify its
+  allocated `batch_id` and current pre-discount batch `unit_price`. It excludes non-`active` batches
+  and returns a structured `INSUFFICIENT_STOCK` message when stock changes before checkout.

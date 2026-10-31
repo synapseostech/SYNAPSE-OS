@@ -28,6 +28,7 @@ vi.mock("@/lib/supabase/admin", () => ({
       const q: any = {
         select: () => q,
         eq: (k: string, v: unknown) => ((eqs[k] = v), q),
+        ilike: () => q,
         neq: (k: string, v: unknown) => ((neqs[k] = v), q),
         limit: () => q,
         insert: (values: any) => ((op = "insert"), m.writes.push({ table, op, values }), q),

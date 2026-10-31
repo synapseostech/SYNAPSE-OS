@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import { BrainCircuit, FileSpreadsheet, Wand2, Upload } from "lucide-react"
+import { formatImportRows, parseImportRows } from "@/lib/import-rows"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -81,35 +82,48 @@ export default function ImportAssistantPage() {
     event.preventDefault()
     setIsLoading(true)
     setApplyResult(null)
-    const headers = headersText.split(",").map((item) => item.trim()).filter(Boolean)
-    const sampleRows = sampleText
-      .split("\n")
-      .map((line) => line.split(",").map((item) => item.trim()))
-      .filter((row) => row.some(Boolean))
-
-    const response = await fetch("/api/admin/import-sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sourceSystem,
-        fileName: fileName || file?.name || "Manual mapping session",
-        headers,
-        sampleRows,
-        totalRows: sampleRows.length,
-      }),
-    })
-    const data = await response.json()
-    setIsLoading(false)
-    if (!response.ok) {
-      toast({ variant: "destructive", title: data.error ?? "Import analysis failed" })
+    let headers: string[]
+    let sampleRows: string[][]
+    try {
+      headers = parseImportRows(headersText)[0]?.map((item) => item.trim()).filter(Boolean) ?? []
+      sampleRows = parseImportRows(sampleText)
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: error instanceof Error ? error.message : "Import rows could not be read",
+      })
+      setIsLoading(false)
       return
     }
-    setMapping(data.mapping ?? [])
-    setSummary(data.summary ?? "")
-    setDiscovery(data.discoverySummary ?? "")
-    setCurrentSessionId(data.session?.id ?? null)
-    toast({ title: "Import mapping ready for review" })
-    loadSessions()
+
+    try {
+      const response = await fetch("/api/admin/import-sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSystem,
+          fileName: fileName || file?.name || "Manual mapping session",
+          headers,
+          sampleRows,
+          totalRows: sampleRows.length,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        toast({ variant: "destructive", title: data.error ?? "Import analysis failed" })
+        return
+      }
+      setMapping(data.mapping ?? [])
+      setSummary(data.summary ?? "")
+      setDiscovery(data.discoverySummary ?? "")
+      setCurrentSessionId(data.session?.id ?? null)
+      toast({ title: "Import mapping ready for review" })
+      loadSessions()
+    } catch {
+      toast({ variant: "destructive", title: "Import analysis could not reach the server" })
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   async function analyseFile() {
@@ -137,11 +151,11 @@ export default function ImportAssistantPage() {
       setFileName(file.name)
       setHeadersText(Array.isArray(data.headers) ? data.headers.join(", ") : "")
       if (Array.isArray(data.sampleRows) && data.sampleRows.length > 0) {
-        setSampleText(data.sampleRows.map((row: string[]) => row.join(", ")).join("\n"))
+        setSampleText(formatImportRows(data.sampleRows))
       } else {
         const sampleRows = (data.session?.ai_mapping as { sampleRows?: string[][] } | undefined)?.sampleRows
         if (Array.isArray(sampleRows) && sampleRows.length > 0) {
-          setSampleText(sampleRows.map((row) => row.join(", ")).join("\n"))
+          setSampleText(formatImportRows(sampleRows))
         }
       }
       setMapping(data.mapping ?? [])
@@ -161,10 +175,16 @@ export default function ImportAssistantPage() {
       return
     }
 
-    const allRows = sampleText
-      .split("\n")
-      .map((line) => line.split(",").map((item) => item.trim()))
-      .filter((row) => row.some(Boolean))
+    let allRows: string[][]
+    try {
+      allRows = parseImportRows(sampleText)
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: error instanceof Error ? error.message : "Import rows could not be read",
+      })
+      return
+    }
 
     if (allRows.length === 0) {
       toast({

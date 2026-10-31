@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { fieldOwnsKeystroke, resolvePosShortcut } from "./keyboard"
+import { fieldOwnsKeystroke, resolvePosEnterAction, resolvePosShortcut } from "./keyboard"
 
 function key(
   key: string,
@@ -59,5 +59,39 @@ describe("fieldOwnsKeystroke", () => {
     expect(fieldOwnsKeystroke({ key: "F8" })).toBe(false)
     expect(fieldOwnsKeystroke({ key: "F10" })).toBe(false)
     expect(fieldOwnsKeystroke({ key: "Escape" })).toBe(false)
+  })
+})
+
+describe("resolvePosEnterAction", () => {
+  const state = { matches: 0, cartCount: 1, query: "", paymentMethod: "CASH" }
+
+  it("adds a uniquely matched product and opens ambiguous matches for selection", () => {
+    expect(resolvePosEnterAction("productSearch", { ...state, matches: 1, query: "para" })).toBe("addProduct")
+    expect(resolvePosEnterAction("productSearch", { ...state, matches: 2, query: "para" })).toBe("chooseProduct")
+  })
+
+  it("moves from an empty search to payment when the cart has items", () => {
+    expect(resolvePosEnterAction("productSearch", state)).toBe("focusPayment")
+    expect(resolvePosEnterAction("productSearch", { ...state, cartCount: 0 })).toBeNull()
+  })
+
+  it("moves Enter between cart quantity lines and then to payment", () => {
+    expect(
+      resolvePosEnterAction("cartQuantity", { ...state, lineIndex: 0, lineCount: 2 }),
+    ).toBe("focusNextQuantity")
+    expect(
+      resolvePosEnterAction("cartQuantity", { ...state, lineIndex: 1, lineCount: 2 }),
+    ).toBe("focusPayment")
+  })
+
+  it("moves through payment fields and completes from the final field", () => {
+    expect(resolvePosEnterAction("paymentMethod", state)).toBe("focusAmountPaid")
+    expect(resolvePosEnterAction("paymentMethod", { ...state, paymentMethod: "CREDIT" })).toBe(
+      "focusCreditCustomer",
+    )
+    expect(resolvePosEnterAction("paymentMethod", { ...state, paymentMethod: "CARD" })).toBe("completeSale")
+    expect(resolvePosEnterAction("creditCustomer", state)).toBe("focusCreditDueDate")
+    expect(resolvePosEnterAction("amountPaid", state)).toBe("completeSale")
+    expect(resolvePosEnterAction("creditDueDate", state)).toBe("completeSale")
   })
 })

@@ -29,7 +29,7 @@ export type TallyPlanSummary = {
   companyKey: string
   currency: string
   conversionDate: string
-  format: "xml" | "xlsx" | "csv"
+  format: "xml" | "xlsx" | "xls" | "csv"
   counts: {
     ledgers: number
     groups: number

@@ -38,9 +38,20 @@ export async function POST(request: NextRequest) {
       batchNumber?: string
       expiryDate?: string
       costPrice?: number
+      sellingPrice?: number
     }
 
-    const { productId, quantity, type, reason, batchId, batchNumber, expiryDate, costPrice } = body
+    const {
+      productId,
+      quantity,
+      type,
+      reason,
+      batchId,
+      batchNumber,
+      expiryDate,
+      costPrice,
+      sellingPrice,
+    } = body
 
     if (!productId || quantity == null || !type) {
       return NextResponse.json(
@@ -83,6 +94,7 @@ export async function POST(request: NextRequest) {
         quantity: Number(quantity),
         expiryDate,
         costPrice: costPrice ?? null,
+        sellingPrice: sellingPrice ?? null,
         receivedBy: session.user.id,
         reason: adjReason,
       })

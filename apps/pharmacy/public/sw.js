@@ -1,4 +1,5 @@
-const CACHE_NAME = 'synapse-pharm-v4';
+// Bump whenever the caching policy changes — activate drops every other cache.
+const CACHE_NAME = 'synapse-pharm-v5';
 const STATIC_ASSETS = [
   '/',
   '/login',
@@ -75,7 +76,11 @@ async function markActionSynced(db, id) {
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
+    // Cache each asset on its own: addAll rejects the whole install if a single
+    // URL fails, which would leave the portal with no offline support at all.
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.all(STATIC_ASSETS.map((asset) => cache.add(asset).catch(() => {})))
+    )
   );
   self.skipWaiting();
 });
@@ -98,30 +103,10 @@ self.addEventListener('fetch', (event) => {
   // Never intercept non-GET requests — server actions, form POSTs, etc.
   if (request.method !== 'GET') return;
 
-  // API calls: Network first, with cache fallback and background update
-  if (url.pathname.startsWith('/api/')) {
-    // Skip auth and sync triggers
-    if (url.pathname.includes('/auth/') || url.pathname.includes('/sync/trigger')) {
-      return;
-    }
-
-    event.respondWith(
-      fetch(request)
-        .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200 && request.method === 'GET') {
-            const responseToCache = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(request, responseToCache);
-            });
-          }
-          return networkResponse;
-        })
-        .catch(() => {
-          return caches.match(request);
-        })
-    );
-    return;
-  }
+  // API responses carry customer PII and financial records. They are never
+  // written to Cache Storage — an offline device must not hold a readable copy
+  // of the customer book. Requests go straight to the network and fail closed.
+  if (url.pathname.startsWith('/api/')) return;
 
   // Navigation requests: Network-first with cache fallback
   if (request.mode === 'navigate') {
@@ -185,16 +170,6 @@ async function replayMutations() {
         if (response.ok) {
           await markActionSynced(db, action.id);
           console.log('[SW] Replayed mutation:', action.method, action.url);
-
-          // Invalidate relevant cache after successful mutation
-          const cache = await caches.open(CACHE_NAME);
-          const urlObj = new URL(action.url, self.location.origin);
-
-          // Simple heuristic: if we post to /api/admin/inventory, clear GET /api/admin/inventory
-          if (urlObj.pathname.startsWith('/api/admin/')) {
-            const listUrl = urlObj.pathname.split('/').slice(0, 4).join('/');
-            await cache.delete(listUrl);
-          }
         }
       } catch (err) {
         console.error('[SW] Failed to replay mutation:', action.id, err);

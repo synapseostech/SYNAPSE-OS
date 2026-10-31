@@ -103,6 +103,8 @@ const PHARMACIST = "77777777-7777-4777-8777-777777777777"
 const PRESCRIBER = "55555555-5555-4555-8555-555555555555"
 const RX = "88888888-8888-4888-8888-888888888888"
 const PRODUCT = "99999999-9999-4999-8999-999999999999"
+const BATCH = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+const BATCH_2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 const PHARM_TENANT = TENANT
 const FOREIGN_PHARM_TENANT = "66666666-6666-4666-8666-666666666666"
 
@@ -303,7 +305,16 @@ describe("POST /api/hospital/pharmacy/dispense", () => {
       tableMock({
         clinical_prescriptions: { data: rxRow({ status: "verified", verifier_id: PHARMACIST, quantity: 10 }) },
         pharmacy_products: { data: { id: PRODUCT, price: 500, name: "Paracetamol 500mg", is_active: true } },
-        pharmacy_product_batches: { rows: [{ quantity: 2 }] },
+        pharmacy_product_batches: {
+          rows: [{
+            id: BATCH,
+            quantity: 2,
+            expiry_date: "2028-12-31",
+            status: "active",
+            is_active: true,
+            selling_price: 500,
+          }],
+        },
       }),
     )
 
@@ -321,7 +332,16 @@ describe("POST /api/hospital/pharmacy/dispense", () => {
       tableMock({
         clinical_prescriptions: { data: rxRow({ status: "active", quantity: 3 }) },
         pharmacy_products: { data: { id: PRODUCT, price: 500, name: "Paracetamol 500mg", is_active: true } },
-        pharmacy_product_batches: { rows: [{ quantity: 20 }] },
+        pharmacy_product_batches: {
+          rows: [{
+            id: BATCH,
+            quantity: 20,
+            expiry_date: "2028-12-31",
+            status: "active",
+            is_active: true,
+            selling_price: 500,
+          }],
+        },
         department_tasks: { data: { id: "task-1" } },
         billing_invoices: { data: null },
       }),
@@ -339,6 +359,13 @@ describe("POST /api/hospital/pharmacy/dispense", () => {
       expect.objectContaining({
         p_tenant_id: PHARM_TENANT,
         p_idempotency_key: `clinical_prescriptions:${RX}`,
+        p_items: [{
+          product_id: PRODUCT,
+          batch_id: BATCH,
+          quantity: 3,
+          unit_price: 500,
+          discount_amount: 0,
+        }],
       }),
     )
     expect(requireHospitalCapability).toHaveBeenCalledWith(
@@ -351,13 +378,74 @@ describe("POST /api/hospital/pharmacy/dispense", () => {
     expect(json.safety.decision).toBe("allow")
   })
 
+  it("prices each FEFO batch separately for sale and encounter billing", async () => {
+    requireHospitalStaffContext.mockResolvedValue(staffCtx())
+    dbFrom.mockImplementation(
+      tableMock({
+        clinical_prescriptions: { data: rxRow({ status: "verified", verifier_id: PHARMACIST, quantity: 3 }) },
+        pharmacy_products: { data: { id: PRODUCT, price: 500, name: "Paracetamol 500mg", is_active: true } },
+        pharmacy_product_batches: {
+          rows: [
+            {
+              id: BATCH,
+              quantity: 2,
+              expiry_date: "2027-12-31",
+              status: "active",
+              is_active: true,
+              selling_price: 500,
+            },
+            {
+              id: BATCH_2,
+              quantity: 10,
+              expiry_date: "2028-12-31",
+              status: "active",
+              is_active: true,
+              selling_price: 700,
+            },
+          ],
+        },
+        department_tasks: { data: null },
+        billing_invoices: { data: null },
+      }),
+    )
+
+    const { POST } = await import("./route")
+    const res = await POST(postBody(validBody()))
+    expect(res.status).toBe(200)
+    expect(dbRpc).toHaveBeenCalledWith(
+      "complete_pharmacy_sale",
+      expect.objectContaining({
+        p_items: [
+          { product_id: PRODUCT, batch_id: BATCH, quantity: 2, unit_price: 500, discount_amount: 0 },
+          { product_id: PRODUCT, batch_id: BATCH_2, quantity: 1, unit_price: 700, discount_amount: 0 },
+        ],
+      }),
+    )
+    expect(appendClinicalChargeBestEffort.mock.calls.map(([, charge]) => ({
+      unitPrice: charge.unitPrice,
+      qty: charge.qty,
+    }))).toEqual([
+      { unitPrice: 500, qty: 2 },
+      { unitPrice: 700, qty: 1 },
+    ])
+  })
+
   it("returns 409 and dispenses nothing when the safety check blocks", async () => {
     requireHospitalStaffContext.mockResolvedValue(staffCtx())
     dbFrom.mockImplementation(
       tableMock({
         clinical_prescriptions: { data: rxRow({ status: "verified", verifier_id: PHARMACIST }) },
         pharmacy_products: { data: { id: PRODUCT, price: 500, name: "Warfarin 5mg", is_active: true } },
-        pharmacy_product_batches: { rows: [{ quantity: 20 }] },
+        pharmacy_product_batches: {
+          rows: [{
+            id: BATCH,
+            quantity: 20,
+            expiry_date: "2028-12-31",
+            status: "active",
+            is_active: true,
+            selling_price: 500,
+          }],
+        },
       }),
     )
     runClinicalSafetyCheck.mockResolvedValue(blockingSafety())
@@ -388,7 +476,16 @@ describe("POST /api/hospital/pharmacy/dispense", () => {
             is_active: true,
           },
         },
-        pharmacy_product_batches: { rows: [{ quantity: 20 }] },
+        pharmacy_product_batches: {
+          rows: [{
+            id: BATCH,
+            quantity: 20,
+            expiry_date: "2028-12-31",
+            status: "active",
+            is_active: true,
+            selling_price: 500,
+          }],
+        },
         department_tasks: { data: null },
         billing_invoices: { data: null },
       }),
@@ -421,7 +518,16 @@ describe("POST /api/hospital/pharmacy/dispense", () => {
       tableMock({
         clinical_prescriptions: { data: rxRow({ status: "verified", verifier_id: PHARMACIST, quantity: 3 }) },
         pharmacy_products: { data: { id: PRODUCT, price: 500, name: "Warfarin 5mg", is_active: true } },
-        pharmacy_product_batches: { rows: [{ quantity: 20 }] },
+        pharmacy_product_batches: {
+          rows: [{
+            id: BATCH,
+            quantity: 20,
+            expiry_date: "2028-12-31",
+            status: "active",
+            is_active: true,
+            selling_price: 500,
+          }],
+        },
         department_tasks: { data: null },
         billing_invoices: { data: null },
       }),

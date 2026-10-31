@@ -23,6 +23,8 @@ type Chain = {
   delete: () => Chain
   eq: (column: string, value: unknown) => Chain
   in: (column: string, values: unknown[]) => Chain
+  order: (column: string, options?: { ascending?: boolean }) => Chain
+  limit: (count: number) => Chain
   maybeSingle: () => Promise<FakeResult>
   single: () => Promise<FakeResult>
   then: (
@@ -62,6 +64,8 @@ export function fakeSupabase(resolve: (operation: FakeOperation) => FakeResult) 
         operation.filters.push([column, values])
         return chain
       },
+      order: () => chain,
+      limit: () => chain,
       maybeSingle: () => Promise.resolve(resolve(operation)),
       single: () => Promise.resolve(resolve(operation)),
       then: (onFulfilled, onRejected) =>

@@ -11,29 +11,42 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useToast } from "@/hooks/use-toast"
 import { usePharmacySession } from "@/hooks/use-pharmacy-session"
-import { Plus, Mail, Loader2, Edit, Trash2, KeyRound, RotateCcw } from "lucide-react"
-
-// Define Permission type locally to avoid importing from @prisma/client in client component
-type Permission = 
-  | "MANAGE_USERS"
-  | "MANAGE_INVENTORY"
-  | "VIEW_INVENTORY"
-  | "MANAGE_POS"
-  | "VIEW_TRANSACTIONS"
-  | "MANAGE_TRANSACTIONS"
-  | "MANAGE_SETTINGS"
-  | "VIEW_REPORTS"
-  | "CLAIM_ORDERS"
+import { Plus, Mail, Loader2, Edit, Trash2, KeyRound, RotateCcw, ShieldCheck } from "lucide-react"
+import {
+  ACCESS_PROFILES,
+  PERMISSION_GROUPS,
+  PERMISSION_LABELS,
+  accessRoleFromStored,
+  accessRoleLabel,
+  describeAccess,
+  profileKey,
+  type AccessRole,
+  type Permission,
+} from "@/lib/access-profiles"
 
 interface User {
   id: string
   name: string
   username: string | null
   email: string
-  role: string
+  role: AccessRole
   permissions: Permission[]
   isActive: boolean
   createdAt: string
+}
+
+/** The API stores pharmacy_role values; the form and the table speak AccessRole. */
+function normalizeUser(raw: Record<string, unknown>): User {
+  return {
+    id: String(raw.id ?? ""),
+    name: String(raw.name ?? ""),
+    username: (raw.username as string | null) ?? null,
+    email: String(raw.email ?? ""),
+    role: accessRoleFromStored(String(raw.role ?? "")),
+    permissions: (Array.isArray(raw.permissions) ? raw.permissions : []) as Permission[],
+    isActive: Boolean(raw.isActive),
+    createdAt: String(raw.createdAt ?? ""),
+  }
 }
 
 export default function UsersPage() {
@@ -53,7 +66,7 @@ export default function UsersPage() {
     try {
       const response = await fetch("/api/admin/users")
       const data = await response.json()
-      setUsers(Array.isArray(data) ? data : [])
+      setUsers(Array.isArray(data) ? data.map(normalizeUser) : [])
     } catch (error) {
       toast({
         variant: "destructive",
@@ -194,6 +207,7 @@ export default function UsersPage() {
                   <TableHead>Username</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Role</TableHead>
+                  <TableHead>Access</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -207,8 +221,11 @@ export default function UsersPage() {
                     <TableCell>{user.email}</TableCell>
                     <TableCell>
                       <span className="px-2 py-1 text-xs rounded-full bg-primary/10 text-primary">
-                        {user.role}
+                        {accessRoleLabel(user.role)}
                       </span>
+                    </TableCell>
+                    <TableCell>
+                      <AccessCell role={user.role} permissions={user.permissions} />
                     </TableCell>
                     <TableCell>
                       <span className={`px-2 py-1 text-xs rounded-full ${
@@ -242,6 +259,167 @@ export default function UsersPage() {
   )
 }
 
+/** What this account actually opens, resolved through the sidebar's own gate. */
+function AccessCell({ role, permissions }: { role: string; permissions: readonly string[] }) {
+  const access = describeAccess(role, permissions)
+  const preview = access.areas.slice(0, 3).join(", ")
+  const remainder = access.areas.length - 3
+  return (
+    <div
+      className="min-w-[170px]"
+      title={access.groups.map((group) => `${group.label}: ${group.items.join(", ")}`).join("\n")}
+    >
+      <div className="text-sm font-medium">{access.profileLabel}</div>
+      <div className="text-xs text-muted-foreground">
+        {access.areas.length === 0
+          ? "No areas"
+          : `${access.areas.length} areas · ${preview}${remainder > 0 ? ` +${remainder}` : ""}`}
+      </div>
+    </div>
+  )
+}
+
+type AccessDraft = {
+  role: AccessRole
+  permissions: Permission[]
+  profileId: string
+}
+
+interface AccessEditorProps {
+  value: AccessDraft
+  onChange: (next: AccessDraft) => void
+  disabled?: boolean
+  /** Editing your own account: the API refuses a role change, so lock the control. */
+  lockRole?: boolean
+  idPrefix: string
+}
+
+function AccessEditor({ value, onChange, disabled = false, lockRole = false, idPrefix }: AccessEditorProps) {
+  const activeProfile = ACCESS_PROFILES.find((profile) => profile.id === value.profileId)
+  const access = describeAccess(value.role, value.permissions)
+
+  const applyProfile = (nextId: string) => {
+    const profile = ACCESS_PROFILES.find((candidate) => candidate.id === nextId)
+    if (!profile) {
+      onChange({ ...value, profileId: nextId })
+      return
+    }
+    onChange({ role: profile.role, permissions: profile.permissions, profileId: profile.id })
+  }
+
+  const togglePermission = (permission: Permission) => {
+    const permissions = value.permissions.includes(permission)
+      ? value.permissions.filter((p) => p !== permission)
+      : [...value.permissions, permission]
+    onChange({ ...value, permissions, profileId: "CUSTOM" })
+  }
+
+  return (
+    <>
+      <div className="space-y-2">
+        <Label htmlFor={`${idPrefix}-access-profile`}>Access profile</Label>
+        <select
+          id={`${idPrefix}-access-profile`}
+          value={value.profileId}
+          onChange={(e) => applyProfile(e.target.value)}
+          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          disabled={disabled || lockRole}
+        >
+          <option value="CUSTOM">Custom — choose permissions by hand</option>
+          {ACCESS_PROFILES.map((profile) => (
+            <option key={profile.id} value={profile.id}>
+              {profile.label}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-muted-foreground">
+          {activeProfile?.description ??
+            "Pick the areas this account may open. Ticking permissions yourself switches back to Custom."}
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor={`${idPrefix}-role`}>Role</Label>
+        <select
+          id={`${idPrefix}-role`}
+          value={value.role}
+          onChange={(e) =>
+            onChange({ ...value, role: e.target.value as AccessRole, profileId: "CUSTOM" })
+          }
+          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          disabled={disabled || lockRole}
+          title="Select Role"
+        >
+          <option value="STAFF">Staff</option>
+          <option value="ADMIN">Admin</option>
+          <option value="CEO">CEO (View Only)</option>
+        </select>
+        {value.role === "CEO" && (
+          <p className="text-xs text-muted-foreground mt-1">
+            CEO role has view access to all areas including dashboard, reports, and activity logs.
+          </p>
+        )}
+        {value.role === "STAFF" && (
+          <p className="text-xs text-muted-foreground mt-1">
+            2FA is optional for staff. Users can enable it in their account settings if needed.
+          </p>
+        )}
+        {value.role !== "STAFF" && (
+          <p className="text-xs text-muted-foreground mt-1">
+            Administrators and the CEO can open every area; the permissions below do not apply.
+          </p>
+        )}
+      </div>
+
+      {value.role === "STAFF" && (
+        <div className="space-y-3">
+          <Label>Permissions</Label>
+          {PERMISSION_GROUPS.map((group) => (
+            <div key={group.label}>
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                {group.label}
+              </p>
+              <div className="mt-1 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {group.permissions.map((permission) => (
+                  <label key={permission} className="flex cursor-pointer items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={value.permissions.includes(permission)}
+                      onChange={() => togglePermission(permission)}
+                      className="mt-0.5 rounded"
+                      disabled={disabled}
+                    />
+                    <span className="text-sm">{PERMISSION_LABELS[permission]}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="rounded-lg border border-border bg-muted/30 p-3">
+        <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <ShieldCheck className="h-3.5 w-3.5" />
+          Can open
+        </p>
+        <p className="mt-1 text-sm">
+          {access.areas.length > 0 ? access.areas.join(" · ") : "Nothing yet"}
+        </p>
+        {access.groups.length > 0 && (
+          <div className="mt-2 space-y-0.5">
+            {access.groups.map((group) => (
+              <p key={group.label} className="text-xs text-muted-foreground">
+                <span className="font-medium">{group.label}:</span> {group.items.join(", ")}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
 interface CreateUserDialogProps {
   onClose: () => void
   onSuccess: () => void
@@ -254,29 +432,13 @@ function CreateUserDialog({ onClose, onSuccess }: CreateUserDialogProps) {
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [sendWelcomeEmail, setSendWelcomeEmail] = useState(true)
-  const [role, setRole] = useState<"CEO" | "ADMIN" | "STAFF">("STAFF")
-  const [permissions, setPermissions] = useState<Permission[]>([])
+  const [access, setAccess] = useState<AccessDraft>({
+    role: "STAFF",
+    permissions: [],
+    profileId: "CUSTOM",
+  })
   const [isLoading, setIsLoading] = useState(false)
   const { toast } = useToast()
-
-  const availablePermissions: Permission[] = [
-    "MANAGE_USERS",
-    "MANAGE_SETTINGS",
-    "MANAGE_INVENTORY",
-    "VIEW_INVENTORY",
-    "MANAGE_POS",
-    "VIEW_TRANSACTIONS",
-    "MANAGE_TRANSACTIONS",
-    "VIEW_REPORTS",
-  ]
-
-  const togglePermission = (permission: Permission) => {
-    setPermissions((prev) =>
-      prev.includes(permission)
-        ? prev.filter((p) => p !== permission)
-        : [...prev, permission]
-    )
-  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -306,8 +468,8 @@ function CreateUserDialog({ onClose, onSuccess }: CreateUserDialogProps) {
           name,
           email,
           username: username.trim() || undefined,
-          role,
-          permissions,
+          role: access.role,
+          permissions: access.permissions,
           password: password.trim() || undefined,
           sendWelcomeEmail,
         }),
@@ -432,54 +594,12 @@ function CreateUserDialog({ onClose, onSuccess }: CreateUserDialogProps) {
               </span>
             </label>
 
-            <div className="space-y-2">
-              <Label htmlFor="role">Role</Label>
-              <select
-                id="role"
-                value={role}
-                onChange={(e) => setRole(e.target.value as "CEO" | "ADMIN" | "STAFF")}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                disabled={isLoading}
-                title="Select Role"
-              >
-                <option value="STAFF">Staff</option>
-                <option value="ADMIN">Admin</option>
-                <option value="CEO">CEO (View Only)</option>
-              </select>
-              {role === "CEO" && (
-                <p className="text-xs text-muted-foreground mt-1">
-                  CEO role has view access to all areas including dashboard, reports, and activity logs.
-                </p>
-              )}
-              {role === "STAFF" && (
-                <p className="text-xs text-muted-foreground mt-1">
-                  2FA is optional for staff. Users can enable it in their account settings if needed.
-                </p>
-              )}
-            </div>
-
-            {role === "STAFF" && (
-              <div className="space-y-2">
-                <Label>Permissions</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  {availablePermissions.map((permission) => (
-                    <label
-                      key={permission}
-                      className="flex items-center space-x-2 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={permissions.includes(permission)}
-                        onChange={() => togglePermission(permission)}
-                        className="rounded"
-                        disabled={isLoading}
-                      />
-                      <span className="text-sm">{permission.replace(/_/g, " ")}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
+            <AccessEditor
+              value={access}
+              onChange={setAccess}
+              disabled={isLoading}
+              idPrefix="create"
+            />
 
             <div className="flex justify-end space-x-2 pt-4">
               <Button
@@ -527,30 +647,14 @@ interface EditUserDialogProps {
 function EditUserDialog({ user, onClose, onSuccess, isSelf = false }: EditUserDialogProps) {
   const [name, setName] = useState(user.name)
   const [username, setUsername] = useState(user.username || "")
-  const [role, setRole] = useState<"CEO" | "ADMIN" | "STAFF">(user.role as "CEO" | "ADMIN" | "STAFF")
-  const [permissions, setPermissions] = useState<Permission[]>(user.permissions)
+  const [access, setAccess] = useState<AccessDraft>(() => ({
+    role: user.role,
+    permissions: user.permissions,
+    profileId: profileKey(user.role, user.permissions),
+  }))
   const [isActive, setIsActive] = useState(user.isActive)
   const [isLoading, setIsLoading] = useState(false)
   const { toast } = useToast()
-
-  const availablePermissions: Permission[] = [
-    "MANAGE_USERS",
-    "MANAGE_SETTINGS",
-    "MANAGE_INVENTORY",
-    "VIEW_INVENTORY",
-    "MANAGE_POS",
-    "VIEW_TRANSACTIONS",
-    "MANAGE_TRANSACTIONS",
-    "VIEW_REPORTS",
-  ]
-
-  const togglePermission = (permission: Permission) => {
-    setPermissions((prev) =>
-      prev.includes(permission)
-        ? prev.filter((p) => p !== permission)
-        : [...prev, permission]
-    )
-  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -560,13 +664,13 @@ function EditUserDialog({ user, onClose, onSuccess, isSelf = false }: EditUserDi
       const response = await fetch("/api/admin/users", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          id: user.id, 
-          name, 
+        body: JSON.stringify({
+          id: user.id,
+          name,
           username: username.trim() || null,
-          role, 
-          permissions, 
-          isActive 
+          role: access.role,
+          permissions: access.permissions,
+          isActive
         }),
       })
 
@@ -638,26 +742,13 @@ function EditUserDialog({ user, onClose, onSuccess, isSelf = false }: EditUserDi
               />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="edit-role">Role</Label>
-              <select
-                id="edit-role"
-                value={role}
-                onChange={(e) => setRole(e.target.value as "CEO" | "ADMIN" | "STAFF")}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                disabled={isLoading || isSelf}
-                title="Select Role"
-              >
-                <option value="STAFF">Staff</option>
-                <option value="ADMIN">Admin</option>
-                <option value="CEO">CEO (View Only)</option>
-              </select>
-              {role === "CEO" && (
-                <p className="text-xs text-muted-foreground mt-1">
-                  CEO role has view access to all areas including dashboard, reports, and activity logs.
-                </p>
-              )}
-            </div>
+            <AccessEditor
+              value={access}
+              onChange={setAccess}
+              disabled={isLoading}
+              lockRole={isSelf}
+              idPrefix="edit"
+            />
 
             <div className="space-y-2">
               <Label className="flex items-center">
@@ -672,29 +763,6 @@ function EditUserDialog({ user, onClose, onSuccess, isSelf = false }: EditUserDi
                 Active Account
               </Label>
             </div>
-
-            {role === "STAFF" && (
-              <div className="space-y-2">
-                <Label>Permissions</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  {availablePermissions.map((permission) => (
-                    <label
-                      key={permission}
-                      className="flex items-center space-x-2 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={permissions.includes(permission)}
-                        onChange={() => togglePermission(permission)}
-                        className="rounded"
-                        disabled={isLoading}
-                      />
-                      <span className="text-sm">{permission.replace(/_/g, " ")}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
 
             <div className="flex justify-end space-x-2 pt-4">
               <Button

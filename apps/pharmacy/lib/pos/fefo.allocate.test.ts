@@ -10,6 +10,7 @@ const batches = [
     quantity: 10,
     expiryDate: "2027-01-01",
     manufacturer: "Cipla",
+    sellingPrice: 120,
   },
   {
     id: "b-soon",
@@ -17,6 +18,7 @@ const batches = [
     quantity: 3,
     expiryDate: "2026-08-01",
     manufacturer: "GSK",
+    sellingPrice: 100,
   },
   {
     id: "b-expired",
@@ -32,7 +34,8 @@ describe("FEFO allocateFefoBatches", () => {
     const alloc = allocateFefoBatches(batches, 5, today)
     expect(alloc).toHaveLength(2)
     expect(alloc[0]).toMatchObject({ batchNumber: "SOON", quantity: 3 })
-    expect(alloc[1]).toMatchObject({ batchNumber: "LATER", quantity: 2 })
+    expect(alloc[0]).toMatchObject({ sellingPrice: 100 })
+    expect(alloc[1]).toMatchObject({ batchNumber: "LATER", quantity: 2, sellingPrice: 120 })
   })
 
   it("returns partial allocation when stock is short", () => {

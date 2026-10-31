@@ -24,6 +24,7 @@ vi.mock("@/lib/supabase/admin", () => ({
       const q: any = {
         select: () => q,
         eq: () => q,
+        range: () => q,
         insert: (v: any) => ((insert = v), m.inserts.push({ table, values: v }), q),
         maybeSingle: async () => ({ data: null, error: null }),
         single: async () => ({ data: insert ? { id: `id-${m.inserts.length}` } : null, error: null }),

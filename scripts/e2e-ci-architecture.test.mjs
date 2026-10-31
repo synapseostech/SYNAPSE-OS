@@ -18,6 +18,16 @@ test("pull_request CI never receives a production service-role key", () => {
   assert.doesNotMatch(ci, /SYNAPSE_E2E_VERCEL_BYPASS/)
 })
 
+test("Windows Tally bridge tests are a required Node 22 CI gate", () => {
+  const windowsJob = ci.match(/  tally-bridge-windows:\n([\s\S]*?)\n  required:/)
+  assert.ok(windowsJob, "Could not find the Windows Tally bridge job")
+  assert.match(windowsJob[1], /runs-on: windows-latest/)
+  assert.match(windowsJob[1], /node-version: '22'/)
+  assert.match(windowsJob[1], /npm test --workspace @synapse\/tally-bridge/)
+  assert.match(ci, /needs: \[verify, tally-bridge-windows\]/)
+  assert.match(ci, /needs\['tally-bridge-windows'\]\.result/)
+})
+
 test("privileged hospital E2E runs only from a protected workflow on an exact SHA", () => {
   assert.doesNotMatch(acceptance, /pull_request:/)
   assert.match(acceptance, /environment:\s+production-acceptance/)

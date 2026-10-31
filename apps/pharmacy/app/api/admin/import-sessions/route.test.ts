@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import * as XLSX from "xlsx"
 
 const m = vi.hoisted(() => ({ inserts: [] as any[], cap: "" }))
 vi.mock("@/lib/api-auth", () => ({
@@ -21,7 +22,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   },
 }))
 
-async function analyse(name: string, type: string, body: string) {
+async function analyse(name: string, type: string, body: string | ArrayBuffer) {
   const { POST } = await import("./route")
   const fd = new FormData()
   fd.append("file", new File([body], name, { type }))
@@ -50,5 +51,31 @@ describe("POST /api/admin/import-sessions hardening", () => {
     const r = await analyse("t.csv", "text/csv", "name,qty\n=cmd|' /C calc'!A0,-4\n")
     expect(r.status).toBe(201)
     expect(m.inserts[0].ai_mapping.sampleRows[0]).toEqual(["'=cmd|' /C calc'!A0", "-4"])
+  })
+  it("analyses Excel inventory data without losing cells containing commas or line breaks", async () => {
+    const workbook = XLSX.utils.book_new()
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ["Product Name", "Strength", "Dosage Form", "Quantity", "Batch", "Expiry Date"],
+      ['Paracetamol, "Extra"', "500mg", "Tablet", 10, "B-1\nB-2", "2027-02-01"],
+    ])
+    XLSX.utils.book_append_sheet(workbook, sheet, "Stock")
+    const bytes = XLSX.write(workbook, { type: "array", bookType: "xlsx" }) as ArrayBuffer
+
+    const r = await analyse(
+      "stock.xlsx",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      bytes,
+    )
+
+    expect(r.status).toBe(201)
+    expect(r.body.sampleRows).toEqual([
+      ['Paracetamol, "Extra"', "500mg", "Tablet", "10", "B-1\nB-2", "2027-02-01"],
+    ])
+    expect(r.body.mapping).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "Strength", target: "strength" }),
+        expect.objectContaining({ source: "Dosage Form", target: "dosage_form" }),
+      ]),
+    )
   })
 })

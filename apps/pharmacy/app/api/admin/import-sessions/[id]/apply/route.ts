@@ -83,7 +83,7 @@ async function loadExistingProducts(tenantId: string) {
   const { data, error } = await db()
     .from("pharmacy_products")
     .select(
-      "id, name, sku, barcode, generic_name, strength, dosage_form, manufacturer, price, cost_price",
+      "id, name, sku, barcode, generic_name, active_ingredient, strength, dosage_form, manufacturer, price, cost_price",
     )
     .eq("tenant_id", tenantId)
     .eq("is_active", true)
@@ -213,6 +213,7 @@ export async function POST(
             name: values.name,
             strength: values.strength,
             dosageForm: values.dosage_form || values.dosageForm,
+            activeIngredient: values.active_ingredient || null,
           },
           existingProducts,
         )
@@ -223,7 +224,7 @@ export async function POST(
             rowIndex: i,
             status: "failed",
             reason:
-              "Name matches multiple or clinically different products (strength/form). Provide barcode, SKU, or exact strength/dosage form — will not silently merge.",
+              "The medicine name has no unique exact match. Provide the exact name, strength, dosage form, and active ingredient; conflicting identifiers will not silently merge products.",
             productName: values.name,
           })
           continue
@@ -239,6 +240,7 @@ export async function POST(
             actorId: session.user.id,
             name: values.name,
             genericName: values.generic_name || null,
+            activeIngredient: values.active_ingredient || null,
             brand: values.name,
             strength: values.strength || null,
             dosageForm: values.dosage_form || values.dosageForm || null,
@@ -276,6 +278,7 @@ export async function POST(
               sku: createResult.product.sku,
               barcode: createResult.product.barcode,
               generic_name: createResult.product.genericName,
+              active_ingredient: createResult.product.activeIngredient,
               strength: createResult.product.strength,
               dosage_form: createResult.product.dosageForm,
               manufacturer: createResult.product.manufacturer,

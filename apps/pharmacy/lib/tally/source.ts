@@ -9,7 +9,7 @@ import { parseTallyXmlRows, type TallyXmlDocument } from "@synapse/db/tally-xml-
 import { parseTallyCsv } from "./csv"
 import { buildTallyDocument, readTallyWorkbook } from "./workbook"
 
-export type TallySourceFormat = "xml" | "xlsx" | "csv"
+export type TallySourceFormat = "xml" | "xlsx" | "xls" | "csv"
 
 export class TallySourceError extends Error {
   constructor(message: string, readonly code = "TALLY_FORMAT_UNSUPPORTED") {
@@ -34,9 +34,7 @@ function isOle(bytes: Uint8Array): boolean {
 
 export function detectTallyFormat(bytes: Uint8Array, fileName?: string): TallySourceFormat {
   if (isOle(bytes)) {
-    throw new TallySourceError(
-      "Legacy .xls workbooks are not supported. Save the workbook as .xlsx, or export Tally XML.",
-    )
+    return "xls"
   }
   if (isZip(bytes)) {
     // .xlsx is a zip; anything else zipped is not a workbook we can read.
@@ -74,7 +72,7 @@ export function readTallyDocument(
   if (format === "xml") {
     return { format, document: parseTallyXmlRows(bytes, fileName) }
   }
-  if (format === "xlsx") {
+  if (format === "xlsx" || format === "xls") {
     return { format, document: buildTallyDocument(readTallyWorkbook(bytes)) }
   }
   const text = new TextDecoder("utf-8", { fatal: true }).decode(

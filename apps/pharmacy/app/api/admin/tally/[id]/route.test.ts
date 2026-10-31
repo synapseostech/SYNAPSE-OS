@@ -22,7 +22,13 @@ import { DELETE, GET } from "./route"
 const AUTHORISED = {
   ok: true,
   tenantId: "tenant-1",
-  session: { user: { id: "user-1" } },
+  session: {
+    user: { id: "user-1" },
+    role: "pharmacy_admin",
+    pharmacyRole: "pharmacy_admin",
+    permissions: [],
+    isAdmin: false,
+  },
 }
 
 function progress(failures = 0): TallyApplyProgress {
@@ -66,10 +72,23 @@ function sessionRow(status = "importing", mapping: Record<string, unknown> = {})
   }
 }
 
-function setup(session: unknown) {
+function setup(session: unknown, cutoverOwner: string | null = null) {
   m.db = fakeSupabase(
-    (operation): FakeResult =>
-      operation.action === "select" ? { data: session, error: null } : { data: null, error: null },
+    (operation): FakeResult => {
+      if (operation.table === "pharmacy_tally_cutover_locks") {
+        return {
+          data: cutoverOwner ? { session_id: cutoverOwner } : null,
+          error: null,
+        }
+      }
+      const isCutoverQuery = operation.filters.some(
+        ([column, value]) => column === "source_system" && value === "Tally",
+      )
+      if (isCutoverQuery) return { data: null, error: null }
+      return operation.action === "select"
+        ? { data: session, error: null }
+        : { data: null, error: null }
+    },
   )
 }
 
@@ -175,6 +194,16 @@ describe("DELETE /api/admin/tally/[id]", () => {
       )
       expect(m.db.operations.some((operation) => operation.action === "delete")).toBe(false)
     }
+  })
+
+  it("keeps the reserved cut-over session resumable instead of deleting it", async () => {
+    setup(sessionRow("review"), "session-1")
+
+    const res = await remove()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_CUTOVER_IN_PROGRESS" })
+    expect(m.db.operations.some((operation) => operation.action === "delete")).toBe(false)
   })
 
   it("deletes a session that never reached the ledger, scoped to the tenant", async () => {

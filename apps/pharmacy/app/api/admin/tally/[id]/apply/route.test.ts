@@ -9,6 +9,9 @@ const m = vi.hoisted(() => ({
   loadStagePlan: vi.fn(),
   applyChunk: vi.fn(),
   reconcile: vi.fn(),
+  leaseStatus: "acquired",
+  releaseFails: false,
+  rpcCalls: [] as Array<{ name: string; args: Record<string, unknown> }>,
 }))
 
 vi.mock("@/lib/api-auth", () => ({
@@ -31,7 +34,13 @@ import { POST } from "./route"
 const ADMIN = {
   ok: true,
   tenantId: "tenant-1",
-  session: { user: { id: "user-1" }, pharmacyRole: "pharmacy_admin" },
+  session: {
+    user: { id: "user-1" },
+    role: "pharmacy_admin",
+    pharmacyRole: "pharmacy_admin",
+    permissions: [],
+    isAdmin: false,
+  },
 }
 
 function progress(overrides: Partial<TallyApplyProgress> = {}): TallyApplyProgress {
@@ -63,11 +72,29 @@ function row(
   return { id: "session-1", status, ai_mapping: mapping, ...extra }
 }
 
-function setup(session: unknown) {
-  m.db = fakeSupabase(
-    (operation): FakeResult =>
-      operation.action === "select" ? { data: session, error: null } : { data: null, error: null },
-  )
+function setup(session: unknown, auditWriteError?: string) {
+  const fake = fakeSupabase((operation): FakeResult => {
+    if (operation.table === "pharmacy_import_sessions") return { data: session, error: null }
+    if (operation.table === "pharmacy_audit_logs" && operation.action === "insert" && auditWriteError) {
+      return { data: null, error: { message: auditWriteError } }
+    }
+    return { data: null, error: null }
+  })
+  m.rpcCalls = []
+  m.db = {
+    ...fake,
+    client: {
+      ...(fake.client as Record<string, unknown>),
+      rpc: async (name: string, args: Record<string, unknown>) => {
+        m.rpcCalls.push({ name, args })
+        if (name === "claim_pharmacy_tally_cutover_apply") {
+          return { data: m.leaseStatus, error: null }
+        }
+        if (m.releaseFails) return { data: false, error: { message: "lease release failed" } }
+        return { data: true, error: null }
+      },
+    },
+  }
 }
 
 const params = { params: Promise.resolve({ id: "session-1" }) }
@@ -80,6 +107,8 @@ describe("POST /api/admin/tally/[id]/apply", () => {
     m.loadStagePlan.mockReset()
     m.applyChunk.mockReset()
     m.reconcile.mockReset().mockReturnValue([])
+    m.leaseStatus = "acquired"
+    m.releaseFails = false
     setup(row("review", { summary: { chunkCount: 1 } }))
   })
 
@@ -91,12 +120,21 @@ describe("POST /api/admin/tally/[id]/apply", () => {
   })
 
   it("requires reports.financial as well as inventory.adjust", async () => {
-    m.auth = { ...ADMIN, session: { user: { id: "user-1" }, pharmacyRole: "pharmacy_cashier" } }
+    m.auth = {
+      ...ADMIN,
+      session: {
+        user: { id: "user-1" },
+        role: "pharmacy_cashier",
+        pharmacyRole: "pharmacy_cashier",
+        permissions: ["inventory.adjust", "reports.financial"],
+        isAdmin: false,
+      },
+    }
 
     const res = await post()
 
     expect(res.status).toBe(403)
-    expect(await res.json()).toEqual({ error: "Missing capability: reports.financial" })
+    expect(await res.json()).toMatchObject({ code: "TALLY_ADMIN_ONLY" })
     expect(m.db.operations).toHaveLength(0)
   })
 
@@ -160,6 +198,27 @@ describe("POST /api/admin/tally/[id]/apply", () => {
     expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
   })
 
+  it("serializes concurrent apply requests for the tenant", async () => {
+    m.leaseStatus = "busy"
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_CUTOVER_BUSY" })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+    expect(m.rpcCalls).toHaveLength(1)
+  })
+
+  it("prevents a second session from applying after the one-shot cut-over is reserved", async () => {
+    m.leaseStatus = "owned_by_another_session"
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_CUTOVER_IN_PROGRESS" })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+  })
+
   it("resumes from the persisted offset instead of restarting the stage", async () => {
     setup(
       row("importing", {
@@ -201,10 +260,13 @@ describe("POST /api/admin/tally/[id]/apply", () => {
     expect(res.status).toBe(200)
     expect(body).toMatchObject({ done: false, totalChunks: 3, nextOffset: 80 })
 
-    const update = m.db.operations.find((operation) => operation.action === "update")
+    const update = m.db.operations.filter((operation) => operation.action === "update").at(-1)
     expect(update?.payload).toMatchObject({
       status: "importing",
       ai_mapping: { progress: { stage: "journals", offset: 80 } },
+    })
+    expect(m.db.operations.filter((operation) => operation.action === "update")[0]?.payload).toEqual({
+      status: "importing",
     })
   })
 
@@ -271,7 +333,7 @@ describe("POST /api/admin/tally/[id]/apply", () => {
       reconcile: [expect.objectContaining({ code: "opening-journal", ok: true })],
     })
 
-    const update = m.db.operations.find((operation) => operation.action === "update")
+    const update = m.db.operations.filter((operation) => operation.action === "update").at(-1)
     expect(update?.payload).toMatchObject({ status: "complete" })
     expect((update?.payload as { completed_at?: string }).completed_at).toBeTruthy()
 
@@ -286,6 +348,54 @@ describe("POST /api/admin/tally/[id]/apply", () => {
       entity_id: "session-1",
     })
     expect((audit?.payload as { details: string }).details).toContain("6 vouchers")
+    expect(m.rpcCalls.map((call) => call.name)).toEqual([
+      "claim_pharmacy_tally_cutover_apply",
+      "release_pharmacy_tally_cutover_apply",
+    ])
+  })
+
+  it("does not mark the cut-over complete when its audit write fails", async () => {
+    const done = progress({ stage: "complete" })
+    setup(
+      row("importing", {
+        summary: { chunkCount: 1 },
+        progress: progress({ stage: "journals" }),
+      }),
+      "audit write failed",
+    )
+    m.loadStagePlan.mockResolvedValue({
+      plan: { company: "Test Pharmacy Ltd" },
+      summary: { chunkCount: 1 },
+      chunk: { rows: [] },
+      totalChunks: 1,
+    })
+    m.applyChunk.mockResolvedValue({ progress: done, done: true })
+    m.reconcile.mockReturnValue([])
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(500)
+    expect(body).toMatchObject({ code: "TALLY_AUDIT_FAILED" })
+    const updates = m.db.operations.filter((operation) => operation.action === "update")
+    expect(updates.at(-1)?.payload).toMatchObject({ status: "importing" })
+    expect(updates.some((operation) => (operation.payload as { status?: string }).status === "complete")).toBe(false)
+  })
+
+  it("surfaces lease release failures instead of reporting a clean apply", async () => {
+    m.releaseFails = true
+    m.loadStagePlan.mockResolvedValue({
+      plan: { company: "Test Pharmacy Ltd" },
+      summary: { chunkCount: 1 },
+      chunk: { rows: [] },
+      totalChunks: 1,
+    })
+    m.applyChunk.mockResolvedValue({ progress: progress({ stage: "journals" }), done: false })
+
+    const res = await post()
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toMatchObject({ code: "TALLY_CUTOVER_LOCK_RELEASE_FAILED" })
   })
 
   it("keeps the checkpoint when a step stops so the next call can resume", async () => {
@@ -303,7 +413,7 @@ describe("POST /api/admin/tally/[id]/apply", () => {
     expect(res.status).toBe(409)
     expect(await res.json()).toMatchObject({ code: "TALLY_PLAN_MISSING", error: "chunk file missing" })
 
-    const update = m.db.operations.find((operation) => operation.action === "update")
+    const update = m.db.operations.filter((operation) => operation.action === "update").at(-1)
     expect(update?.payload).toMatchObject({
       error_message: "Apply stopped before the step finished.",
       ai_mapping: { progress: expect.objectContaining({ stage: "accounts" }) },

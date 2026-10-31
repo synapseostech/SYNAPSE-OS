@@ -5,6 +5,7 @@ import {
   friendlySaleError,
   isValidSaleQuantity,
   saleErrorHttpStatus,
+  splitBatchSaleLine,
   validateSaleLine,
 } from "./sale-validation"
 
@@ -138,7 +139,7 @@ describe("validateSaleLine", () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.rpcItem.discount_approved_by).toBe("supervisor-1")
-    expect(result.rpcItem.unit_price).toBe(800)
+    expect(result.rpcItem.unit_price).toBe(1000)
   })
 
   it("builds a clean RPC line at list price", () => {
@@ -159,6 +160,42 @@ describe("validateSaleLine", () => {
       list_price: 1000,
       discount_amount: 0,
     })
+  })
+})
+
+describe("splitBatchSaleLine", () => {
+  it("splits line discounts proportionally across differently priced batches", () => {
+    const items = splitBatchSaleLine(
+      [
+        { batchId: "b1", quantity: 2, listPrice: 100 },
+        { batchId: "b2", quantity: 1, listPrice: 200 },
+      ],
+      30,
+    )
+    expect(items).toEqual([
+      { batch_id: "b1", quantity: 2, unit_price: 100, discount_amount: 15 },
+      { batch_id: "b2", quantity: 1, unit_price: 200, discount_amount: 15 },
+    ])
+    expect(
+      items.reduce((total, item) => total + item.quantity * item.unit_price - item.discount_amount, 0),
+    ).toBe(370)
+  })
+
+  it("distributes cent rounding without exceeding a batch's line total", () => {
+    const items = splitBatchSaleLine(
+      [
+        { batchId: "b1", quantity: 1, listPrice: 0.01 },
+        { batchId: "b2", quantity: 1, listPrice: 0.01 },
+        { batchId: "b3", quantity: 1, listPrice: 0.01 },
+      ],
+      0.01,
+    )
+    expect(items.reduce((total, item) => total + item.discount_amount, 0)).toBe(0.01)
+    expect(items.every((item) => item.discount_amount >= 0.0 && item.discount_amount <= item.unit_price * item.quantity)).toBe(true)
+  })
+
+  it("rejects a batch discount greater than its list total", () => {
+    expect(splitBatchSaleLine([{ batchId: "b1", quantity: 1, listPrice: 100 }], 101)).toEqual([])
   })
 })
 

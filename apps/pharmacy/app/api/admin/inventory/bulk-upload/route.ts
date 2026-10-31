@@ -4,6 +4,10 @@ import { normalizeBarcode } from "@/lib/barcode"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { validateImportRow } from "@synapse/db/import-validation"
 import { receivePharmacyStock } from "@synapse/db/inventory-rpc"
+import {
+  catalogProductFromRow,
+  resolveImportCatalogMatch,
+} from "@synapse/db/pharmacy-purchases"
 import Papa from "papaparse"
 import * as XLSX from "xlsx"
 import {
@@ -112,7 +116,23 @@ export async function POST(request: NextRequest) {
     const seenSkus = new Set<string>()
     const seenBarcodes = new Set<string>()
     let created = 0
+    let merged = 0
     let receivedBatches = 0
+    const existingProducts: ReturnType<typeof catalogProductFromRow>[] = []
+    for (let from = 0; ; from += 1000) {
+      const { data: productRows, error: productsError } = await db()
+        .from("pharmacy_products")
+        .select("id, name, sku, barcode, strength, dosage_form, active_ingredient, generic_name")
+        .eq("tenant_id", tenantId)
+        .eq("is_active", true)
+        .range(from, from + 999)
+      if (productsError) {
+        console.error("[inventory-import] catalog lookup failed:", productsError)
+        return NextResponse.json({ error: "Could not check existing medicine identities" }, { status: 500 })
+      }
+      existingProducts.push(...(productRows ?? []).map(catalogProductFromRow))
+      if ((productRows ?? []).length < 1000) break
+    }
 
     for (const [index, data] of parsedData.entries()) {
       const rowNumber = index + 2
@@ -189,6 +209,8 @@ export async function POST(request: NextRequest) {
 
       const genericName =
         getFieldValue(data, "generic_name", "generic name", "generic", "inn") || null
+      const activeIngredient =
+        getFieldValue(data, "active_ingredient", "active ingredient", "ingredient") || null
 
       const dosageForm =
         getFieldValue(data, "dosage_form", "dosage form", "form", "formulation") || null
@@ -249,6 +271,62 @@ export async function POST(request: NextRequest) {
         continue
       }
 
+      const identityMatch = resolveImportCatalogMatch(
+        { name, strength, dosageForm, activeIngredient },
+        existingProducts,
+      )
+      if (identityMatch.kind === "ambiguous_name") {
+        skippedDuplicates.push(
+          `Row ${rowNumber}: "${name}" matches a medicine name but strength, dosage form, or active ingredient is not an exact match; review it manually`,
+        )
+        continue
+      }
+
+      if (identityMatch.kind === "match" && identityMatch.via === "name") {
+        if (barcode) {
+          const { data: barcodeOwner } = await db()
+            .from("pharmacy_products")
+            .select("id")
+            .eq("tenant_id", tenantId)
+            .eq("barcode", barcode)
+            .maybeSingle()
+          if (barcodeOwner && barcodeOwner.id !== identityMatch.product.id) {
+            skippedDuplicates.push(`Row ${rowNumber}: barcode "${barcode}" belongs to another product (${name})`)
+            continue
+          }
+          seenBarcodes.add(barcode)
+        }
+
+        if (!validation.batch) {
+          skippedDuplicates.push(
+            `Row ${rowNumber}: "${name}" matches existing medicine ${identityMatch.product.id}; no valid batch stock was provided`,
+          )
+          continue
+        }
+
+        const { error: receiveError } = await receivePharmacyStock(db(), {
+          tenantId,
+          productId: identityMatch.product.id,
+          batchNumber: validation.batch.batchNumber,
+          quantity: validation.batch.quantity,
+          expiryDate: validation.batch.expiryDate,
+          costPrice: resolvedCost,
+          sellingPrice: resolvedPrice,
+          receivedBy: session.user.id,
+          supplierId,
+          reason: `Bulk import receive (matched ${identityMatch.product.id})`,
+        })
+        if (receiveError) {
+          warnings.push(
+            `Row ${rowNumber}: existing medicine matched but stock was not received — ${receiveError.humanMessage}`,
+          )
+          continue
+        }
+        merged += 1
+        receivedBatches += 1
+        continue
+      }
+
       // Barcodes are unique per pharmacy: skip rows whose barcode exists or repeats in the file.
       if (barcode) {
         const { data: barcodeOwner } = await db()
@@ -290,6 +368,7 @@ export async function POST(request: NextRequest) {
           manufacturer,
           expiry_date: validation.batch?.expiryDate ?? null,
           generic_name: genericName,
+          active_ingredient: activeIngredient,
           dosage_form: dosageForm,
           strength,
           requires_prescription: requiresPrescription,
@@ -304,6 +383,18 @@ export async function POST(request: NextRequest) {
       }
 
       created += 1
+      existingProducts.push(
+        catalogProductFromRow({
+          id: product.id,
+          name,
+          sku: finalSku,
+          barcode,
+          strength,
+          dosage_form: dosageForm,
+          active_ingredient: activeIngredient,
+          generic_name: genericName,
+        }),
+      )
 
       if (validation.batch) {
         const { error: receiveError } = await receivePharmacyStock(db(), {
@@ -328,7 +419,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (created === 0) {
+    if (created === 0 && merged === 0) {
       return NextResponse.json(
         {
           error: "No valid products to create",
@@ -347,12 +438,13 @@ export async function POST(request: NextRequest) {
       action: "BULK_UPLOAD_PRODUCTS",
       entity: "PRODUCT",
       entity_id: null,
-      details: `Bulk uploaded ${created} products (${receivedBatches} batches received)`,
+      details: `Bulk uploaded ${created} products, consolidated ${merged} exact-identity rows (${receivedBatches} batches received)`,
     })
 
     return NextResponse.json({
       success: true,
       count: created,
+      merged,
       receivedBatches,
       errors: errors.length > 0 ? errors : undefined,
       warnings: warnings.length > 0 ? warnings : undefined,

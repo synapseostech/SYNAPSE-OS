@@ -36,7 +36,13 @@ import { POST } from "./route"
 const AUTHORISED = {
   ok: true,
   tenantId: "tenant-1",
-  session: { user: { id: "user-1" } },
+  session: {
+    user: { id: "user-1" },
+    role: "pharmacy_admin",
+    pharmacyRole: "pharmacy_admin",
+    permissions: [],
+    isAdmin: false,
+  },
 }
 
 const PLAN = {
@@ -110,8 +116,15 @@ function sessionRow(status = "pending", mapping: Record<string, unknown> = {}) {
 
 function setup(session: unknown) {
   m.db = fakeSupabase(
-    (operation): FakeResult =>
-      operation.action === "select" ? { data: session, error: null } : { data: null, error: null },
+    (operation): FakeResult => {
+      const isCutoverQuery = operation.filters.some(
+        ([column, value]) => column === "source_system" && value === "Tally",
+      )
+      if (isCutoverQuery) return { data: null, error: null }
+      return operation.action === "select"
+        ? { data: session, error: null }
+        : { data: null, error: null }
+    },
   )
 }
 
@@ -155,7 +168,11 @@ describe("POST /api/admin/tally/[id]/preview", () => {
 
     expect((await post()).status).toBe(404)
     expect(
-      m.db.operations.filter((operation) => operation.action === "select")[0]?.filters,
+      m.db.operations.find(
+        (operation) =>
+          operation.action === "select" &&
+          filtersOf(operation).id === "session-1",
+      )?.filters,
     ).toEqual([
       ["id", "session-1"],
       ["tenant_id", "tenant-1"],
@@ -250,7 +267,7 @@ describe("POST /api/admin/tally/[id]/preview", () => {
 
   it("records an unreadable file as a failed session", async () => {
     m.readDocument.mockImplementation(() => {
-      throw new TallySourceError("Legacy .xls workbooks are not supported.", "TALLY_FILE_TYPE_UNSUPPORTED")
+      throw new TallySourceError("File is not a supported Tally export.", "TALLY_FILE_TYPE_UNSUPPORTED")
     })
 
     const res = await post()
@@ -261,7 +278,7 @@ describe("POST /api/admin/tally/[id]/preview", () => {
     const update = m.db.operations.find((operation) => operation.action === "update")
     expect(update?.payload).toMatchObject({
       status: "failed",
-      error_message: "Legacy .xls workbooks are not supported.",
+      error_message: "File is not a supported Tally export.",
     })
   })
 })

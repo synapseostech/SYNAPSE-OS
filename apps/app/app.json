@@ -7,11 +7,6 @@
     "icon": "./assets/icon.png",
     "scheme": "synapse",
     "userInterfaceStyle": "automatic",
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#07070A"
-    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "tech.synapseos.app",
@@ -42,13 +37,22 @@
         "expo-build-properties",
         {
           "android": {
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35,
-            "buildToolsVersion": "35.0.0"
+            "compileSdkVersion": 37,
+            "targetSdkVersion": 36,
+            "buildToolsVersion": "37.0.0"
           }
         }
       ],
       "expo-asset",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "imageWidth": 100,
+          "resizeMode": "contain",
+          "backgroundColor": "#07070A"
+        }
+      ],
       "expo-secure-store",
       "expo-font",
       [

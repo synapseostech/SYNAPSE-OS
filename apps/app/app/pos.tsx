@@ -43,6 +43,7 @@ type PosProduct = {
   barcode: string | null
   price: number
   quantity: number
+  sellableQuantity?: number
   unit: string
   requiresPrescription: boolean
   packages: Array<{
@@ -57,6 +58,7 @@ type PosProduct = {
     batchNumber: string
     quantity: number
     expiryDate: string
+    sellingPrice?: number
   }>
 }
 
@@ -112,6 +114,14 @@ function syncBannerLabel(
     case 'rejected':
       return 'Failed. A command was rejected by the server. Tap for details.'
   }
+}
+
+function sellableQuantityFromCatalogue(product: {
+  sellableQuantity?: number
+  batches?: Array<{ quantity: number }>
+}): number {
+  if (Number.isFinite(product.sellableQuantity)) return Number(product.sellableQuantity)
+  return (product.batches ?? []).reduce((sum, batch) => sum + Math.max(0, batch.quantity), 0)
 }
 
 export default function PosScreen() {
@@ -243,7 +253,7 @@ export default function PosScreen() {
       setProducts((current) =>
         current.map((product) => ({
           ...product,
-          quantity: remaining.get(product.id) ?? product.quantity,
+          quantity: remaining.get(product.id) ?? sellableQuantityFromCatalogue(product),
         })),
       )
       const status = await getPharmacySyncStatus(user.tenantId)
@@ -268,7 +278,7 @@ export default function PosScreen() {
             })
             .map((product) => ({
               ...product,
-              quantity: remaining.get(product.id) ?? product.quantity,
+              quantity: remaining.get(product.id) ?? sellableQuantityFromCatalogue(product),
               unit: product.unit ?? 'unit',
               requiresPrescription: product.requiresPrescription ?? false,
               packages: product.packages ?? [],
@@ -312,14 +322,15 @@ export default function PosScreen() {
 
   const chooseBatchThenAdd = (
     p: PosProduct,
-    opts: { units: number; unitPrice: number; packageLabel: string | null },
+    opts: { units: number; packageLabel: string | null },
   ) => {
     const batches = p.batches
     const finish = (batchId: string | null, batchLabel: string | null) => {
+      const selectedBatch = batches.find((batch) => batch.id === batchId)
       pushLine({
         productId: p.id,
         name: p.name,
-        unitPrice: opts.unitPrice,
+        unitPrice: selectedBatch?.sellingPrice ?? p.price,
         quantity: opts.units,
         batchId,
         batchLabel,
@@ -336,7 +347,7 @@ export default function PosScreen() {
       'Batches are sorted earliest expiry first.',
       [
         ...batches.slice(0, 5).map((b) => ({
-          text: `${b.batchNumber} · ${b.quantity} · exp ${String(b.expiryDate).slice(0, 10)}`,
+          text: `${b.batchNumber} · ${b.quantity} @ UGX ${(b.sellingPrice ?? p.price).toLocaleString()} · exp ${String(b.expiryDate).slice(0, 10)}`,
           onPress: () => finish(b.id, b.batchNumber),
         })),
         { text: 'Cancel', style: 'cancel' as const },
@@ -351,21 +362,21 @@ export default function PosScreen() {
     }
     const pkgs = p.packages.filter((x) => x.unitsPerPackage > 0 && x.price >= 0)
     if (pkgs.length === 0) {
-      chooseBatchThenAdd(p, { units: 1, unitPrice: p.price, packageLabel: null })
+      chooseBatchThenAdd(p, { units: 1, packageLabel: null })
       return
     }
+    const fefoUnitPrice = p.batches[0]?.sellingPrice ?? p.price
     Alert.alert('Sell as', p.name, [
       {
-        text: `Unit · UGX ${p.price.toLocaleString()}`,
+        text: `Unit · from UGX ${fefoUnitPrice.toLocaleString()}`,
         onPress: () =>
-          chooseBatchThenAdd(p, { units: 1, unitPrice: p.price, packageLabel: null }),
+          chooseBatchThenAdd(p, { units: 1, packageLabel: null }),
       },
       ...pkgs.slice(0, 4).map((pkg) => ({
-        text: `${pkg.name} (${pkg.unitsPerPackage}) · UGX ${pkg.price.toLocaleString()}`,
+        text: `${pkg.name} (${pkg.unitsPerPackage}) · from UGX ${(fefoUnitPrice * pkg.unitsPerPackage).toLocaleString()}`,
         onPress: () =>
           chooseBatchThenAdd(p, {
             units: pkg.unitsPerPackage,
-            unitPrice: pkg.price / pkg.unitsPerPackage,
             packageLabel: pkg.name,
           }),
       })),

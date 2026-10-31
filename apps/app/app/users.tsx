@@ -161,7 +161,7 @@ export default function UsersScreen() {
               ) : (
                 <Button label="Invite staff" onPress={() => setShowInvite(true)} style={{ marginBottom: spacing.md }} />
               )
-            ) : null
+            ) : undefined
           }
           ListEmptyComponent={<EmptyState title="No staff yet" body="Invite your team to give them access." icon="people" />}
           renderItem={({ item }) => (

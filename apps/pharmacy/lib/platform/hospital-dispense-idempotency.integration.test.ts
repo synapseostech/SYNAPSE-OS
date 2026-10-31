@@ -8,6 +8,7 @@ describe.skipIf(!hasDb)("hospital dispense inventory idempotency (P0-001)", () =
   let cashierId: string
   let taskId: string
   let prescriptionId: string
+  let batchId: string
   const idempotencyKey = `clinical_prescriptions:${crypto.randomUUID()}`
 
   beforeAll(async () => {
@@ -55,17 +56,19 @@ describe.skipIf(!hasDb)("hospital dispense inventory idempotency (P0-001)", () =
     })
     if (productError) throw new Error(productError.message)
 
-    const { error: receiveError } = await db.rpc("receive_pharmacy_stock", {
+    const { data: receivedBatch, error: receiveError } = await db.rpc("receive_pharmacy_stock", {
       p_tenant_id: tenantId,
       p_product_id: productId,
       p_batch_number: `B-${Date.now()}`,
       p_quantity: 20,
       p_expiry_date: "2028-12-31",
       p_cost_price: 300,
+      p_selling_price: 500,
       p_received_by: cashierId,
       p_supplier_ref: "dispense-idempotency-test",
     })
     if (receiveError) throw new Error(receiveError.message)
+    batchId = String(receivedBatch.batch_id)
 
     const { error: taskError } = await db.from("department_tasks").insert({
       id: taskId,
@@ -105,6 +108,7 @@ describe.skipIf(!hasDb)("hospital dispense inventory idempotency (P0-001)", () =
     const items = [
       {
         product_id: productId,
+        batch_id: batchId,
         quantity: 2,
         unit_price: 500,
         discount_amount: 0,

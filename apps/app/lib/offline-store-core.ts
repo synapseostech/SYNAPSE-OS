@@ -70,6 +70,7 @@ export type CatalogueProduct = {
   barcode: string | null
   price: number
   quantity: number
+  sellableQuantity?: number
   unit?: string
   requiresPrescription?: boolean
   packages?: Array<{
@@ -84,6 +85,7 @@ export type CatalogueProduct = {
     batchNumber: string
     quantity: number
     expiryDate: string
+    sellingPrice?: number
   }>
 }
 

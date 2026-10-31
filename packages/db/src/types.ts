@@ -8774,6 +8774,7 @@ export type Database = {
           product_id: string
           quantity: number
           received_date: string | null
+          selling_price: number | null
           tenant_id: string
           updated_at: string | null
         }
@@ -8789,6 +8790,7 @@ export type Database = {
           product_id: string
           quantity: number
           received_date?: string | null
+          selling_price?: number | null
           tenant_id: string
           updated_at?: string | null
         }
@@ -8804,6 +8806,7 @@ export type Database = {
           product_id?: string
           quantity?: number
           received_date?: string | null
+          selling_price?: number | null
           tenant_id?: string
           updated_at?: string | null
         }
@@ -13475,4 +13478,3 @@ export const Constants = {
     Enums: {},
   },
 } as const
-

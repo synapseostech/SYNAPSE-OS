@@ -1,5 +1,5 @@
 import Constants from 'expo-constants'
-import * as FileSystem from 'expo-file-system'
+import * as FileSystem from 'expo-file-system/legacy'
 import { router } from 'expo-router'
 
 /** Apex redirects POST to www; Android fetch often drops the body on that redirect. */

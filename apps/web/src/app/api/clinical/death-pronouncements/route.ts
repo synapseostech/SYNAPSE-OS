@@ -49,7 +49,7 @@ const createSchema = z.object({
   traumatic_death: z.boolean().optional(),
   suspicious_death: z.boolean().optional(),
   medicolegal_flags: z.array(z.enum(MEDICOLEGAL_FLAGS)).optional(),
-  findings: z.record(z.unknown()).optional(),
+  findings: z.record(z.string(), z.unknown()).optional(),
   is_synthetic: z.boolean().optional(),
 })
 

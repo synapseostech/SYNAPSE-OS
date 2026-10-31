@@ -96,6 +96,29 @@ vi.mock("@/lib/supabase/admin", () => ({
           }),
         }
       }
+      if (table === "pharmacy_product_batches") {
+        const q: any = {
+          select: () => q,
+          eq: () => q,
+          gt: () => q,
+          then: (resolve: (value: unknown) => unknown) =>
+            Promise.resolve({
+              data: [{
+                id: "batch-1",
+                batch_number: "BATCH-1",
+                quantity: 100,
+                expiry_date: "2099-12-31",
+                cost_price: 500,
+                selling_price: 1000,
+                manufacturer: null,
+                is_active: true,
+                status: "active",
+              }],
+              error: null,
+            }).then(resolve),
+        }
+        return q
+      }
       return {
         select: () => ({
           eq: () => ({

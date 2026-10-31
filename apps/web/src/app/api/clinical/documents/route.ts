@@ -23,7 +23,7 @@ const createSchema = z.object({
   template_id: z.string().min(1).max(120),
   template_version: z.string().min(1).max(40),
   country_pack: z.string().max(80).optional(),
-  structured_payload: z.record(z.unknown()).default({}),
+  structured_payload: z.record(z.string(), z.unknown()).default({}),
   rendered_snapshot: z.string().min(1).max(200_000),
 })
 

@@ -13,6 +13,7 @@ import {
   mapPoStatusToExisting,
   matchCatalogProducts,
   resolveImportCatalogMatch,
+  sameMedicineIdentity,
   IMPORT_QUANTITY_SEMANTICS,
   poStatusFromReceived,
   purchaseMargin,
@@ -87,6 +88,26 @@ describe("pharmacy purchases domain", () => {
     assert.ok(dupes.length >= 1)
     assert.ok((dupes[0]?.score ?? 0) >= DUPLICATE_PRODUCT_THRESHOLD)
     assert.ok(scoreProductMatch({ q: "cetirizine" }, catalog[0]!) < DUPLICATE_PRODUCT_THRESHOLD)
+  })
+
+  it("normalizes exact medicine identity without merging missing or different clinical fields", () => {
+    const identity = {
+      name: " Amoxicillin 500 mg ",
+      strength: "500 MG",
+      dosageForm: "Capsule",
+      activeIngredient: "Amoxicillin",
+    }
+    assert.equal(
+      sameMedicineIdentity(identity, {
+        ...identity,
+        name: "amoxicillin 500 mg",
+        strength: "500 mg",
+        dosageForm: " capsule ",
+      }),
+      true,
+    )
+    assert.equal(sameMedicineIdentity(identity, { name: identity.name }), false)
+    assert.equal(sameMedicineIdentity(identity, { ...identity, activeIngredient: "Ampicillin" }), false)
   })
 
   it("maps partial PO receiving onto existing status values", () => {
@@ -644,11 +665,7 @@ describe("pharmacy purchases domain", () => {
       { barcode: "1111111111111", name: "Wrong Name", strength: "999 mg" },
       catalog,
     )
-    assert.equal(byBarcode.kind, "match")
-    if (byBarcode.kind === "match") {
-      assert.equal(byBarcode.via, "barcode")
-      assert.equal(byBarcode.product.id, "para-tab")
-    }
+    assert.equal(byBarcode.kind, "ambiguous_name")
 
     const barcodeOk = resolveImportCatalogMatch(
       { barcode: "1111111111111", name: "Paracetamol", strength: "500 mg", dosageForm: "Tablet" },
@@ -661,7 +678,12 @@ describe("pharmacy purchases domain", () => {
     }
 
     const bySku = resolveImportCatalogMatch(
-      { sku: "PARA-SYR", name: "Paracetamol", dosageForm: "Syrup" },
+      {
+        sku: "PARA-SYR",
+        name: "Paracetamol",
+        strength: "120 mg/5ml",
+        dosageForm: "Syrup",
+      },
       catalog,
     )
     assert.equal(bySku.kind, "match")
@@ -671,7 +693,7 @@ describe("pharmacy purchases domain", () => {
     }
 
     const tabletVsSyrup = resolveImportCatalogMatch(
-      { name: "Paracetamol", dosageForm: "Syrup" },
+      { name: "Paracetamol", strength: "120 mg/5ml", dosageForm: "Syrup" },
       catalog,
     )
     assert.equal(tabletVsSyrup.kind, "match")
@@ -686,6 +708,21 @@ describe("pharmacy purchases domain", () => {
 
     const bareIbuprofen = resolveImportCatalogMatch({ name: "Ibuprofen", strength: "200 mg" }, catalog)
     assert.equal(bareIbuprofen.kind, "ambiguous_name")
+
+    const missingIdentity = resolveImportCatalogMatch({ name: "Paracetamol" }, catalog)
+    assert.equal(missingIdentity.kind, "ambiguous_name")
+
+    const exactIngredient = resolveImportCatalogMatch(
+      {
+        name: "Ibuprofen",
+        strength: "200 MG",
+        dosageForm: " tablet ",
+        activeIngredient: "",
+      },
+      catalog,
+    )
+    assert.equal(exactIngredient.kind, "match")
+    if (exactIngredient.kind === "match") assert.equal(exactIngredient.product.id, "ibuprofen-tab")
 
     const brandNew = resolveImportCatalogMatch(
       { name: "SYNAPSE Acceptance Widget", sku: "ACCEPT-NEW-1" },

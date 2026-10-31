@@ -47,6 +47,54 @@ export type PosShortcutAction =
   | "creditMode"
   | "saveOrder"
 
+export type PosEnterField =
+  | "productSearch"
+  | "cartQuantity"
+  | "paymentMethod"
+  | "amountPaid"
+  | "creditCustomer"
+  | "creditDueDate"
+
+export type PosEnterAction =
+  | "addProduct"
+  | "chooseProduct"
+  | "focusNextQuantity"
+  | "focusPayment"
+  | "focusAmountPaid"
+  | "focusCreditCustomer"
+  | "focusCreditDueDate"
+  | "completeSale"
+
+export function resolvePosEnterAction(
+  field: PosEnterField,
+  state: {
+    matches: number
+    cartCount: number
+    query: string
+    paymentMethod: string
+    lineIndex?: number
+    lineCount?: number
+  },
+): PosEnterAction | null {
+  if (field === "productSearch") {
+    if (state.matches === 1) return "addProduct"
+    if (state.matches > 1) return "chooseProduct"
+    return !state.query.trim() && state.cartCount > 0 ? "focusPayment" : null
+  }
+  if (field === "cartQuantity") {
+    const lineIndex = state.lineIndex ?? 0
+    const lineCount = state.lineCount ?? 0
+    return lineIndex + 1 < lineCount ? "focusNextQuantity" : "focusPayment"
+  }
+  if (field === "paymentMethod") {
+    if (state.paymentMethod === "CASH") return "focusAmountPaid"
+    if (state.paymentMethod === "CREDIT") return "focusCreditCustomer"
+    return "completeSale"
+  }
+  if (field === "creditCustomer") return "focusCreditDueDate"
+  return "completeSale"
+}
+
 /**
  * Pure key → action map so Tally parity can be unit-tested.
  * Returns null when the keystroke is not a POS accelerator.

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requirePharmacyPermission } from "@/lib/api-auth"
+import { requirePharmacyPermission, requirePharmacyTenant } from "@/lib/api-auth"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 
 function normalizePaperWidth(raw: unknown, printerType?: unknown): "58" | "80" | "a4" {
@@ -13,7 +13,10 @@ function normalizePaperWidth(raw: unknown, printerType?: unknown): "58" | "80" |
 
 export async function GET(request: NextRequest) {
   try {
-    const auth = await requirePharmacyPermission("settings.manage")
+    // Branding and receipt layout, not personal data: every member of the
+    // tenant prints receipts, so the read is tenant-scoped. Only settings.manage
+    // may write.
+    const auth = await requirePharmacyTenant()
     if (!auth.ok) return auth.response
     const { tenantId } = auth
 

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest"
 import * as XLSX from "xlsx"
+import { combineTallyExports } from "../../../tally-bridge/src/bridge.mjs"
 import { TallySourceError, detectTallyFormat, readTallyDocument } from "./source"
 
 const encode = (text: string) => new TextEncoder().encode(text)
 
-function xlsxBytes(): Uint8Array {
+function workbookBytes(bookType: "xlsx" | "xls"): Uint8Array {
   const workbook = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["key", "value"], ["company", "Test"]]), "Meta")
   XLSX.utils.book_append_sheet(
@@ -18,7 +19,7 @@ function xlsxBytes(): Uint8Array {
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["name"], ["Test Item A"]]), "StockItems")
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["id", "type", "date"]]), "Vouchers")
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["voucher_id", "ledger"]]), "VoucherLines")
-  return new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }) as ArrayBuffer)
+  return new Uint8Array(XLSX.write(workbook, { type: "array", bookType }) as ArrayBuffer)
 }
 
 const XML = `<?xml version="1.0"?><ENVELOPE><BODY><DATA><TALLYMESSAGE>
@@ -38,9 +39,9 @@ describe("detectTallyFormat", () => {
     expect(() => detectTallyFormat(zip, "export.zip")).toThrow(TallySourceError)
   })
 
-  it("refuses a legacy OLE workbook with a real explanation", () => {
+  it("detects legacy OLE workbooks as .xls", () => {
     const ole = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
-    expect(() => detectTallyFormat(ole, "export.xls")).toThrow(/\.xlsx/)
+    expect(detectTallyFormat(ole, "export.xls")).toBe("xls")
   })
 
   it("reads a flat CSV by its record_type header", () => {
@@ -61,8 +62,16 @@ describe("readTallyDocument", () => {
   })
 
   it("parses an xlsx workbook through the template reader", () => {
-    const { format, document } = readTallyDocument(xlsxBytes(), "export.xlsx")
+    const { format, document } = readTallyDocument(workbookBytes("xlsx"), "export.xlsx")
     expect(format).toBe("xlsx")
+    expect(document.ledgers.map((ledger) => ledger.name)).toEqual(["Test Bank"])
+    expect(document.stockItems.map((item) => item.name)).toEqual(["Test Item A"])
+  })
+
+  it("parses a legacy .xls workbook through the same validated template reader", () => {
+    const { format, document } = readTallyDocument(workbookBytes("xls"), "export.xls")
+
+    expect(format).toBe("xls")
     expect(document.ledgers.map((ledger) => ledger.name)).toEqual(["Test Bank"])
     expect(document.stockItems.map((item) => item.name)).toEqual(["Test Item A"])
   })
@@ -72,5 +81,31 @@ describe("readTallyDocument", () => {
     const { format, document } = readTallyDocument(bytes, "export.csv")
     expect(format).toBe("csv")
     expect(document.ledgers[0]!.parent).toBe("Bank Accounts")
+  })
+
+  it("parses the combined masters and Day Book response produced by the local bridge", () => {
+    const combined = combineTallyExports(
+      `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA>
+        <TALLYMESSAGE><COMPANY><COMPANYNAME>Test Pharmacy</COMPANYNAME><CURRENCYNAME>UGX</CURRENCYNAME></COMPANY>
+        <TALLYMESSAGE><LEDGER NAME="Cash-in-Hand"><PARENT>Cash-in-Hand</PARENT><OPENINGBALANCE>1000</OPENINGBALANCE></LEDGER>
+      </DATA></BODY></ENVELOPE>`,
+      `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA>
+        <TALLYMESSAGE><VOUCHER><GUID>voucher-1</GUID><DATE>20261001</DATE><VOUCHERTYPENAME>Sales</VOUCHERTYPENAME><VOUCHERNUMBER>S-1</VOUCHERNUMBER>
+          <ALLLEDGERENTRIES.LIST><LEDGERNAME>Cash-in-Hand</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>1000</AMOUNT></ALLLEDGERENTRIES.LIST>
+        </VOUCHER></TALLYMESSAGE>
+      </DATA></BODY></ENVELOPE>`,
+    )
+
+    const { format, document } = readTallyDocument(encode(combined), "tally-live-export.xml")
+
+    expect(format).toBe("xml")
+    expect(document.company).toBe("Test Pharmacy")
+    expect(document.ledgers.map((ledger) => ledger.name)).toContain("Cash-in-Hand")
+    expect(document.vouchers[0]).toMatchObject({
+      guid: "voucher-1",
+      date: "2026-10-01",
+      number: "S-1",
+      type: "Sales",
+    })
   })
 })

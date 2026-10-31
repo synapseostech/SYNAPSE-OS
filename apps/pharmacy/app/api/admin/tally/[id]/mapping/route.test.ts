@@ -22,7 +22,13 @@ import { GET, PUT } from "./route"
 const AUTHORISED = {
   ok: true,
   tenantId: "tenant-1",
-  session: { user: { id: "user-1" } },
+  session: {
+    user: { id: "user-1" },
+    role: "pharmacy_admin",
+    pharmacyRole: "pharmacy_admin",
+    permissions: [],
+    isAdmin: false,
+  },
 }
 
 const SYSTEM_KEY = Object.keys(TALLY_SYSTEM_ACCOUNT_CODES)[0]!
@@ -33,8 +39,15 @@ function sessionRow(status = "review", aiMapping: Record<string, unknown> = {}) 
 
 function setup(row: unknown = sessionRow()) {
   m.db = fakeSupabase(
-    (operation): FakeResult =>
-      operation.action === "select" ? { data: row, error: null } : { data: null, error: null },
+    (operation): FakeResult => {
+      const isCutoverQuery = operation.filters.some(
+        ([column, value]) => column === "source_system" && value === "Tally",
+      )
+      if (isCutoverQuery) return { data: null, error: null }
+      return operation.action === "select"
+        ? { data: row, error: null }
+        : { data: null, error: null }
+    },
   )
 }
 
@@ -69,7 +82,7 @@ describe("PUT /api/admin/tally/[id]/mapping", () => {
     const res = await put({ conversionDate: "31/01/2026" })
 
     expect(res.status).toBe(400)
-    expect(m.db.operations).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action !== "select")).toBe(false)
   })
 
   it("rejects an override naming an unknown account type or system account", async () => {
@@ -83,13 +96,13 @@ describe("PUT /api/admin/tally/[id]/mapping", () => {
     expect(
       (await put({ accountOverrides: { "Test Party A": { partyType: "patient" } } })).status,
     ).toBe(400)
-    expect(m.db.operations).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action !== "select")).toBe(false)
   })
 
   it("rejects an override with no fields and an unusable SKU", async () => {
     expect((await put({ accountOverrides: { "Test Party A": {} } })).status).toBe(400)
     expect((await put({ productSkuOverrides: { "Test Item A": "bad sku" } })).status).toBe(400)
-    expect(m.db.operations).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action !== "select")).toBe(false)
   })
 
   it("returns 404 for a session belonging to another tenant", async () => {
@@ -99,7 +112,11 @@ describe("PUT /api/admin/tally/[id]/mapping", () => {
 
     expect(res.status).toBe(404)
     expect(
-      m.db.operations.filter((operation) => operation.action === "select")[0]?.filters,
+      m.db.operations.find(
+        (operation) =>
+          operation.action === "select" &&
+          filtersOf(operation).id === "session-1",
+      )?.filters,
     ).toEqual([
       ["id", "session-1"],
       ["tenant_id", "tenant-1"],

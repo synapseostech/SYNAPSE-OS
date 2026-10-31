@@ -15,7 +15,7 @@ const storage = () => ({ storage: db().storage }) as TallyStorageClient
 const PREVIEW_LIMIT = 200
 
 type MappingState = {
-  format?: "xml" | "xlsx" | "csv"
+  format?: "xml" | "xlsx" | "xls" | "csv"
   path?: string
   bucket?: string
   conversionDate?: string

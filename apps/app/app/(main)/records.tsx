@@ -98,7 +98,7 @@ export default function RecordsScreen() {
                 </View>
                 <SectionHeader title="Timeline" />
               </View>
-            ) : null
+            ) : undefined
           }
           ListEmptyComponent={
             <EmptyState

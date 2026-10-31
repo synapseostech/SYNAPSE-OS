@@ -22,7 +22,7 @@ import { useToast } from "@/hooks/use-toast"
 export const dynamic = "force-dynamic"
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-const ACCEPTED = ".xml,.xlsx,.csv"
+const ACCEPTED = ".xml,.xlsx,.xls,.csv"
 
 type Counts = {
   ledgers: number
@@ -174,15 +174,44 @@ export default function TallyImportPage() {
   const [progress, setProgress] = useState<Progress | null>(null)
   const [reconcile, setReconcile] = useState<ReconcileCheck[] | null>(null)
   const [conversionDate, setConversionDate] = useState("")
-  const [acknowledged, setAcknowledged] = useState(false)
-  const [busy, setBusy] = useState<"idle" | "uploading" | "preview" | "applying" | "saving">("idle")
+  const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "error">("checking")
+  const [bridgeToken, setBridgeToken] = useState("")
+  const [busy, setBusy] = useState<"idle" | "connecting" | "uploading" | "preview" | "applying" | "saving">("idle")
 
   const blocking = useMemo(
     () => (summary?.exceptions ?? []).filter((entry) => entry.severity === "blocking"),
     [summary],
   )
   const balanced = summary ? summary.opening.difference === 0 : false
-  const canApply = Boolean(summary) && balanced && (blocking.length === 0 || acknowledged) && busy === "idle"
+  const canApply =
+    cutoverAccess === "ready" &&
+    Boolean(summary) &&
+    balanced &&
+    blocking.length === 0 &&
+    busy === "idle"
+
+  useEffect(() => {
+    let active = true
+    void (async () => {
+      try {
+        const response = await fetch("/api/admin/tally/status", { cache: "no-store" })
+        const data = await response.json()
+        if (!active) return
+        if (!response.ok) {
+          setCutoverAccess(response.status === 403 ? "denied" : "error")
+          return
+        }
+        setCutoverAccess(
+          !data.isAdmin ? "denied" : data.cutoverComplete ? "complete" : "ready",
+        )
+      } catch {
+        if (active) setCutoverAccess("error")
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [])
 
   const loadSession = useCallback(
     async (id: string) => {
@@ -210,12 +239,12 @@ export default function TallyImportPage() {
     if (typeof window !== "undefined") window.localStorage.setItem("tallySessionId", id)
   }
 
-  async function uploadAndPreview() {
-    if (!file) {
+  async function uploadAndPreview(selectedFile: File | null = file) {
+    if (!selectedFile) {
       toast({ variant: "destructive", title: "Choose a Tally export first" })
       return
     }
-    if (file.size > MAX_UPLOAD_BYTES) {
+    if (selectedFile.size > MAX_UPLOAD_BYTES) {
       toast({ variant: "destructive", title: "File is larger than 25 MB" })
       return
     }
@@ -230,18 +259,29 @@ export default function TallyImportPage() {
       const startResponse = await fetch("/api/admin/tally/upload-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileName: file.name, fileSize: file.size }),
+        body: JSON.stringify({ fileName: selectedFile.name, fileSize: selectedFile.size }),
       })
       const start = await startResponse.json()
       if (!startResponse.ok) {
+        if (
+          start.code === "TALLY_CUTOVER_IN_PROGRESS" &&
+          typeof start.sessionId === "string"
+        ) {
+          rememberSession(start.sessionId)
+          await loadSession(start.sessionId)
+        }
         toast({ variant: "destructive", title: start.error ?? "Could not start the upload" })
         return
       }
 
       const put = await fetch(start.signedUrl as string, {
         method: "PUT",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
-        body: file,
+        headers: {
+          "Content-Type": selectedFile.name.toLowerCase().endsWith(".xls")
+            ? "application/octet-stream"
+            : selectedFile.type || "application/octet-stream",
+        },
+        body: selectedFile,
       })
       if (!put.ok) {
         toast({ variant: "destructive", title: "The file could not be uploaded" })
@@ -268,6 +308,51 @@ export default function TallyImportPage() {
       }
       toast({ title: "File read — review the mapping before applying" })
     } finally {
+      setBusy("idle")
+    }
+  }
+
+  async function connectToTally() {
+    if (!bridgeToken.trim()) {
+      toast({ variant: "destructive", title: "Enter the Tally Bridge token" })
+      return
+    }
+
+    setBusy("connecting")
+    try {
+      const response = await fetch("http://127.0.0.1:17890/api/tally/export", {
+        method: "POST",
+        headers: { "x-synapse-tally-bridge-token": bridgeToken.trim() },
+        cache: "no-store",
+      })
+      const payload = await response.text()
+      if (!response.ok) {
+        let message = `Tally Bridge returned HTTP ${response.status}.`
+        try {
+          const error = JSON.parse(payload) as { error?: string }
+          if (error.error) message = error.error
+        } catch {
+          // Keep the explicit HTTP response when the local bridge did not return JSON.
+        }
+        throw new Error(message)
+      }
+
+      const source = new File([payload], "tally-live-export.xml", {
+        type: "application/xml",
+      })
+      if (source.size > MAX_UPLOAD_BYTES) {
+        throw new Error("Tally export exceeds the 25 MB import limit. Narrow the export period and try again.")
+      }
+      setFile(source)
+      setBusy("idle")
+      await uploadAndPreview(source)
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: error instanceof Error ? error.message : "Could not connect to the local Tally Bridge.",
+        description:
+          "Start the bridge on this computer, confirm Tally's HTTP server is enabled and the correct company is open, and check the allowed portal origin.",
+      })
       setBusy("idle")
     }
   }
@@ -326,6 +411,7 @@ export default function TallyImportPage() {
 
         const position = `${data.progress?.stage}:${data.progress?.offset}`
         if (data.done) {
+          setCutoverAccess("complete")
           setReconcile((data.reconcile as ReconcileCheck[] | null) ?? null)
           toast({ title: "Tally cut-over applied" })
           return
@@ -346,12 +432,26 @@ export default function TallyImportPage() {
 
   return (
     <div className="space-y-6">
+      {cutoverAccess !== "ready" && (
+        <div
+          role={cutoverAccess === "error" ? "alert" : "status"}
+          className="rounded-md border border-border bg-muted/40 px-4 py-3 text-sm"
+        >
+          {cutoverAccess === "checking" && "Checking Tally cut-over access…"}
+          {cutoverAccess === "complete" &&
+            "Tally cut-over is already complete for this pharmacy. The import is locked."}
+          {cutoverAccess === "denied" &&
+            "Only the pharmacy administrator can access the Tally cut-over workspace."}
+          {cutoverAccess === "error" &&
+            "Could not verify Tally cut-over access. Reload the page before continuing."}
+        </div>
+      )}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Tally cut-over</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Import masters, opening balances and dated history from Tally. Every historical voucher posts as a
-            balanced journal, so the trial balance, day book and reports agree with Tally on day one.
+            Read Tally masters and dated voucher history into a reviewable cut-over. Nothing is written to
+            Synapse until the pharmacy administrator explicitly applies the validated plan.
           </p>
         </div>
         <div className="flex gap-2">
@@ -369,11 +469,12 @@ export default function TallyImportPage() {
       </div>
 
       <div className="rounded-md border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm">
-        <p className="font-medium">Upload Tally XML for full fidelity.</p>
+        <p className="font-medium">Connect to the local Tally Bridge or upload an XML export.</p>
         <p className="mt-1 opacity-90">
-          Tally XML keeps every ledger, voucher and inventory line. Excel and CSV work only through the
-          templates above; an arbitrary Tally Excel report cannot be read reliably, so the portal will reject
-          it rather than guess.
+          The bridge requests All Masters and the Day Book over Tally&apos;s local XML/HTTP interface, then sends
+          the result through this same preview. Excel and CSV work only through the multi-sheet templates below;
+          an ordinary Tally Excel report is not a complete company export. Use the stock import assistant for a
+          single-sheet stock list. This is a one-time cut-over, not continuous synchronisation.
         </p>
       </div>
 
@@ -385,6 +486,44 @@ export default function TallyImportPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="space-y-2 rounded-lg border p-4">
+            <Label htmlFor="tally-bridge-token">Local Tally Bridge token</Label>
+            <div className="flex flex-wrap gap-2">
+              <Input
+                id="tally-bridge-token"
+                type="password"
+                autoComplete="off"
+                value={bridgeToken}
+                onChange={(event) => setBridgeToken(event.target.value)}
+                placeholder="Paste the 64-character token from the Windows terminal"
+                disabled={cutoverAccess !== "ready" || busy !== "idle"}
+                className="min-w-64 flex-1"
+              />
+              <Button
+                variant="outline"
+                onClick={() => void connectToTally()}
+                disabled={cutoverAccess !== "ready" || busy !== "idle" || !bridgeToken.trim()}
+              >
+                {busy === "connecting" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                {busy === "connecting" ? "Reading Tally…" : "Connect and review"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              The bridge must be running on this computer. The token stays in this page only and is not saved.
+              Connect reads data; it does not apply or post it.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="h-px flex-1 bg-border" />
+            or choose an existing export
+            <span className="h-px flex-1 bg-border" />
+          </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="tally-file">Tally XML, workbook or CSV (max 25 MB)</Label>
@@ -393,10 +532,10 @@ export default function TallyImportPage() {
                 ref={fileInput}
                 type="file"
                 accept={ACCEPTED}
+                disabled={cutoverAccess !== "ready"}
                 onChange={(event) => {
                   const next = event.target.files?.[0] ?? null
                   setFile(next)
-                  setAcknowledged(false)
                 }}
               />
               {file && (
@@ -420,7 +559,7 @@ export default function TallyImportPage() {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => void uploadAndPreview()} disabled={busy !== "idle" || !file}>
+            <Button onClick={() => void uploadAndPreview()} disabled={cutoverAccess !== "ready" || busy !== "idle" || !file}>
               {busy === "uploading" || busy === "preview" ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
@@ -496,16 +635,6 @@ export default function TallyImportPage() {
                       </div>
                     ))}
                   </div>
-                  {blocking.length > 0 && (
-                    <label className="mt-3 flex items-center gap-2 text-xs">
-                      <input
-                        type="checkbox"
-                        checked={acknowledged}
-                        onChange={(event) => setAcknowledged(event.target.checked)}
-                      />
-                      I have read the blocking items and want to continue.
-                    </label>
-                  )}
                 </div>
               )}
 
@@ -519,7 +648,7 @@ export default function TallyImportPage() {
                     onChange={(event) => setConversionDate(event.target.value)}
                   />
                 </div>
-                <Button variant="outline" onClick={() => void saveMapping()} disabled={busy !== "idle"}>
+                <Button variant="outline" onClick={() => void saveMapping()} disabled={cutoverAccess !== "ready" || busy !== "idle"}>
                   {busy === "saving" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                   Save and re-read
                 </Button>

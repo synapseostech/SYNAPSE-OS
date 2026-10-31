@@ -69,6 +69,7 @@ export async function POST(request: NextRequest) {
       quantity: Number(data.quantity),
       expiryDate: String(data.expiryDate),
       costPrice: (data.costPrice as number) || product.cost_price,
+      sellingPrice: (data.sellingPrice as number | null) ?? null,
       receivedBy: session.user.id,
       reason: (data.notes as string) || "Batch created",
     })
@@ -113,6 +114,18 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: "Batch not found" }, { status: 404 })
     }
 
+    if (
+      data.sellingPrice !== undefined &&
+      (typeof data.sellingPrice !== "number" ||
+        !Number.isFinite(data.sellingPrice) ||
+        data.sellingPrice < 0)
+    ) {
+      return NextResponse.json(
+        { error: "Selling price must be a non-negative number" },
+        { status: 400 },
+      )
+    }
+
     if (data.quantity !== undefined) {
       const { error } = await adjustPharmacyBatchStock(db(), {
         tenantId,
@@ -135,6 +148,7 @@ export async function PATCH(request: NextRequest) {
       if (data.notes !== undefined) updateFields.notes = data.notes
       if (data.isActive !== undefined) updateFields.is_active = data.isActive
       if (data.status !== undefined) updateFields.status = data.status
+      if (data.sellingPrice !== undefined) updateFields.selling_price = data.sellingPrice
 
       if (Object.keys(updateFields).length > 0) {
         const { error: batchError } = await db()

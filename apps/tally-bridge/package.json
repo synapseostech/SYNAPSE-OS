@@ -1,0 +1,14 @@
+{
+  "name": "@synapse/tally-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Tally XML export bridge for the Synapse pharmacy cut-over",
+  "type": "module",
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "test": "node --test src/*.test.mjs"
+  },
+  "engines": {
+    "node": "22.x"
+  }
+}

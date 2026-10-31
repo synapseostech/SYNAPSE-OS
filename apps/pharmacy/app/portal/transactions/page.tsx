@@ -57,6 +57,8 @@ interface PharmacySettings {
   footerText?: string
   currency?: string
   logo?: string
+  receiptPaperWidth?: "58" | "80" | "a4"
+  receiptFontScale?: number
 }
 
 interface Stats {
@@ -99,8 +101,13 @@ export default function TransactionsPage() {
   const [transactionToDelete, setTransactionToDelete] = useState<Transaction | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
 
-  // Check if current user is admin
-  const isAdmin = user?.pharmacyRole === "pharmacy_admin"
+  // Mirror isPharmacyAdmin: the reset and delete routes accept pharmacy_ceo and
+  // profile-level admins too, so keying the buttons off pharmacy_admin alone
+  // hides them from people the API would allow.
+  const isAdmin =
+    Boolean(user?.isAdmin) ||
+    user?.pharmacyRole === "pharmacy_admin" ||
+    user?.pharmacyRole === "pharmacy_ceo"
 
   // Check if current user can view profit (Admin or CEO only)
   const canViewProfit = user?.pharmacyRole === "pharmacy_admin" || user?.pharmacyRole === "pharmacy_ceo"
@@ -1012,124 +1019,125 @@ function TransactionReceipt({
   const receiptDate = transaction?.createdAt ? new Date(transaction.createdAt) : new Date()
   const subtotal = typeof transaction.totalAmount === "number" ? transaction.totalAmount : 0
   const taxAmount = typeof transaction.tax === "number" ? transaction.tax : 0
+  const discount = typeof transaction.discount === "number" ? transaction.discount : 0
   const grandTotal = typeof transaction.netAmount === "number" ? transaction.netAmount : subtotal + taxAmount
+  // Same paper and scale the POS print uses, so a reprint from Transactions
+  // comes out at the till's width instead of a full-width sheet.
+  const paperWidth =
+    settings?.receiptPaperWidth === "58" || settings?.receiptPaperWidth === "a4"
+      ? settings.receiptPaperWidth
+      : "80"
+  const fontScale = Number(settings?.receiptFontScale ?? 1) || 1
 
   return (
-    <div className="print-sheet mx-auto w-full text-black">
-      <div className="border border-black p-4 bg-card text-black relative">
-        {transaction.isEdited && (
-          <div className="mb-2 border-2 border-black text-center font-bold py-2">
-            *** EDITED RECEIPT ***
-          </div>
-        )}
+    <div
+      className={`thermal-receipt paper-${paperWidth}`}
+      style={{ ["--receipt-font-scale" as string]: String(fontScale) }}
+    >
+      {transaction.isEdited && (
+        <p className="tr-center tr-bold tr-sm">*** EDITED RECEIPT ***</p>
+      )}
 
-        <div className="text-center border-b border-dashed border-black pb-2 mb-2">
-          {settings?.logo && (
-            <img
-              src={settings.logo}
-              alt="Logo"
-              className="w-14 h-14 mx-auto object-contain mb-2"
-            />
-          )}
-          <h2 className="text-base font-bold">{pharmacyName}</h2>
-          {location && <p className="text-[10px]">{location}</p>}
-          {contact && <p className="text-[10px]">Tel: {contact}{email ? ` | ${email}` : ""}</p>}
+      {settings?.logo && (
+        <div className="tr-center" style={{ padding: "1mm 0" }}>
+          <img
+            src={settings.logo}
+            alt="Logo"
+            style={{
+              maxWidth: paperWidth === "58" ? "90px" : paperWidth === "a4" ? "160px" : "110px",
+              maxHeight: "30px",
+              objectFit: "contain",
+              margin: "0 auto",
+              display: "block",
+            }}
+          />
         </div>
+      )}
+      <p className="tr-center tr-bold tr-lg">{pharmacyName}</p>
+      {location && <p className="tr-center tr-sm">{location}</p>}
+      {(contact || email) && (
+        <p className="tr-center tr-sm">
+          {contact ? `Tel: ${contact}` : ""}
+          {contact && email ? " | " : ""}
+          {email || ""}
+        </p>
+      )}
 
-        <div className="text-center mb-2">
-          <h3 className="text-xs font-bold tracking-widest">SALES RECEIPT</h3>
-        </div>
+      <div className="tr-heavy" />
+      <p className="tr-center tr-bold">SALES RECEIPT</p>
+      <div className="tr-dash" />
 
-        <div className="flex justify-between border border-black p-2 mb-2 text-[10px]">
-          <div className="text-center">
-            <p className="text-[8px] uppercase">Receipt No</p>
-            <p className="font-semibold">{transaction.transactionNo}</p>
-          </div>
-          <div className="text-center">
-            <p className="text-[8px] uppercase">Date</p>
-            <p className="font-semibold">{receiptDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
-          </div>
-          <div className="text-center">
-            <p className="text-[8px] uppercase">Time</p>
-            <p className="font-semibold">{receiptDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</p>
-          </div>
-        </div>
-
-        <div className="border border-black p-2 mb-2 text-[10px]">
-          <div className="flex justify-between gap-4">
-            <span className="font-medium">Client:</span>
-            <span className="text-right flex-1">{transaction.clientName || "-"}</span>
-          </div>
-          <div className="flex justify-between gap-4 mt-0.5">
-            <span className="font-medium">Phone:</span>
-            <span className="text-right flex-1">{transaction.clientPhone || "-"}</span>
-          </div>
-          <div className="flex justify-between gap-4 mt-0.5">
-            <span className="font-medium">Address:</span>
-            <span className="text-right flex-1">{transaction.clientAddress || "-"}</span>
-          </div>
-        </div>
-
-        <div className="mb-2">
-          <table className="w-full text-[10px]">
-            <thead>
-              <tr className="bg-black text-white">
-                <th className="text-left py-1 px-2 font-medium">Item</th>
-                <th className="text-center py-1 px-1 font-medium">Qty</th>
-                <th className="text-right py-1 px-1 font-medium">Price</th>
-                <th className="text-right py-1 px-2 font-medium">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(transaction.items ?? []).map((item) => (
-                <tr key={item.id} className="print-no-break border-b border-border">
-                  <td className="py-1 px-2">
-                    <span className="font-medium text-[10px]">{item.product?.name ?? "Unknown"}</span>
-                    {item.product?.sku ? <span className="text-[8px] block">{item.product.sku}</span> : null}
-                    {item.product.expiryDate && <span className="text-[8px] block">Exp: {new Date(item.product.expiryDate).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}</span>}
-                  </td>
-                  <td className="text-center py-1 px-1">{item.quantity}</td>
-                  <td className="text-right py-1 px-1">{formatCurrency(item.unitPrice, currency)}</td>
-                  <td className="text-right py-1 px-2 font-semibold">{formatCurrency(item.totalPrice, currency)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="border-t border-dashed border-black pt-2">
-          <div className="max-w-[170px] ml-auto space-y-0.5 text-[10px]">
-            <div className="flex justify-between">
-              <span>Subtotal</span>
-              <span>{formatCurrency(subtotal, currency)}</span>
-            </div>
-            {taxAmount > 0 && (
-              <div className="flex justify-between">
-                <span>Tax</span>
-                <span>{formatCurrency(taxAmount, currency)}</span>
-              </div>
-            )}
-            <div className="flex justify-between text-sm font-bold border-t-2 border-black pt-1 mt-1">
-              <span>TOTAL</span>
-              <span>{formatCurrency(grandTotal, currency)}</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="border border-black p-2 my-2 text-[10px]">
-          <div className="flex justify-between">
-            <span>Payment:</span>
-            <span className="font-semibold">{transaction.paymentMethod === "MOBILE_MONEY" ? "Mobile Money" : transaction.paymentMethod}</span>
-          </div>
-        </div>
-
-        <div className="text-center border-t border-dashed border-black pt-2 mt-2">
-          <p className="font-semibold text-[10px]">Served by: {transaction.user.name}</p>
-          <p className="text-[10px]">{footerText}</p>
-          <p className="text-[8px]">Keep this receipt for your records</p>
-          <p className="font-mono text-[10px] tracking-wider">{transaction.transactionNo}</p>
-        </div>
+      {/* One pair per line: a 15-character receipt number plus a time cannot
+          share a 52mm line without wrapping mid-value. */}
+      <div className="tr-row tr-kv tr-sm"><span>Bill No</span><span>{transaction.transactionNo}</span></div>
+      <div className="tr-row tr-kv tr-sm">
+        <span>Date</span>
+        <span>
+          {receiptDate.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" })}
+          {" "}
+          {receiptDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+        </span>
       </div>
+      <div className="tr-row tr-kv tr-sm"><span>User</span><span>{transaction.user.name}</span></div>
+
+      {transaction.clientName && (
+        <>
+          <div className="tr-dash" />
+          <div className="tr-row tr-kv tr-sm"><span>Client</span><span>{transaction.clientName}</span></div>
+          {transaction.clientPhone && (
+            <div className="tr-row tr-kv tr-sm"><span>Phone</span><span>{transaction.clientPhone}</span></div>
+          )}
+        </>
+      )}
+
+      <div className="tr-dash" />
+      <div className="tr-row tr-bold tr-sm"><span>ITEM</span><span>AMOUNT</span></div>
+      <div className="tr-dash" />
+
+      {(transaction.items ?? []).map((item) => (
+        <div key={item.id} className="tr-item print-no-break">
+          <p className="tr-bold">{item.product?.name ?? "Unknown"}</p>
+          <div className="tr-row">
+            <span className="tr-sm tr-muted">
+              {item.quantity} x {formatCurrency(item.unitPrice, currency)}
+            </span>
+            <span className="tr-bold">{formatCurrency(item.totalPrice, currency)}</span>
+          </div>
+          {(item.product?.batchNumber || item.product?.expiryDate) && (
+            <p className="tr-sm tr-muted">
+              {item.product?.batchNumber ? `Batch: ${item.product.batchNumber}` : ""}
+              {item.product?.batchNumber && item.product?.expiryDate ? "  " : ""}
+              {item.product?.expiryDate
+                ? `Exp: ${new Date(item.product.expiryDate).toLocaleDateString("en-GB", { month: "short", year: "2-digit" })}`
+                : ""}
+            </p>
+          )}
+        </div>
+      ))}
+
+      <div className="tr-heavy" />
+      {discount > 0 && (
+        <div className="tr-row"><span>Subtotal</span><span>{formatCurrency(subtotal, currency)}</span></div>
+      )}
+      {discount > 0 && (
+        <div className="tr-row"><span>Discount</span><span>-{formatCurrency(discount, currency)}</span></div>
+      )}
+      {taxAmount > 0 && (
+        <div className="tr-row"><span>Tax</span><span>{formatCurrency(taxAmount, currency)}</span></div>
+      )}
+      <div className="tr-row tr-bold tr-lg"><span>TOTAL</span><span>{formatCurrency(grandTotal, currency)}</span></div>
+      <div className="tr-heavy" />
+
+      <div className="tr-row">
+        <span>Payment</span>
+        <span>{transaction.paymentMethod === "MOBILE_MONEY" ? "Mobile Money" : transaction.paymentMethod}</span>
+      </div>
+
+      <div className="tr-dash" />
+      <p className="tr-center tr-sm">Served by: {transaction.user.name}</p>
+      <p className="tr-center tr-sm">{footerText}</p>
+      <p className="tr-center tr-sm">Thank You!</p>
+      <p className="tr-center tr-sm tr-mono">{transaction.transactionNo}</p>
     </div>
   )
 }

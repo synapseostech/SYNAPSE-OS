@@ -33,6 +33,26 @@ export function usePortalShortcuts({
   useEffect(() => {
     if (!enabled) return
     const onKeyDown = (event: KeyboardEvent) => {
+      // Escape is one step back, like the browser's Back button. Dialogs and
+      // popovers dismiss themselves and mark the event handled first, and an
+      // input swallows the first press to give focus back, so this only fires
+      // when nothing else consumed the key. POS runs its own Escape handler.
+      if (
+        event.key === "Escape" &&
+        !event.defaultPrevented &&
+        !event.isComposing &&
+        !isPosRoute(latest.current.pathname)
+      ) {
+        event.preventDefault()
+        if (isEditableTarget(document.activeElement)) {
+          ;(document.activeElement as HTMLElement).blur()
+          return
+        }
+        if (window.history.length > 1) router.back()
+        else router.push("/portal/dashboard")
+        return
+      }
+
       if (event.defaultPrevented || event.isComposing || event.repeat) return
       if (isPosRoute(latest.current.pathname)) return
       const shortcut = resolvePortalShortcut(event)

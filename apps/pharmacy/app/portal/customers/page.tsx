@@ -1,6 +1,7 @@
 ﻿"use client"
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 
 // Force dynamic rendering
 export const dynamic = 'force-dynamic'
@@ -10,7 +11,9 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useToast } from "@/hooks/use-toast"
-import { Plus, Search, Edit, Trash2, Loader2, User } from "lucide-react"
+import { usePharmacySession } from "@/hooks/use-pharmacy-session"
+import { sessionHasCapability } from "@/lib/capabilities"
+import { Plus, Search, Edit, Trash2, Loader2, User, CalendarClock } from "lucide-react"
 import { resilientFetch } from "@/lib/api"
 
 interface Customer {
@@ -35,10 +38,45 @@ export default function CustomersPage() {
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
+  // Next undispensed refill per customer, so the schedule is visible from here.
+  const [nextRefill, setNextRefill] = useState<Record<string, string>>({})
   const { toast } = useToast()
+  const { user } = usePharmacySession()
+  // Deleting a customer also drops their credit history, so the route requires
+  // customers.credit. A cashier with only MANAGE_POS must not be offered a
+  // button that always 403s.
+  const canDeleteCustomer = user
+    ? sessionHasCapability(
+        {
+          isAdmin: user.isAdmin,
+          pharmacyRole: user.pharmacyRole,
+          permissions: user.permissions,
+        },
+        "customers.credit",
+      )
+    : false
+
+  const fetchRefillSchedule = async () => {
+    try {
+      const response = await resilientFetch("/api/admin/refills?status=all")
+      const data = await response.json()
+      const schedule: Record<string, string> = {}
+      for (const reminder of Array.isArray(data) ? data : []) {
+        const customerId = reminder?.customer?.id
+        if (!customerId || reminder.dispensed) continue
+        const due = String(reminder.refill_due_date ?? "")
+        if (!due) continue
+        if (!schedule[customerId] || due < schedule[customerId]) schedule[customerId] = due
+      }
+      setNextRefill(schedule)
+    } catch {
+      setNextRefill({})
+    }
+  }
 
   useEffect(() => {
     fetchCustomers()
+    fetchRefillSchedule()
   }, [])
 
   useEffect(() => {
@@ -171,6 +209,7 @@ export default function CustomersPage() {
                   <TableHead>Name</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Phone</TableHead>
+                  <TableHead>Next refill</TableHead>
                   <TableHead>Orders</TableHead>
                   <TableHead>Transactions</TableHead>
                   <TableHead>Status</TableHead>
@@ -183,6 +222,13 @@ export default function CustomersPage() {
                     <TableCell className="font-medium">{customer.name}</TableCell>
                     <TableCell>{customer.email}</TableCell>
                     <TableCell>{customer.phone || "-"}</TableCell>
+                    <TableCell>
+                      {nextRefill[customer.id] ? (
+                        new Date(`${nextRefill[customer.id]}T00:00:00`).toLocaleDateString("en-GB")
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
                     <TableCell>{customer._count.orders}</TableCell>
                     <TableCell>{customer._count.transactions}</TableCell>
                     <TableCell>
@@ -193,12 +239,19 @@ export default function CustomersPage() {
                       </span>
                     </TableCell>
                     <TableCell className="text-right">
+                      <Button asChild variant="ghost" size="sm" title="Schedule a refill for this customer">
+                        <Link href={`/portal/refills?customerId=${customer.id}`}>
+                          <CalendarClock className="h-4 w-4" />
+                        </Link>
+                      </Button>
                       <Button variant="ghost" size="sm" onClick={() => handleEdit(customer)}>
                         <Edit className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={() => handleDelete(customer.id)}>
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
+                      {canDeleteCustomer && (
+                        <Button variant="ghost" size="sm" onClick={() => handleDelete(customer.id)}>
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}

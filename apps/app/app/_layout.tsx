@@ -4,7 +4,7 @@ import { IBMPlexMono_400Regular, IBMPlexMono_500Medium } from '@expo-google-font
 import { Stack, router } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { useEffect, useState } from 'react'
-import { Linking } from 'react-native'
+import { Linking, View } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { LockScreen } from '@/components/LockScreen'
@@ -15,7 +15,7 @@ import { ThemeProvider, useTheme } from '@/lib/theme'
 
 SplashScreen.preventAutoHideAsync().catch(() => {})
 
-function pathFromResetUrl(url: string | null): string | null {
+function pathFromResetUrl(url: string | null | undefined): string | null {
   if (!url) return null
   try {
     const parsed = new URL(url.replace('synapse://', 'https://synapse.app/'))
@@ -29,7 +29,7 @@ function pathFromResetUrl(url: string | null): string | null {
 
 function usePasswordResetDeepLinks() {
   useEffect(() => {
-    const handle = (url: string | null) => {
+    const handle = (url: string | null | undefined) => {
       const path = pathFromResetUrl(url)
       if (!path) return
       try {
@@ -66,8 +66,10 @@ function RootNavigator() {
 function ThemedShell({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme()
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
-      {children}
+    <GestureHandlerRootView>
+      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+        {children}
+      </View>
     </GestureHandlerRootView>
   )
 }

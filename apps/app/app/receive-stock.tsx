@@ -171,7 +171,7 @@ export default function ReceiveStockScreen() {
               <TextInput style={styles.input} value={supplierRef} onChangeText={setSupplierRef} placeholder="Supplier invoice ref (optional)" placeholderTextColor={colors.textMuted} />
               <Button label={`Receive ${lines.length} batch(es)`} onPress={submit} loading={submitting} />
             </View>
-          ) : null
+          ) : undefined
         }
       />
     </KeyboardAvoidingView>

@@ -21,6 +21,7 @@ describe.skipIf(!isLocal)("sale history (local Postgres)", () => {
   let tenantId = ""
   let cashierId = ""
   let productId = ""
+  let batchId = ""
   const startIso = new Date(Date.now() - 1000).toISOString()
 
   beforeAll(async () => {
@@ -35,12 +36,13 @@ describe.skipIf(!isLocal)("sale history (local Postgres)", () => {
     if (error) throw error
     productId = p.id
     const today = new Date().toISOString().slice(0, 10)
-    const { error: be } = await db.from("pharmacy_product_batches").insert({
+    const { data: batch, error: be } = await db.from("pharmacy_product_batches").insert({
       tenant_id: tenantId, product_id: productId, batch_number: `ZZHB-${randomUUID().slice(0, 6)}`, quantity: 10,
       initial_quantity: 10, expiry_date: new Date(Date.now() + 300 * 864e5).toISOString().slice(0, 10),
-      received_date: today, cost_price: 500, is_active: true, status: "active",
-    })
+      received_date: today, cost_price: 500, selling_price: 1500, is_active: true, status: "active",
+    }).select("id").single()
     if (be) throw be
+    batchId = batch.id
   })
 
   it("a paid sale is persisted once and shows exactly once in history, recent sales and revenue", async () => {
@@ -48,7 +50,8 @@ describe.skipIf(!isLocal)("sale history (local Postgres)", () => {
     const before = await sumCompletedRevenue({ tenantId, fromIso: startIso })
     const key = `history-proof-${randomUUID()}`
     const args = {
-      p_tenant_id: tenantId, p_cashier_id: cashierId, p_items: [{ product_id: productId, quantity: 2, unit_price: 1500 }],
+      p_tenant_id: tenantId, p_cashier_id: cashierId,
+      p_items: [{ product_id: productId, batch_id: batchId, quantity: 2, unit_price: 1500 }],
       p_payment_method: "CASH", p_session_id: null, p_cart_id: null, p_payment_ref: `pay-${key}`, p_discount_total: 0,
       p_tax_amount: 0, p_patient_id: null, p_confirmed_by: cashierId, p_idempotency_key: key,
     }

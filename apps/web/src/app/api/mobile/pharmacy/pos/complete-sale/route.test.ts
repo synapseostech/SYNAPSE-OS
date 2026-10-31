@@ -78,10 +78,38 @@ vi.mock("../../../../../../lib/pharmacy-pos/sale-validation", () => ({
       discount_amount: 0,
     },
   }),
+  isValidSaleQuantity: (quantity: unknown) =>
+    typeof quantity === "number" && Number.isInteger(quantity) && quantity > 0,
+  splitBatchSaleLine: (allocations: any[], discountAmount: number) =>
+    allocations.map((allocation) => ({
+      batch_id: allocation.batchId,
+      quantity: allocation.quantity,
+      unit_price: allocation.listPrice,
+      discount_amount: discountAmount,
+    })),
 }))
 
 vi.mock("@synapse/db/inventory", () => ({
   buildStockError: async () => null,
+  kampalaToday: () => "2026-03-01",
+  allocateFefo: (batches: any[], quantity: number) => {
+    let remaining = quantity
+    return batches
+      .filter(
+        (batch) =>
+          batch.status === "active" &&
+          batch.is_active !== false &&
+          Number(batch.quantity) > 0 &&
+          (!batch.expiry_date || batch.expiry_date >= "2026-03-01"),
+      )
+      .sort((a, b) => String(a.expiry_date ?? "9999").localeCompare(String(b.expiry_date ?? "9999")))
+      .flatMap((batch) => {
+        if (remaining <= 0) return []
+        const taken = Math.min(Number(batch.quantity), remaining)
+        remaining -= taken
+        return [{ batchId: batch.id, quantity: taken }]
+      })
+  },
 }))
 
 vi.mock("@synapse/db/till-service", () => ({
@@ -128,6 +156,18 @@ beforeEach(() => {
         reorder_level: 0,
       },
     ],
+    pharmacy_product_batches: [
+      {
+        id: "batch-a",
+        tenant_id: "tenant-a",
+        product_id: PRODUCT_A,
+        quantity: 100,
+        expiry_date: "2027-01-01",
+        status: "active",
+        is_active: true,
+        selling_price: 10,
+      },
+    ],
   }
 })
 
@@ -165,5 +205,27 @@ describe("mobile POS complete-sale patient ownership", () => {
     expect(r.status).toBe(200)
     expect(s.rpcCalls).toHaveLength(1)
     expect(s.rpcCalls[0].args.p_patient_id).toBeNull()
+  })
+
+  it("allocates checkout lines to the batch price before calling the sale RPC", async () => {
+    const r = await POST(req(saleBody()))
+    expect(r.status).toBe(200)
+    expect(s.rpcCalls[0].args.p_items).toEqual([
+      expect.objectContaining({
+        product_id: PRODUCT_A,
+        batch_id: "batch-a",
+        quantity: 1,
+        unit_price: 10,
+      }),
+    ])
+  })
+
+  it("pins the selected batch and rejects a stale client selling price", async () => {
+    const r = await POST(req(saleBody({
+      items: [{ productId: PRODUCT_A, quantity: 1, batchId: "batch-a", unitPrice: 12 }],
+    })))
+    expect(r.status).toBe(409)
+    expect(await r.json()).toMatchObject({ code: "BATCH_PRICE_CHANGED" })
+    expect(s.rpcCalls).toHaveLength(0)
   })
 })

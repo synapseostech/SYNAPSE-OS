@@ -12,7 +12,17 @@ vi.mock("@/lib/api-auth", () => ({
 
 import { GET } from "./route"
 
-const AUTHORISED = { ok: true, tenantId: "tenant-1", session: { user: { id: "user-1" } } }
+const AUTHORISED = {
+  ok: true,
+  tenantId: "tenant-1",
+  session: {
+    user: { id: "user-1" },
+    role: "pharmacy_admin",
+    pharmacyRole: "pharmacy_admin",
+    permissions: [],
+    isAdmin: false,
+  },
+}
 
 function voucherTotals(document: TallyXmlDocument) {
   const voucher = document.vouchers[0]!

@@ -7,6 +7,7 @@ export type BatchLike = {
   expiryDate: string | null
   manufacturer?: string | null
   costPrice?: number | null
+  sellingPrice?: number | null
 }
 
 export type BatchAllocation = {
@@ -16,6 +17,7 @@ export type BatchAllocation = {
   manufacturer: string | null
   quantity: number
   costPrice: number | null
+  sellingPrice: number | null
 }
 
 export type ExpiryTone = "ok" | "warn" | "critical" | "expired" | "unknown"
@@ -113,6 +115,7 @@ export function allocateFefoBatches(
       manufacturer: b.manufacturer ?? null,
       quantity: take,
       costPrice: b.costPrice ?? null,
+      sellingPrice: b.sellingPrice ?? null,
     })
     remaining -= take
   }

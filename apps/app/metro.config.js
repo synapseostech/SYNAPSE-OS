@@ -8,8 +8,8 @@ const appRequire = createRequire(path.join(projectRoot, 'package.json'))
 
 const config = getDefaultConfig(projectRoot)
 
-// Monorepo: watch shared packages, but resolve deps from the app workspace first so
-// hoisted Expo SDK 56 / Metro 0.84 at the repo root cannot override Expo SDK 52.
+// Monorepo: watch shared packages, but resolve app dependencies first so the
+// root's web React version cannot override the native app's React runtime.
 config.watchFolders = [workspaceRoot]
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, 'node_modules'),
@@ -19,8 +19,8 @@ config.resolver.nodeModulesPaths = [
 // where monorepo hoisting differs from local installs.
 config.resolver.disableHierarchicalLookup = false
 
-// tsc remaps `react` → @types/react (React 18) so it does not pick Next's React 19
-// types. Metro must still bundle the real runtime package.
+// TypeScript maps `react` to the app-local React types; Metro must bundle the
+// matching app-local runtime package.
 const defaultResolveRequest = config.resolver.resolveRequest
 config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (

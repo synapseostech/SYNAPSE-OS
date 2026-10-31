@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
       id, name, sku, barcode, price, cost_price, quantity, unit_of_measure,
       requires_prescription, is_active,
       pharmacy_product_packages(id, name, units_per_package, price, is_default),
-      pharmacy_product_batches(id, batch_number, quantity, expiry_date, cost_price, is_active, manufacturer)
+      pharmacy_product_batches(id, batch_number, quantity, expiry_date, cost_price, selling_price, is_active, status, manufacturer)
     `,
     )
     .eq('tenant_id', auth.tenantId)
@@ -109,6 +109,7 @@ export async function GET(req: NextRequest) {
             batchNumber: batch.batch_number,
             quantity: Number(batch.quantity ?? 0),
             expiryDate: batch.expiry_date,
+            sellingPrice: Number(batch.selling_price ?? product.price ?? 0),
             costPrice: batch.cost_price != null ? Number(batch.cost_price) : null,
           })),
       }

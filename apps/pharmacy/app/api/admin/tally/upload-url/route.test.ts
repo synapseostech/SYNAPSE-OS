@@ -39,7 +39,13 @@ import { POST } from "./route"
 const AUTHORISED = {
   ok: true,
   tenantId: "tenant-1",
-  session: { user: { id: "user-1" } },
+  session: {
+    user: { id: "user-1" },
+    role: "pharmacy_admin",
+    pharmacyRole: "pharmacy_admin",
+    permissions: [],
+    isAdmin: false,
+  },
 }
 
 function setup(resolve: (operation: FakeOperation) => FakeResult = () => ({ data: null, error: null })) {
@@ -87,13 +93,44 @@ describe("POST /api/admin/tally/upload-url", () => {
     const res = await post({ fileName: "tally.txt" })
 
     expect(res.status).toBe(415)
-    expect(m.db.operations).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action === "insert")).toBe(false)
   })
 
   it("rejects an empty or oversized file before creating a session", async () => {
     expect((await post({ fileName: "tally.xml", fileSize: 0 })).status).toBe(413)
     expect((await post({ fileName: "tally.xml", fileSize: TALLY_SOURCE_LIMIT + 1 })).status).toBe(413)
-    expect(m.db.operations).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action === "insert")).toBe(false)
+  })
+
+  it("does not create another session after the pharmacy cut-over is complete", async () => {
+    setup((operation) =>
+      filtersOf(operation).source_system === "Tally"
+        ? { data: { id: "completed-session", completed_at: "2026-10-30T12:00:00.000Z" }, error: null }
+        : { data: null, error: null },
+    )
+
+    const res = await post({ fileName: "tally.xml" })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_CUTOVER_COMPLETE" })
+    expect(m.db.operations.some((operation) => operation.action === "insert")).toBe(false)
+  })
+
+  it("does not create an import after a cut-over session has started applying", async () => {
+    setup((operation) =>
+      operation.table === "pharmacy_tally_cutover_locks"
+        ? { data: { session_id: "active-session" }, error: null }
+        : { data: null, error: null },
+    )
+
+    const res = await post({ fileName: "tally.xml" })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({
+      code: "TALLY_CUTOVER_IN_PROGRESS",
+      sessionId: "active-session",
+    })
+    expect(m.db.operations.some((operation) => operation.action === "insert")).toBe(false)
   })
 
   it("creates a pending session and returns a signed upload target", async () => {
@@ -125,6 +162,17 @@ describe("POST /api/admin/tally/upload-url", () => {
       file_url: "tenants/tenant-1/imports/session-1/source.xml",
     })
     expect(filtersOf(update!)).toEqual({ id: "session-1", tenant_id: "tenant-1" })
+  })
+
+  it("accepts legacy .xls workbook uploads", async () => {
+    setup(sessions())
+
+    const res = await post({ fileName: "tally-template.xls", fileSize: 1_024 })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.path).toBe("tenants/tenant-1/imports/session-1/source.xls")
+    expect(m.targets).toEqual([{ tenantId: "tenant-1", sessionId: "session-1", extension: "xls" }])
   })
 
   it("fails the request when the upload path cannot be stored", async () => {

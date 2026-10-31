@@ -46,7 +46,7 @@ const CHUNK = "plan-chunk"
 
 export function summarisePlan(
   plan: TallyCutoverPlan,
-  format: "xml" | "xlsx" | "csv",
+  format: "xml" | "xlsx" | "xls" | "csv",
   chunkSize = TALLY_APPLY_CHUNK,
 ): TallyPlanSummary {
   return {
@@ -80,7 +80,7 @@ export async function writeTallyPlan(
   tenantId: string,
   sessionId: string,
   plan: TallyCutoverPlan,
-  format: "xml" | "xlsx" | "csv",
+  format: "xml" | "xlsx" | "xls" | "csv",
 ): Promise<TallyPlanSummary> {
   const summary = summarisePlan(plan, format)
 

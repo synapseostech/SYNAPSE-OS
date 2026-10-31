@@ -90,7 +90,7 @@ export default function AppointmentsScreen() {
               >
                 <Text style={styles.ctaText}>Book a consult on web</Text>
               </Pressable>
-            ) : null
+            ) : undefined
           }
           renderItem={({ item }) => (
             <Pressable

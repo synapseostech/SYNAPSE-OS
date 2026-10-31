@@ -26,6 +26,8 @@ const FIELD_PATTERNS: Record<string, RegExp[]> = {
   quantity: [/qty/i, /quantity/i, /stock/i, /units/i, /closing.?stock/i],
   price: [/selling/i, /sale/i, /retail/i, /^price$/i, /^mrp$/i, /^rate$/i],
   cost_price: [/cost/i, /buying/i, /purchase/i, /wholesale/i],
+  strength: [/^strength$/i, /dosage.?strength/i],
+  dosage_form: [/dosage.?form/i, /^form$/i, /presentation/i],
   expiry_date: [/exp/i, /expiry/i, /expire/i, /best.?before/i],
   batch_number: [/batch/i, /lot/i],
   manufacturer: [/manufacturer/i, /maker/i, /brand/i],

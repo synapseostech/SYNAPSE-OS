@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin } from "@/lib/tally/auth"
-import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
+import {
+  CUTOVER_ALREADY_COMPLETE,
+  findCompletedCutover,
+  findTallyCutoverOwner,
+} from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import {
   createTallyUploadTarget,
@@ -13,6 +17,7 @@ const db = () => supabaseAdmin as any
 const EXTENSIONS: Record<string, TallySourceExtension> = {
   xml: "xml",
   xlsx: "xlsx",
+  xls: "xls",
   csv: "csv",
 }
 
@@ -26,6 +31,21 @@ export async function POST(request: NextRequest) {
   if (!auth.ok) return auth.response
   const { actorId, tenantId } = auth
 
+  if (await findCompletedCutover(tenantId)) {
+    return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
+  }
+  const cutoverOwner = await findTallyCutoverOwner(tenantId)
+  if (cutoverOwner) {
+    return NextResponse.json(
+      {
+        error: "A Tally cut-over has already started for this pharmacy. Resume its existing session.",
+        code: "TALLY_CUTOVER_IN_PROGRESS",
+        sessionId: cutoverOwner,
+      },
+      { status: 409 },
+    )
+  }
+
   let body: { fileName?: string; fileSize?: number }
   try {
     body = (await request.json()) as { fileName?: string; fileSize?: number }
@@ -37,7 +57,7 @@ export async function POST(request: NextRequest) {
   const extension = EXTENSIONS[fileName.toLowerCase().split(".").pop() ?? ""]
   if (!extension) {
     return NextResponse.json(
-      { error: "Choose a Tally XML export, an .xlsx workbook, or a .csv template file." },
+      { error: "Choose a Tally XML export, an .xlsx/.xls workbook, or a .csv template file." },
       { status: 415 },
     )
   }

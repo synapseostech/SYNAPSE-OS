@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin } from "@/lib/tally/auth"
-import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
+import {
+  CUTOVER_ALREADY_COMPLETE,
+  findCompletedCutover,
+  findTallyCutoverOwner,
+} from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import type { TallyApplyProgress } from "@/lib/tally/apply"
 import type { TallyPlanSummary } from "@/lib/tally/types"
@@ -82,6 +86,16 @@ export async function DELETE(
 
   if (error || !session) {
     return NextResponse.json({ error: "Import session not found" }, { status: 404 })
+  }
+  const cutoverOwner = await findTallyCutoverOwner(tenantId)
+  if (cutoverOwner === id) {
+    return NextResponse.json(
+      {
+        error: "This Tally cut-over has started and cannot be discarded. Resume the existing session.",
+        code: "TALLY_CUTOVER_IN_PROGRESS",
+      },
+      { status: 409 },
+    )
   }
   if (session.status === "importing" || session.status === "complete") {
     return NextResponse.json(
