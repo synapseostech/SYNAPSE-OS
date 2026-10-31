@@ -6,10 +6,12 @@ import {
   ArrowRight,
   BookOpen,
   CheckCircle2,
+  Copy,
   Download,
   FileSpreadsheet,
   Loader2,
   RefreshCw,
+  Terminal,
   Upload,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -133,6 +135,11 @@ type ReconcileCheck = {
   note?: string
 }
 
+type BridgeCheck = {
+  status: "ok" | "tally" | "token" | "bridge" | "error"
+  message: string
+}
+
 const STAGE_LABEL: Record<string, string> = {
   accounts: "Chart of accounts",
   parties: "Customers and suppliers",
@@ -176,6 +183,9 @@ export default function TallyImportPage() {
   const [conversionDate, setConversionDate] = useState("")
   const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "error">("checking")
   const [bridgeToken, setBridgeToken] = useState("")
+  const [bridgeCheck, setBridgeCheck] = useState<BridgeCheck | null>(null)
+  const [checkingBridge, setCheckingBridge] = useState(false)
+  const [portalOrigin, setPortalOrigin] = useState("")
   const [busy, setBusy] = useState<"idle" | "connecting" | "uploading" | "preview" | "applying" | "saving">("idle")
 
   const blocking = useMemo(
@@ -189,6 +199,15 @@ export default function TallyImportPage() {
     balanced &&
     blocking.length === 0 &&
     busy === "idle"
+
+  const bridgeCommand =
+    `$env:SYNAPSE_TALLY_BRIDGE_TOKEN="<64-hex-token>"; ` +
+    `$env:SYNAPSE_TALLY_ALLOWED_ORIGINS="${portalOrigin || "https://pharm.synapseos.tech"}"; ` +
+    `npm run start --workspace @synapse/tally-bridge`
+
+  useEffect(() => {
+    setPortalOrigin(window.location.origin)
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -357,6 +376,64 @@ export default function TallyImportPage() {
     }
   }
 
+  async function copyBridgeCommand() {
+    try {
+      await navigator.clipboard.writeText(bridgeCommand)
+      toast({ title: "Bridge command copied" })
+    } catch {
+      toast({ variant: "destructive", title: "Could not copy — select the command manually" })
+    }
+  }
+
+  async function checkBridge() {
+    setCheckingBridge(true)
+    setBridgeCheck(null)
+    try {
+      const response = await fetch("http://127.0.0.1:17890/api/tally/status", {
+        headers: { "x-synapse-tally-bridge-token": bridgeToken.trim() },
+        cache: "no-store",
+      })
+
+      if (response.status === 401) {
+        setBridgeCheck({
+          status: "token",
+          message:
+            "The bridge is running, but it did not accept this token. Paste the same 64-character token it was started with.",
+        })
+        return
+      }
+      if (!response.ok) {
+        setBridgeCheck({
+          status: "error",
+          message: `The bridge answered with HTTP ${response.status}.`,
+        })
+        return
+      }
+
+      const data = (await response.json()) as { tally?: string; target?: string }
+      if (data.tally === "reachable") {
+        setBridgeCheck({
+          status: "ok",
+          message: `Bridge is running and Tally answered at ${data.target ?? "its local port"}.`,
+        })
+        return
+      }
+      setBridgeCheck({
+        status: "tally",
+        message: `Bridge is running, but nothing answered at ${data.target ?? "Tally's HTTP port"}. Open Tally, sign in, and confirm its HTTP server is enabled.`,
+      })
+    } catch {
+      // A cross-origin failure is opaque to the browser, so an unreachable
+      // bridge and a bridge rejecting this origin are indistinguishable here.
+      setBridgeCheck({
+        status: "bridge",
+        message: `Nothing answered at 127.0.0.1:17890. Start the bridge on this computer, or confirm SYNAPSE_TALLY_ALLOWED_ORIGINS is ${portalOrigin || "this page's origin"}.`,
+      })
+    } finally {
+      setCheckingBridge(false)
+    }
+  }
+
   async function saveMapping() {
     if (!sessionId) return
     setBusy("saving")
@@ -486,6 +563,28 @@ export default function TallyImportPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="space-y-3 rounded-lg border border-dashed p-4">
+            <div className="flex items-center gap-2">
+              <Terminal className="h-4 w-4 text-primary" />
+              <p className="text-sm font-medium">Start the bridge on this computer</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Node.js 22 is required. Open Tally, sign in, and select the company being cut over before running this.
+              The bridge listens only on 127.0.0.1 and cannot type a Tally password or choose a company for you.
+            </p>
+            <div className="rounded-md bg-muted p-3">
+              <pre className="overflow-x-auto whitespace-pre-wrap break-all text-xs">{bridgeCommand}</pre>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" onClick={() => void copyBridgeCommand()}>
+                <Copy className="h-4 w-4" /> Copy command
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                Replace the token placeholder with the one you paste below.
+              </span>
+            </div>
+          </div>
+
           <div className="space-y-2 rounded-lg border p-4">
             <Label htmlFor="tally-bridge-token">Local Tally Bridge token</Label>
             <div className="flex flex-wrap gap-2">
@@ -494,7 +593,10 @@ export default function TallyImportPage() {
                 type="password"
                 autoComplete="off"
                 value={bridgeToken}
-                onChange={(event) => setBridgeToken(event.target.value)}
+                onChange={(event) => {
+                  setBridgeToken(event.target.value)
+                  setBridgeCheck(null)
+                }}
                 placeholder="Paste the 64-character token from the Windows terminal"
                 disabled={cutoverAccess !== "ready" || busy !== "idle"}
                 className="min-w-64 flex-1"
@@ -511,7 +613,32 @@ export default function TallyImportPage() {
                 )}
                 {busy === "connecting" ? "Reading Tally…" : "Connect and review"}
               </Button>
+              <Button
+                variant="ghost"
+                onClick={() => void checkBridge()}
+                disabled={cutoverAccess !== "ready" || busy !== "idle" || !bridgeToken.trim() || checkingBridge}
+              >
+                {checkingBridge ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+                Check bridge
+              </Button>
             </div>
+            {bridgeCheck ? (
+              <p
+                className={`text-xs ${
+                  bridgeCheck.status === "ok"
+                    ? "text-[#22C55E]"
+                    : bridgeCheck.status === "tally"
+                      ? "text-[#E8B84B]"
+                      : "text-destructive"
+                }`}
+              >
+                {bridgeCheck.message}
+              </p>
+            ) : null}
             <p className="text-xs text-muted-foreground">
               The bridge must be running on this computer. The token stays in this page only and is not saved.
               Connect reads data; it does not apply or post it.

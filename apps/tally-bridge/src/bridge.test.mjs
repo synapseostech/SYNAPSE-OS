@@ -25,11 +25,11 @@ function config(overrides = {}) {
   })
 }
 
-async function startServer(handler) {
+async function startServer(handler, lifecycle = { probe: async () => true }) {
   const server = createTallyBridgeServer(
     config({ SYNAPSE_TALLY_BRIDGE_PORT: "17891" }),
     handler,
-    { probe: async () => true },
+    lifecycle,
   )
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
   servers.push(server)
@@ -304,6 +304,50 @@ describe("local HTTP bridge", () => {
 
     assert.equal(response.status, 204)
     assert.equal(response.headers.get("access-control-allow-private-network"), "true")
+  })
+
+  it("reports reachability without running an export", async () => {
+    const base = await startServer(async () => {
+      throw new Error("the status probe must not export")
+    })
+
+    const response = await fetch(`${base}/api/tally/status`, {
+      headers: { origin: ORIGIN, "x-synapse-tally-bridge-token": TOKEN },
+    })
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+      bridge: "ok",
+      tally: "reachable",
+      target: "http://127.0.0.1:9000",
+    })
+  })
+
+  it("reports Tally as unreachable when its HTTP server does not answer", async () => {
+    const base = await startServer(async () => new Response(masterReply), {
+      probe: async () => false,
+    })
+
+    const response = await fetch(`${base}/api/tally/status`, {
+      headers: { origin: ORIGIN, "x-synapse-tally-bridge-token": TOKEN },
+    })
+
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).tally, "unreachable")
+  })
+
+  it("guards the status probe with the same origin and token as the export", async () => {
+    const base = await startServer(async () => new Response(masterReply))
+
+    const wrongOrigin = await fetch(`${base}/api/tally/status`, {
+      headers: { origin: "https://evil.example", "x-synapse-tally-bridge-token": TOKEN },
+    })
+    assert.equal(wrongOrigin.status, 403)
+
+    const wrongToken = await fetch(`${base}/api/tally/status`, {
+      headers: { origin: ORIGIN, "x-synapse-tally-bridge-token": "bad" },
+    })
+    assert.equal(wrongToken.status, 401)
   })
 
   it("rejects request bodies rather than exposing a general-purpose local proxy", async () => {
