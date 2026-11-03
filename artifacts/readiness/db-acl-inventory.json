@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-31T20:21:15.802Z",
-  "security_definer_count": 74,
+  "generated_at": "2026-11-03T07:50:00.912Z",
+  "security_definer_count": 86,
   "public_or_anon_execute_grants": [],
   "unexpected_public_execute": [],
   "possible_implicit_public_exec": [
@@ -87,6 +87,34 @@
     {
       "fn": "public.receive_pharmacy_stock",
       "file": "20261030140000_pharmacy_batch_selling_price.sql"
+    },
+    {
+      "fn": "public.pharmacy_assert_actor",
+      "file": "20261101090000_pharmacy_refund_and_adjust_rpcs.sql"
+    },
+    {
+      "fn": "public.adjust_pharmacy_batch_stock",
+      "file": "20261101090000_pharmacy_refund_and_adjust_rpcs.sql"
+    },
+    {
+      "fn": "public.current_tenant_id",
+      "file": "20261102130000_pharmacy_tenant_access_hardening.sql"
+    },
+    {
+      "fn": "public.is_platform_admin",
+      "file": "20261102130000_pharmacy_tenant_access_hardening.sql"
+    },
+    {
+      "fn": "public.custom_access_token_hook",
+      "file": "20261102130000_pharmacy_tenant_access_hardening.sql"
+    },
+    {
+      "fn": "public.pharmacy_assert_actor",
+      "file": "20261102130000_pharmacy_tenant_access_hardening.sql"
+    },
+    {
+      "fn": "public.tally_mirror_rows_are_read_only",
+      "file": "20261102130300_tally_mirror_read_only_guard.sql"
     }
   ],
   "status": "PASS",
@@ -388,6 +416,54 @@
     {
       "file": "20261031120000_pharmacy_sale_allow_negative_stock.sql",
       "fn": "public.complete_pharmacy_sale"
+    },
+    {
+      "file": "20261101090000_pharmacy_refund_and_adjust_rpcs.sql",
+      "fn": "public.pharmacy_assert_actor"
+    },
+    {
+      "file": "20261101090000_pharmacy_refund_and_adjust_rpcs.sql",
+      "fn": "public.adjust_pharmacy_batch_stock"
+    },
+    {
+      "file": "20261101090000_pharmacy_refund_and_adjust_rpcs.sql",
+      "fn": "public.reverse_pharmacy_sale"
+    },
+    {
+      "file": "20261101120000_pharmacy_refund_receivable_reversal.sql",
+      "fn": "public.reverse_pharmacy_sale"
+    },
+    {
+      "file": "20261102110000_pharmacy_line_level_tax.sql",
+      "fn": "public.complete_pharmacy_sale"
+    },
+    {
+      "file": "20261102130000_pharmacy_tenant_access_hardening.sql",
+      "fn": "public.pharmacy_caller_tenants"
+    },
+    {
+      "file": "20261102130000_pharmacy_tenant_access_hardening.sql",
+      "fn": "public.current_tenant_id"
+    },
+    {
+      "file": "20261102130000_pharmacy_tenant_access_hardening.sql",
+      "fn": "public.is_platform_admin"
+    },
+    {
+      "file": "20261102130000_pharmacy_tenant_access_hardening.sql",
+      "fn": "public.custom_access_token_hook"
+    },
+    {
+      "file": "20261102130000_pharmacy_tenant_access_hardening.sql",
+      "fn": "public.pharmacy_assert_actor"
+    },
+    {
+      "file": "20261102130100_profiles_privileged_column_guard.sql",
+      "fn": "public.profiles_guard_privileged_columns"
+    },
+    {
+      "file": "20261102130300_tally_mirror_read_only_guard.sql",
+      "fn": "public.tally_mirror_rows_are_read_only"
     }
   ]
 }
