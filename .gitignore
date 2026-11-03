@@ -18,6 +18,13 @@ coverage/
 .env*
 !.env.example
 
+# Google Play service-account key referenced by apps/app/eas.json submit config.
+# A private key; must never enter the repo.
+apps/app/google-service-account.json
+apps/app/google-services.json
+apps/app/*.keystore
+apps/app/*.jks
+
 .supabase/
 supabase/.temp/
 
