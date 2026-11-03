@@ -26,6 +26,7 @@ import { buildBridgeCommand } from "@/lib/tally/bridge-command"
 import { requestBridgeExport, TallyBridgeError } from "@/lib/tally/bridge-client"
 import type { TallyExtractionSummary } from "@/lib/tally/chunks"
 import type { TallyConsolidationReport } from "@/lib/tally/consolidate"
+import { diagnosticFrom, reportTallyFailure } from "@/lib/tally/diagnostics"
 import type { TallyEditionDisclosure, TallyEditionProblem } from "@/lib/tally/editions"
 import { runTallyExtraction } from "@/lib/tally/extraction"
 import { cutoverBlockReason, track } from "@/lib/telemetry/events"
@@ -559,6 +560,12 @@ export default function TallyImportPage() {
       onProgress: (_manifest, summary) => setExtraction(summary),
     })
     if (result.stopped !== "complete") {
+      reportTallyFailure({
+        step: "extraction",
+        outcome: result.stopped,
+        ...(result.stopCode ? { code: result.stopCode } : {}),
+        sessionId: session,
+      })
       toast({
         variant: "destructive",
         title: "Extraction did not finish",
@@ -636,6 +643,11 @@ export default function TallyImportPage() {
       setBusy("extracting")
       await runExtraction(session.sessionId, company)
     } catch (error) {
+      reportTallyFailure({
+        step: mode === "closing" ? "closing-export" : "extraction",
+        outcome: "failed",
+        ...diagnosticFrom(error),
+      })
       toast({
         variant: "destructive",
         title: bridgeMessage(error, "Could not connect to the local Tally Bridge."),
@@ -654,6 +666,12 @@ export default function TallyImportPage() {
     try {
       await runExtraction(sessionId, tallyCompany.trim())
     } catch (error) {
+      reportTallyFailure({
+        step: "extraction-resume",
+        outcome: "failed",
+        ...diagnosticFrom(error),
+        sessionId,
+      })
       toast({
         variant: "destructive",
         title: bridgeMessage(error, "The extraction could not continue."),
@@ -682,6 +700,7 @@ export default function TallyImportPage() {
       })
 
       if (response.status === 401) {
+        reportTallyFailure({ step: "bridge-check", outcome: "http", status: 401 })
         setBridgeCheck({
           status: "token",
           message:
@@ -690,6 +709,7 @@ export default function TallyImportPage() {
         return
       }
       if (!response.ok) {
+        reportTallyFailure({ step: "bridge-check", outcome: "http", status: response.status })
         setBridgeCheck({
           status: "error",
           message: `The bridge answered with HTTP ${response.status}.`,
@@ -711,6 +731,7 @@ export default function TallyImportPage() {
         await loadTallyCompanies()
         return
       }
+      reportTallyFailure({ step: "bridge-check", outcome: "failed" })
       setBridgeCheck({
         status: "tally",
         message: `Bridge is running, but nothing answered at ${data.target ?? "Tally's HTTP port"}. Open Tally, sign in, and confirm its HTTP server is enabled.`,
@@ -718,6 +739,7 @@ export default function TallyImportPage() {
     } catch {
       // A cross-origin failure is opaque to the browser, so an unreachable
       // bridge and a bridge rejecting this origin are indistinguishable here.
+      reportTallyFailure({ step: "bridge-check", outcome: "network" })
       setBridgeCheck({
         status: "bridge",
         message: `Nothing answered at 127.0.0.1:17890. Start the bridge on this computer, or confirm SYNAPSE_TALLY_ALLOWED_ORIGINS is ${portalOrigin || "this page's origin"}.`,
@@ -736,7 +758,10 @@ export default function TallyImportPage() {
         headers: { "x-synapse-tally-bridge-token": bridgeToken.trim() },
         cache: "no-store",
       })
-      if (!response.ok) return
+      if (!response.ok) {
+        reportTallyFailure({ step: "bridge-companies", outcome: "http", status: response.status })
+        return
+      }
       const data = (await response.json()) as { companies?: string[]; edition?: string }
       const companies = Array.isArray(data.companies) ? data.companies : []
       setTallyCompanies(companies)
@@ -746,6 +771,7 @@ export default function TallyImportPage() {
       )
     } catch {
       // Discovery fails the same way the status probe does; the operator can type the name.
+      reportTallyFailure({ step: "bridge-companies", outcome: "network" })
     }
   }
 
@@ -807,6 +833,13 @@ export default function TallyImportPage() {
         const data = await response.json()
         if (!response.ok) {
           track("tally_cutover_blocked", { reason: cutoverBlockReason(data.code) })
+          reportTallyFailure({
+            step: "apply",
+            outcome: "http",
+            status: response.status,
+            ...diagnosticFrom({ code: data.code }),
+            sessionId,
+          })
           toast({ variant: "destructive", title: data.error ?? "Apply stopped", description: data.progress ? `Stage: ${data.progress.stage}` : undefined })
           if (data.progress) setProgress(data.progress as Progress)
           return
@@ -832,6 +865,15 @@ export default function TallyImportPage() {
         previous = position
       }
       toast({ variant: "destructive", title: "Apply ran too long", description: "Reload the session to see where it stopped." })
+    } catch (error) {
+      // Without this the operator saw a stopped spinner and nothing else: the
+      // refusal never reached the server, so it left no trace anywhere.
+      reportTallyFailure({ step: "apply", outcome: "network", ...diagnosticFrom(error), sessionId })
+      toast({
+        variant: "destructive",
+        title: "The cut-over could not continue",
+        description: "The connection dropped mid-apply. Reload the session to see where it stopped.",
+      })
     } finally {
       setBusy("idle")
     }

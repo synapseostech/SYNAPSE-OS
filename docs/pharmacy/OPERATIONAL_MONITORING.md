@@ -104,7 +104,7 @@ correlation is done inside the database by the operator.
 
 | Signal | Source | Threshold | Route |
 | --- | --- | --- | --- |
-| Bridge unreachable during an extraction | **no server signal exists**: the portal calls the bridge directly, so the failure is shown to the operator in the browser. Adding a server-side beacon is the follow-up. | any `TALLY_BRIDGE_*` failure the operator reports | release owner |
+| Bridge unreachable during an extraction | `tally.client.failed` log line, reported by the portal | any, or ≥ 3 in 5 min | release owner |
 | Cut-over blocked | `tally_cutover_blocked` event | any, during a scheduled cut-over window | release owner + pharmacy owner |
 | Apply lease held too long | database: `pharmacy_tally_cutover_locks` older than 15 min | any | on-call |
 | Audit row missing on a completed cut-over | preflight state `blocked` with an `audit` failure | any | release owner, immediate |
@@ -167,6 +167,54 @@ npx vercel logs --environment production --json --since 24h | grep '"sessionId":
 
 Runtime-log retention is a plan setting; the session's `error_message` has no
 retention limit and is the record to fall back on.
+
+#### Failures the browser sees first
+
+The portal talks to the Tally bridge on `127.0.0.1:17890` directly, so a bridge
+failure happens outside the server. The portal reports its own failures back, so
+every toast the operator can see is also one line in these logs.
+
+The report goes to `POST /api/admin/tally/diagnostics`. Its body is a closed
+schema — `step`, `outcome`, `code`, `status` and `sessionId` only, with no
+free-text field — so a compromised page cannot push XML, a company name, a token
+or patient data into the logs. Unknown keys, values outside the enumerated sets
+and bodies over 4 KB are refused with `400`; the route is rate-limited per tenant
+and user and answers `429` with `Retry-After`.
+
+| Line | Level | When | Carries |
+| --- | --- | --- | --- |
+| `tally.client.failed` | `error` | the portal could not reach or trust the bridge | `step`, `outcome`, `code`, `status`, `sessionId`, `tenantId`, `actorId` |
+| `tally.extract.begin` | `log` | an extraction session was opened | `sessionId`, `tenantId`, `mode`, `from`, `to`, `parts` |
+| `tally.extract.chunk_complete` | `log` | a chunk was read and stored | `sessionId`, `tenantId`, `chunkId`, `kind`, `recordsRead`, `bytes` |
+| `tally.extract.chunk_failed` | `error` | a chunk was reported as failed | `sessionId`, `tenantId`, `chunkId`, the reported reason |
+| `tally.extract.split` | `log` | an over-large chunk was split | `sessionId`, `tenantId`, `chunkId`, `ranges` |
+| `tally.extract.finished` | `log` | every chunk was read | `sessionId`, `tenantId`, `chunks`, `documents`, `gaps`, `coverage` |
+
+`code` is the bridge's own refusal code, so it names the cause rather than the
+symptom: `TALLY_BRIDGE_ALL_MASTERS_REJECTED` (Tally answered `STATUS 0`),
+`TALLY_BRIDGE_ALL_MASTERS_UNSAFE_XML` (the answer carried a DOCTYPE),
+`TALLY_BRIDGE_COMPANY_UNVERIFIED` (the answer named no company, so it could be
+another business's books), `TALLY_BRIDGE_TALLY_UNAVAILABLE` (nothing is listening
+on the Tally port) and `TALLY_BRIDGE_TALLY_TIMEOUT` (Tally accepted the request
+and never answered). `step` says where in the portal it happened:
+`bridge-check`, `bridge-companies`, `closing-export`, `extraction`,
+`extraction-resume` or `apply`.
+
+Everything one attempt did, by session id:
+
+```bash
+npx vercel logs --environment production --json --since 1h | grep '"sessionId":"<id>"'
+```
+
+Every bridge failure the operator saw, whatever the session:
+
+```bash
+npx vercel logs --environment production --json --since 1h | grep 'tally.client.failed'
+```
+
+The report is best-effort: the browser sends it with `keepalive` and ignores its
+own failure, so a report that cannot be delivered never changes what the operator
+sees. If the clinic's network is down, the toast is the only record.
 
 ### 2.7 Independence after cut-over
 

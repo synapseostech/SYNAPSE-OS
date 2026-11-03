@@ -88,6 +88,8 @@ export type TallyExtractionResult = {
   summary: TallyExtractionSummary
   stopped: TallyExtractionStop
   chunkId?: string
+  /** The refusal code of the error that ended the run, when it had one. */
+  stopCode?: string
 }
 
 export type TallyExtractionOptions = {
@@ -111,6 +113,18 @@ function errorCode(error: unknown): string {
   if (error instanceof TallyBridgeError) return error.code
   const code = (error as { code?: unknown } | null)?.code
   return typeof code === "string" ? code : ""
+}
+
+const REPORTABLE_CODE = /^TALLY_[A-Z0-9_]{1,64}$/
+
+/**
+ * The refusal code, but only when it is shaped like one. This value leaves the
+ * browser in a diagnostic report, so a transport errno or an error message must
+ * never be mistaken for it.
+ */
+export function tallyErrorCode(error: unknown): string | undefined {
+  const code = errorCode(error)
+  return REPORTABLE_CODE.test(code) ? code : undefined
 }
 
 /**
@@ -159,10 +173,17 @@ function finish(
   manifest: TallyMigrationManifest,
   stopped: TallyExtractionStop,
   chunkId?: string,
+  stopCode?: string,
 ): TallyExtractionResult {
   const summary = summariseExtraction(manifest)
   options.onProgress?.(manifest, summary)
-  return { manifest, summary, stopped, ...(chunkId ? { chunkId } : {}) }
+  return {
+    manifest,
+    summary,
+    stopped,
+    ...(chunkId ? { chunkId } : {}),
+    ...(stopCode ? { stopCode } : {}),
+  }
 }
 
 /**
@@ -210,7 +231,7 @@ export async function runTallyExtraction(
         } catch {
           // A one-day range cannot be halved; the ceiling is real.
           manifest = await options.sink.fail({ chunkId: chunk.id, attempt, error: message })
-          return finish(options, manifest, "failed", chunk.id)
+          return finish(options, manifest, "failed", chunk.id, tallyErrorCode(error))
         }
       }
 
@@ -221,7 +242,7 @@ export async function runTallyExtraction(
         await wait(retryDelay(attempt))
         continue
       }
-      return finish(options, manifest, "failed", chunk.id)
+      return finish(options, manifest, "failed", chunk.id, tallyErrorCode(error))
     }
 
     if (payload.bytes > maxChunkBytes) {
@@ -236,7 +257,7 @@ export async function runTallyExtraction(
           attempt,
           error: "TALLY_CHUNK_TOO_LARGE",
         })
-        return finish(options, manifest, "failed", chunk.id)
+        return finish(options, manifest, "failed", chunk.id, "TALLY_BRIDGE_EXPORT_TOO_LARGE")
       }
     }
 
@@ -273,7 +294,7 @@ export async function runTallyExtraction(
         await wait(retryDelay(attempt))
         continue
       }
-      return finish(options, manifest, "failed", chunk.id)
+      return finish(options, manifest, "failed", chunk.id, tallyErrorCode(error))
     }
 
     manifest = recorded.manifest

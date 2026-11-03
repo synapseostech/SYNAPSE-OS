@@ -33,7 +33,7 @@ import {
   normaliseTallyEdition,
 } from "@/lib/tally/editions"
 import { buildTallyPreview } from "@/lib/tally/preview"
-import { tallyErrorResponse } from "@/lib/tally/http"
+import { logTallyEvent, logTallyFailure, tallyErrorResponse } from "@/lib/tally/http"
 
 const db = () => supabaseAdmin as any
 const storage = () => ({ storage: db().storage }) as TallyStorageClient
@@ -159,6 +159,13 @@ async function failChunk(
 ) {
   const next = recordChunkResult(manifest, chunkId, { status: "failed", error: message })
   await saveManifest(tenantId, id, mapping, next)
+  // The browser saw this failure as a toast and nothing else; this line is the
+  // only server-side record that the chunk was refused and why.
+  logTallyFailure(
+    "tally.extract.chunk_failed",
+    { sessionId: id, tenantId, chunkId },
+    message,
+  )
   return NextResponse.json(payload(next, { result: { status: "failed", error: message } }))
 }
 
@@ -284,12 +291,13 @@ export async function POST(
         )
       }
 
+      const parts = typeof body.parts === "number" ? body.parts : defaultParts(period)
       const manifest = createManifest({
         sessionId: id,
         company,
         mode,
         period,
-        parts: typeof body.parts === "number" ? body.parts : defaultParts(period),
+        parts,
         edition: normaliseTallyEdition(body.edition),
         updatedAt: new Date().toISOString(),
       })
@@ -307,6 +315,14 @@ export async function POST(
         .eq("id", id)
         .eq("tenant_id", tenantId)
       if (error) throw new Error(`TALLY_SESSION_WRITE_FAILED: ${error.message}`)
+      logTallyEvent("tally.extract.begin", {
+        sessionId: id,
+        tenantId,
+        mode,
+        from: period.from,
+        to: period.to,
+        parts,
+      })
       return NextResponse.json(payload(manifest))
     }
 
@@ -395,6 +411,15 @@ export async function POST(
         .eq("tenant_id", tenantId)
       if (writeError) throw new Error(`TALLY_SESSION_WRITE_FAILED: ${writeError.message}`)
 
+      logTallyEvent("tally.extract.finished", {
+        sessionId: id,
+        tenantId,
+        chunks: summary.totalChunks,
+        documents: plan.counts.vouchers,
+        gaps: summary.gaps.length,
+        coverage,
+      })
+
       return NextResponse.json({
         summary: planSummary,
         extraction: summary,
@@ -470,6 +495,12 @@ export async function POST(
       }
       const next = splitChunk(manifest, chunkId, ranges as TallyDateRange[])
       await saveManifest(tenantId, id, mapping, next)
+      logTallyEvent("tally.extract.split", {
+        sessionId: id,
+        tenantId,
+        chunkId,
+        ranges: (ranges as TallyDateRange[]).map((range) => `${range.from}..${range.to}`),
+      })
       return NextResponse.json(payload(next))
     }
 
@@ -564,6 +595,14 @@ export async function POST(
         ...(chunk.kind === "vouchers" ? span : {}),
       })
       await saveManifest(tenantId, id, mapping, next)
+      logTallyEvent("tally.extract.chunk_complete", {
+        sessionId: id,
+        tenantId,
+        chunkId,
+        kind: chunk.kind,
+        recordsRead,
+        bytes: bytes.byteLength,
+      })
       return NextResponse.json(
         payload(next, { result: { status: "complete", recordsRead, ...span } }),
       )

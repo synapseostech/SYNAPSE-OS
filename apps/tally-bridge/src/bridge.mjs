@@ -389,6 +389,19 @@ function assertPinnedCompany(xml, expected) {
   }
 }
 
+/**
+ * Tally refusing a report — a STATUS of 0, a missing STATUS, a DOCTYPE — is
+ * found while the export is built, and none of those answers names a company.
+ * So the build has to run first. Checked the other way round, every refusal
+ * would surface as COMPANY_UNVERIFIED and neither the operator's toast nor the
+ * server-side log line would say what Tally actually answered.
+ */
+function checkedExport(xml, pinned, build) {
+  const payload = build()
+  assertPinnedCompany(xml, pinned)
+  return payload
+}
+
 const COMPANY_MARKER = /<(?:COMPANY|COMPANYNAME)\b/i
 const TALLY_DATE_ECHO = /^\d{8}$|^\d{4}-\d{2}-\d{2}$/
 
@@ -602,15 +615,24 @@ export async function exportTallyCompany(
   await ensureTallyHttpServer(config, tallyLifecycle)
   if (scope === "vouchers") {
     const voucherXml = await fetchReport(fetchImpl, config, "Day Book", period, pinned)
-    assertPinnedCompany(voucherXml, pinned)
-    return buildVoucherOnlyExport(voucherXml, { company: pinned })
+    return checkedExport(voucherXml, pinned, () =>
+      buildVoucherOnlyExport(voucherXml, { company: pinned }),
+    )
   }
   const masterXml = await fetchReport(fetchImpl, config, "All Masters", period, pinned)
+  if (closingOnly || scope === "masters") {
+    return checkedExport(masterXml, pinned, () =>
+      buildMasterOnlyExport(masterXml, { company: pinned }),
+    )
+  }
+  // Refused before the second fetch: a refused masters answer must not cost a
+  // Day Book download the size of the whole period.
+  extractData(masterXml, "All Masters")
   assertPinnedCompany(masterXml, pinned)
-  if (closingOnly || scope === "masters") return buildMasterOnlyExport(masterXml, { company: pinned })
   const voucherXml = await fetchReport(fetchImpl, config, "Day Book", period, pinned)
-  assertPinnedCompany(voucherXml, pinned)
-  return combineTallyExports(masterXml, voucherXml, { company: pinned })
+  return checkedExport(voucherXml, pinned, () =>
+    combineTallyExports(masterXml, voucherXml, { company: pinned }),
+  )
 }
 
 function sendJson(response, status, value, corsHeaders = {}) {

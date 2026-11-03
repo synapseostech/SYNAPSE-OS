@@ -375,6 +375,31 @@ describe("Tally export", () => {
     )
   })
 
+  // A refused answer names no company either. Checking the company first would
+  // report every refusal as COMPANY_UNVERIFIED and lose what Tally actually said.
+  it("reports what Tally refused, not that the company was unverified", async () => {
+    const refused = `<ENVELOPE><HEADER><STATUS>0</STATUS></HEADER><BODY></BODY></ENVELOPE>`
+    const unsafed = `<!DOCTYPE ENVELOPE SYSTEM "tally.dtd">${refused}`
+    const noStatus = `<ENVELOPE><HEADER></HEADER><BODY><DATA><LEDGER NAME="Cash"/></DATA></BODY></ENVELOPE>`
+
+    for (const [body, expected] of [
+      [refused, /ALL_MASTERS_REJECTED/],
+      [unsafed, /ALL_MASTERS_UNSAFE_XML/],
+      [noStatus, /ALL_MASTERS_STATUS_MISSING/],
+    ]) {
+      await assert.rejects(
+        exportTallyCompany(
+          config({ SYNAPSE_TALLY_COMPANY: "Test Pharmacy" }),
+          async () => new Response(body),
+          new Date("2026-10-30T00:00:00Z"),
+          { probe: async () => true },
+          { scope: "masters" },
+        ),
+        expected,
+      )
+    }
+  })
+
   it("refuses a Day Book that does not identify its company", async () => {
     let calls = 0
     await assert.rejects(

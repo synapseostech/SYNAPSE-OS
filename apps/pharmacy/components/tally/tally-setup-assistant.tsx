@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { TallyBridgeError } from "@/lib/tally/bridge-client"
 import { buildCompanyPinCommand, buildConnectorInstallCommand } from "@/lib/tally/bridge-command"
+import { diagnosticFrom, reportTallyFailure } from "@/lib/tally/diagnostics"
 import {
   blockingChecks,
   installableChecks,
@@ -149,6 +150,11 @@ export function TallySetupAssistant({
         setStep(target)
       } catch (error) {
         setReport(null)
+        reportTallyFailure({
+          step: "bridge-check",
+          outcome: error instanceof TallyBridgeError ? "http" : "network",
+          ...diagnosticFrom(error),
+        })
         setCheckError(
           error instanceof TallyBridgeError
             ? error.message

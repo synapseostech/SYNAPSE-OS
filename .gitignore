@@ -78,3 +78,7 @@ scripts/_tmp_*
 .freebuff/
 supabase/.branches/
 
+
+# Tally captures converted from a client's real books — synthetic names, but
+# never a candidate for a commit. See apps/tally-bridge/scripts/probe-to-fixtures.mjs
+apps/tally-bridge/fixtures/captured/
