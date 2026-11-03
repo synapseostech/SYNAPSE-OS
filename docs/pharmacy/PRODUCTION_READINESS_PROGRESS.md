@@ -1120,9 +1120,15 @@ environment.
 
 ### Files changed in the working tree
 
-152 paths: 69 tracked files modified (6,784 insertions / 561 deletions) and 83
-untracked new files. Nothing is committed. The count moved from 98 earlier in
-this sprint because PR-005/006/007 touched the receipt surfaces, the tax path,
+Committed as `6d76d5a3` on `feat/tally-bridge-command` and pushed to `origin`;
+pull request #19 targets `main`. The commit carries 211 paths (41,550
+insertions / 914 deletions), including the nine migrations from
+`20261101090000` to `20261102130300`. It is **not merged**. `main` deploys
+through Vercel but `deploy.yml` never applies production migrations, so the
+migrations must land in a reviewed window (runbook §3) before the branch
+reaches `main`. Nothing has been applied to any environment.
+
+The count moved from 98 earlier in this sprint because PR-005/006/007 touched the receipt surfaces, the tax path,
 the refund callers and both mobile credit-ledger screens, PR-011 added a repair
 migration, a JWT proof suite, a policy contract test and the disposable
 database harness, the Tally pass added the edition module, its tests and the
