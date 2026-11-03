@@ -217,6 +217,9 @@ function journalsProgress(): TallyApplyProgress {
 describe("stageAccounts", () => {
   it("seeds the system chart before writing Tally ledgers", async () => {
     const { db, operations } = fakeDb((operation) => {
+      if (operation.action === "rpc" && operation.table === "rpc:add_pharmacy_accounting_accounts") {
+        return { data: 1, error: null }
+      }
       if (operation.table === "pharmacy_accounting_accounts" && operation.action === "select") {
         return { data: [{ id: "account-1000", code: "1000" }], error: null }
       }
@@ -241,8 +244,13 @@ describe("stageAccounts", () => {
       payload: { p_tenant_id: "tenant-1" },
     })
 
-    const insert = operations.find((operation) => operation.action === "insert")
-    expect((insert?.payload as Array<{ code: string }>).map((row) => row.code)).toEqual(["T-1"])
+    const written = operations.find(
+      (operation) => operation.table === "rpc:add_pharmacy_accounting_accounts",
+    )
+    expect((written?.payload as { p_accounts: Array<{ code: string }> }).p_accounts.map((row) => row.code)).toEqual([
+      "T-1",
+    ])
+    expect(operations.some((operation) => operation.action === "insert")).toBe(false)
     expect(result.progress.counts.accounts).toBe(1)
     expect(result.progress.stage).toBe("parties")
   })
@@ -262,7 +270,27 @@ describe("stageAccounts", () => {
         progress: emptyProgress(),
       }),
     ).rejects.toThrow("ACCOUNTING_TENANT_NOT_FOUND")
-    expect(operations.some((operation) => operation.action === "insert")).toBe(false)
+    expect(
+      operations.some((operation) => operation.table === "rpc:add_pharmacy_accounting_accounts"),
+    ).toBe(false)
+  })
+
+  it("reports the rows the database actually inserted", async () => {
+    const { db } = fakeDb((operation) => {
+      if (operation.action === "rpc" && operation.table === "rpc:add_pharmacy_accounting_accounts") {
+        return { data: 0, error: null }
+      }
+      return undefined
+    })
+
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ accounts: [account("T-1"), account("T-2")] }),
+      progress: emptyProgress(),
+    })
+
+    expect(result.progress.counts.accounts).toBe(0)
   })
 })
 

@@ -109,6 +109,65 @@ correlation is done inside the database by the operator.
 | Apply lease held too long | database: `pharmacy_tally_cutover_locks` older than 15 min | any | on-call |
 | Audit row missing on a completed cut-over | preflight state `blocked` with an `audit` failure | any | release owner, immediate |
 
+#### Reading a cut-over failure from the logs
+
+Every apply request writes one line per unit of work before that work runs, and
+one line if the request stops. Both are single-line JSON on the
+`[pharmacy][tally]` prefix, so the session id alone finds everything one
+cut-over did.
+
+| Line | Level | When | Carries |
+| --- | --- | --- | --- |
+| `tally.apply.step` | `log` | before each stage and each 250-voucher chunk | `sessionId`, `tenantId`, `stage`, `offset`, `counts`, `failures` |
+| `tally.apply.failed` | `error` | a step could not continue | the same position, plus `phase`, `errorName`, `errorMessage`, `failedStage`, `failedItem`, `dbError`, `recentFailures` |
+| `tally.apply.request_failed` | `error` | the recovery path itself threw, so no checkpoint may exist | `sessionId`, `tenantId`, the error |
+| `tally.request.failed` | `error` | any Tally route ending in an unmapped 500 | the error, no session context |
+
+`phase` says how far the request got, and is the difference between "nothing was
+written" and "some of it was, and the next call resumes from here":
+
+| `phase` | Meaning |
+| --- | --- |
+| `load-plan` | the step's input could not be read; no row was touched by this step |
+| `apply` | the database refused a write inside the step; earlier items in it may have landed |
+| `checkpoint` | the work landed but its resume position did not save — the log is the only record of where it got to |
+| `finalize` | the cut-over applied, but its audit row or completion update failed |
+
+`dbError` is PostgREST's own report: `code` is the SQLSTATE (`42501` insufficient
+privilege, `23505` unique violation), `details` and `hint` usually name the
+offending key. `failedItem` is the account code or batch label for `accounts`,
+and the sale or purchase source id for `journals`.
+
+The step line is written **before** the work, so a request the platform kills on
+timeout still shows the last step it entered; the failure line never appears in
+that case, because nothing caught it.
+
+`progress.failures` — listed in `recentFailures` and checkpointed to the session
+— are item-level refusals that do **not** stop the cut-over: an unmapped
+account, an unbalanced journal, a product a sale line could not be linked to.
+They are the exceptions §5 of the acceptance criteria reviews. A cut-over can
+complete with them; they are not what `tally.apply.failed` means.
+
+The same reason is saved to the session's `error_message` as one sentence naming
+the phase, the step and the database's message, so an operator who never opens
+the log can still read it on the session screen. The next successful step clears
+it.
+
+Reading the lines from a terminal, with the CLI linked to the project:
+
+```bash
+npx vercel logs --environment production --json --since 24h | grep 'tally.apply'
+```
+
+Narrowing to one cut-over:
+
+```bash
+npx vercel logs --environment production --json --since 24h | grep '"sessionId":"<id>"'
+```
+
+Runtime-log retention is a plan setting; the session's `error_message` has no
+retention limit and is the record to fall back on.
+
 ### 2.7 Independence after cut-over
 
 This is the one alert that is about absence, so it must be explicit:

@@ -25,7 +25,12 @@ import {
 import { isTallyCutoverSession } from "@/lib/tally/manifest"
 import { buildCutoverPreflight } from "@/lib/tally/preflight"
 import { reconcileTallyPlan } from "@/lib/tally/reconcile"
-import { tallyErrorResponse } from "@/lib/tally/http"
+import {
+  describeTallyError,
+  logTallyEvent,
+  logTallyFailure,
+  tallyErrorResponse,
+} from "@/lib/tally/http"
 import type { TallyStorageClient } from "@/lib/tally/storage"
 
 const db = () => supabaseAdmin as any
@@ -38,7 +43,31 @@ const MAX_STAGES = 3
 
 const RESUMABLE = new Set(["review", "mapping", "importing", "failed"])
 
+/** How far a request got before it stopped. A failure names it so the log does. */
+type ApplyPhase = "load-plan" | "apply" | "checkpoint" | "finalize"
+
 const STAGES = new Set<string>(TALLY_STAGE_ORDER)
+
+/** The sentence saved to the session, so the reason is visible without the log. */
+function applyFailureReason(
+  progress: TallyApplyProgress,
+  phase: ApplyPhase,
+  error: unknown,
+): string {
+  const step =
+    progress.stage === "journals"
+      ? `journals chunk ${progress.offset + 1}`
+      : `the "${progress.stage}" step`
+  const where =
+    phase === "load-plan"
+      ? `before ${step} started`
+      : phase === "apply"
+        ? `in ${step}`
+        : phase === "checkpoint"
+          ? `after ${step}, saving its checkpoint`
+          : "while finalising the cut-over"
+  return `Apply stopped ${where}: ${describeTallyError(error).errorMessage}`.slice(0, 500)
+}
 
 /** The saved execution record a resumed import must carry. */
 function isApplyProgressLike(value: unknown): value is TallyApplyProgress {
@@ -100,14 +129,28 @@ async function applySessionStep(input: {
   let stagesRun = 0
   let lastPlan: Awaited<ReturnType<typeof loadStagePlan>>["plan"] | null = null
   let summaryForRequest: Awaited<ReturnType<typeof loadStagePlan>>["summary"] | null = null
+  let phase: ApplyPhase = "load-plan"
 
   try {
     while (!done && stagesRun < MAX_STAGES) {
       const stageBefore = progress.stage
+      // Written before the work, so a request the platform kills still leaves a
+      // last-known position to read.
+      logTallyEvent("tally.apply.step", {
+        sessionId: id,
+        tenantId,
+        stage: stageBefore,
+        offset: progress.offset,
+        counts: progress.counts,
+        failures: progress.failures.length,
+      })
+
+      phase = "load-plan"
       const loaded = await loadStagePlan(storage(), tenantId, id, stageBefore, progress.offset)
       lastPlan = loaded.plan
       summaryForRequest = loaded.summary
 
+      phase = "apply"
       const result = await applyTallyChunk(applyDb(), {
         tenantId,
         actorId,
@@ -126,6 +169,7 @@ async function applySessionStep(input: {
       if (done || !STARTER_STAGES.includes(stageBefore)) break
     }
 
+    phase = "checkpoint"
     const reconcile =
       done && lastPlan ? reconcileTallyPlan(lastPlan, progress.counts) : null
     const nextMapping = {
@@ -157,6 +201,7 @@ async function applySessionStep(input: {
     }
 
     if (done) {
+      phase = "finalize"
       const { data: existingAudit, error: auditReadError } = await db()
         .from("pharmacy_audit_logs")
         .select("id")
@@ -232,13 +277,31 @@ async function applySessionStep(input: {
       nextOffset: progress.stage === "journals" ? progress.offset : null,
     })
   } catch (error) {
+    const reason = applyFailureReason(progress, phase, error)
+    logTallyFailure(
+      "tally.apply.failed",
+      {
+        sessionId: id,
+        tenantId,
+        phase,
+        stage: progress.stage,
+        offset: progress.offset,
+        counts: progress.counts,
+        failureCount: progress.failures.length,
+        // The step that stopped is the one being run, so these are the items
+        // it had already refused before it could not continue.
+        recentFailures: progress.failures.slice(-5),
+      },
+      error,
+    )
+
     const nextMapping = { ...mapping, progress, interruptedAt: new Date().toISOString() }
     const { error: checkpointError } = await db()
       .from("pharmacy_import_sessions")
       .update({
         status: "importing",
         ai_mapping: nextMapping,
-        error_message: "Apply stopped before the step finished.",
+        error_message: reason,
       })
       .eq("id", id)
       .eq("tenant_id", tenantId)
@@ -252,7 +315,10 @@ async function applySessionStep(input: {
         { status: 500 },
       )
     }
-    return tallyErrorResponse(error)
+    return tallyErrorResponse(
+      error,
+      "Apply stopped before this step finished. What it already wrote is saved; retry to resume from here.",
+    )
   }
 }
 
@@ -663,7 +729,13 @@ export async function POST(
   try {
     response = await applySessionStep({ id, tenantId, actorId, mapping: startMapping })
   } catch (error) {
-    response = tallyErrorResponse(error)
+    // Only reachable when the step's own recovery threw, so say so explicitly:
+    // this one may leave no checkpoint behind.
+    logTallyFailure("tally.apply.request_failed", { sessionId: id, tenantId }, error)
+    response = tallyErrorResponse(
+      error,
+      "Apply stopped before this step finished. Check this session's error before retrying.",
+    )
   }
 
   const releaseFailure = await releaseLease(tenantId, id, lease.token)
