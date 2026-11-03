@@ -30,11 +30,16 @@ const ALLOWED_AUTH_EXECUTE = new Set([
   'public.is_platform_admin',
   'public.is_clinical_staff',
   'public.person_visible_to_tenant',
+  // Tenant resolution for the pharmacy RLS policies. Same role as
+  // current_tenant_id(): security definer, revoked from public/anon, and it
+  // returns only the tenants the caller belongs to.
+  'public.pharmacy_caller_tenants',
   'current_tenant_id',
   'current_hospital_id',
   'is_platform_admin',
   'is_clinical_staff',
   'person_visible_to_tenant',
+  'pharmacy_caller_tenants',
 ])
 
 const BROWSER_PAGES = [

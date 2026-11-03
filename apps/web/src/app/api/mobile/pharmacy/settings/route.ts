@@ -69,6 +69,21 @@ export async function POST(req: NextRequest) {
 
   const d = (await req.json().catch(() => ({}))) as Record<string, unknown>
 
+  // Rates are percentages: 18 means 18%. Reject an impossible one here instead
+  // of letting the upsert fail on the numeric column and surface as a 500.
+  const invalidRate = (raw: unknown): boolean => {
+    if (raw === undefined || raw === null || raw === '') return false
+    const value = Number(raw)
+    return !Number.isFinite(value) || value < 0 || value > 100
+  }
+  if (invalidRate(d.taxRate) || invalidRate(d.vatRate)) {
+    return NextResponse.json(
+      { error: 'Tax rates must be between 0 and 100', code: 'INVALID_TAX_RATE' },
+      { status: 422 },
+    )
+  }
+  const supplied = (raw: unknown) => raw !== undefined && raw !== null && raw !== ''
+
   const core = {
     tenant_id: auth.tenantId,
     pharmacy_name: d.pharmacyName ?? null,
@@ -79,7 +94,9 @@ export async function POST(req: NextRequest) {
     receipt_footer: d.receiptFooter ?? null,
     footer_text: d.receiptFooter ?? null,
     currency: d.currency ?? 'UGX',
-    tax_rate: d.taxRate ?? 0,
+    // Only when supplied: a screen without the field used to write 0 and
+    // silently switch a configured rate off.
+    ...(supplied(d.taxRate) ? { tax_rate: Number(d.taxRate) } : {}),
     low_stock_threshold: d.lowStockThreshold ?? 10,
     printer_type: d.printerType ?? 'default',
   }
@@ -103,8 +120,10 @@ export async function POST(req: NextRequest) {
         supervising_pharmacist: d.supervisingPharmacist ?? null,
         pharmacist_registration_number: d.pharmacistRegNumber ?? null,
         branch_name: d.branchName ?? null,
-        vat_enabled: Boolean(d.vatEnabled),
-        vat_rate: d.vatRate ?? 18,
+        // Same rule as tax_rate: absent means "leave it alone". A mobile save
+        // that never showed VAT used to switch it off and reset the rate.
+        ...(typeof d.vatEnabled === 'boolean' ? { vat_enabled: d.vatEnabled } : {}),
+        ...(supplied(d.vatRate) ? { vat_rate: Number(d.vatRate) } : {}),
         discount_approval_threshold_pct: d.discountApprovalThresholdPct ?? 5,
         mandatory_receipt_print: d.mandatoryReceiptPrint !== false,
         receipt_paper_width: (() => {

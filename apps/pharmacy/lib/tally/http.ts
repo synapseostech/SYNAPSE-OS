@@ -8,11 +8,18 @@ const STATUS_BY_CODE: Record<string, number> = {
   MIGRATION_FILE_TOO_LARGE: 413,
   MIGRATION_XML_NOT_UTF8: 415,
   MIGRATION_XML_TOO_COMPLEX: 400,
+  MIGRATION_XML_MALFORMED: 400,
+  MIGRATION_XML_INCOMPLETE: 400,
   MIGRATION_XML_ENTITIES_REJECTED: 400,
   TALLY_CONVERSION_DATE_REQUIRED: 400,
   TALLY_FILE_TYPE_UNSUPPORTED: 415,
   TALLY_FILE_MISSING: 404,
   TALLY_PLAN_MISSING: 409,
+}
+
+const MESSAGE_BY_CODE: Record<string, string> = {
+  MIGRATION_XML_INCOMPLETE:
+    "The file ends before the export is complete, so it was cut short while downloading or copying. Export it again from Tally and upload the whole file.",
 }
 
 /** One place for the parser, template and upload guards to become HTTP. */
@@ -35,7 +42,7 @@ export function tallyErrorResponse(error: unknown): NextResponse {
   const status = STATUS_BY_CODE[code]
   if (status) {
     return NextResponse.json(
-      { error: message.replace(/^[A-Z_]+:\s*/, ""), code },
+      { error: MESSAGE_BY_CODE[code] ?? message.replace(/^[A-Z_]+:\s*/, ""), code },
       { status },
     )
   }

@@ -48,6 +48,20 @@ export interface ReceiptLineInput {
   prescriptionRef?: string | null;
 }
 
+/**
+ * Composition of the sale's tax, taken from the figures persisted on its lines.
+ * Absent for sales completed before line-level tax existed — those receipts keep
+ * the header "Tax/VAT" row alone rather than having a breakdown invented for them.
+ */
+export interface ReceiptTaxBreakdown {
+  source: "vat" | "legacy" | "none";
+  /** Percentage applied to `taxableAmount`; null when the source is not VAT. */
+  ratePct?: number | null;
+  taxableAmount?: number | null;
+  exemptAmount?: number | null;
+  zeroRatedAmount?: number | null;
+}
+
 export type EfrisStatus = "accepted" | "pending" | "rejected" | "none";
 
 export interface ReceiptEfris {
@@ -76,6 +90,7 @@ export interface ReceiptSaleInput {
   subtotal: number;
   discountTotal?: number | null;
   taxAmount?: number | null;
+  tax?: ReceiptTaxBreakdown | null;
   totalAmount: number;
   lines: ReceiptLineInput[];
   efris?: ReceiptEfris | null;
@@ -125,6 +140,13 @@ export interface ReceiptSnapshot {
   readonly subtotal: number;
   readonly discountTotal: number;
   readonly taxAmount: number;
+  readonly tax: {
+    readonly source: "vat" | "legacy" | "none";
+    readonly ratePct: number | null;
+    readonly taxableAmount: number;
+    readonly exemptAmount: number;
+    readonly zeroRatedAmount: number;
+  } | null;
   readonly totalAmount: number;
   readonly payment: {
     readonly method: string;
@@ -231,6 +253,17 @@ export function buildReceiptSnapshot(
 
   const lines = sale.lines.map(normaliseLine);
 
+  const taxInput = sale.tax;
+  const tax: ReceiptSnapshot["tax"] = taxInput
+    ? Object.freeze({
+        source: taxInput.source,
+        ratePct: taxInput.ratePct == null ? null : num(taxInput.ratePct),
+        taxableAmount: num(taxInput.taxableAmount),
+        exemptAmount: num(taxInput.exemptAmount),
+        zeroRatedAmount: num(taxInput.zeroRatedAmount),
+      })
+    : null;
+
   const snapshot: ReceiptSnapshot = {
     version: 1,
     saleId: sale.saleId,
@@ -266,6 +299,7 @@ export function buildReceiptSnapshot(
     subtotal: num(sale.subtotal),
     discountTotal: num(sale.discountTotal),
     taxAmount: num(sale.taxAmount),
+    tax,
     totalAmount: num(sale.totalAmount),
     payment: Object.freeze({
       method: String(sale.paymentMethod ?? "").trim() || "CASH",
@@ -289,6 +323,12 @@ export function buildReceiptSnapshot(
 // ---------------------------------------------------------------------------
 // Renderers
 // ---------------------------------------------------------------------------
+
+/** "18" for a whole rate, "18.5" otherwise — never "18.0000". */
+export function formatTaxRate(ratePct: number): string {
+  const n = num(ratePct);
+  return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+}
 
 export function formatMoney(amount: number, currency: string): string {
   const n = num(amount);
@@ -350,7 +390,15 @@ export function renderReceiptText(snapshot: ReceiptSnapshot, width = 42): string
   out.push(rule);
   out.push(kv("Subtotal:", formatMoney(snapshot.subtotal, c)));
   if (snapshot.discountTotal > 0) out.push(kv("Discount:", `-${formatMoney(snapshot.discountTotal, c)}`));
-  if (snapshot.taxAmount > 0) out.push(kv("Tax/VAT:", formatMoney(snapshot.taxAmount, c)));
+  if (snapshot.tax && snapshot.tax.source === "vat") {
+    const suffix = snapshot.tax.ratePct == null ? "" : ` (${formatTaxRate(snapshot.tax.ratePct)}%)`;
+    if (snapshot.tax.taxableAmount > 0) out.push(kv(`Taxable${suffix}:`, formatMoney(snapshot.tax.taxableAmount, c)));
+    if (snapshot.taxAmount > 0) out.push(kv(`VAT${suffix}:`, formatMoney(snapshot.taxAmount, c)));
+    if (snapshot.tax.zeroRatedAmount > 0) out.push(kv("Zero-rated:", formatMoney(snapshot.tax.zeroRatedAmount, c)));
+    if (snapshot.tax.exemptAmount > 0) out.push(kv("Exempt:", formatMoney(snapshot.tax.exemptAmount, c)));
+  } else if (snapshot.taxAmount > 0) {
+    out.push(kv("Tax/VAT:", formatMoney(snapshot.taxAmount, c)));
+  }
   out.push(kv("TOTAL:", formatMoney(snapshot.totalAmount, c)));
   out.push(kv("Payment:", snapshot.payment.method));
   if (snapshot.payment.reference) out.push(kv("Ref:", snapshot.payment.reference));
@@ -493,7 +541,12 @@ export function renderReceiptHtml(
   <table class="totals"><tbody>
     <tr><td>Subtotal</td><td class="r">${money(snapshot.subtotal)}</td></tr>
     ${snapshot.discountTotal > 0 ? `<tr><td>Discount</td><td class="r">-${money(snapshot.discountTotal)}</td></tr>` : ""}
-    ${snapshot.taxAmount > 0 ? `<tr><td>Tax/VAT</td><td class="r">${money(snapshot.taxAmount)}</td></tr>` : ""}
+    ${snapshot.tax && snapshot.tax.source === "vat"
+      ? `${snapshot.tax.taxableAmount > 0 ? `<tr><td>Taxable${snapshot.tax.ratePct == null ? "" : ` (${formatTaxRate(snapshot.tax.ratePct)}%)`}</td><td class="r">${money(snapshot.tax.taxableAmount)}</td></tr>` : ""}
+    ${snapshot.taxAmount > 0 ? `<tr><td>VAT${snapshot.tax.ratePct == null ? "" : ` (${formatTaxRate(snapshot.tax.ratePct)}%)`}</td><td class="r">${money(snapshot.taxAmount)}</td></tr>` : ""}
+    ${snapshot.tax.zeroRatedAmount > 0 ? `<tr><td>Zero-rated</td><td class="r">${money(snapshot.tax.zeroRatedAmount)}</td></tr>` : ""}
+    ${snapshot.tax.exemptAmount > 0 ? `<tr><td>Exempt</td><td class="r">${money(snapshot.tax.exemptAmount)}</td></tr>` : ""}`
+      : snapshot.taxAmount > 0 ? `<tr><td>Tax/VAT</td><td class="r">${money(snapshot.taxAmount)}</td></tr>` : ""}
     <tr><td class="tot">TOTAL</td><td class="r tot">${money(snapshot.totalAmount)}</td></tr>
     <tr><td>Payment</td><td class="r">${esc(snapshot.payment.method)}</td></tr>
     ${snapshot.payment.reference ? `<tr><td>Ref</td><td class="r">${esc(snapshot.payment.reference)}</td></tr>` : ""}

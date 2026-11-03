@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { isPharmacyAdmin } from "@/lib/auth"
 import { requirePharmacyAdmin } from "@/lib/api-auth"
 import { mapOrder } from "@/lib/api-serialize"
+import { netAmountFor } from "@/lib/pos/net-amount"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { tenantOwnsRecord } from "@/lib/tenant-ownership"
 import { generateOrderNo, generateTransactionNo } from "@/lib/utils"
@@ -324,7 +325,7 @@ export async function PATCH(request: NextRequest) {
             total_amount: order.total_amount,
             discount: 0,
             tax: 0,
-            net_amount: order.total_amount,
+            net_amount: netAmountFor({ totalAmount: order.total_amount, discount: 0, tax: 0 }),
             payment_method: "CASH",
             status: "COMPLETED",
           })

@@ -294,12 +294,14 @@ declare
   v_type text := upper(trim(coalesce(p_type, '')));
   v_prev int;
   v_new int;
+  v_current int;
   v_delta int;
-  v_result jsonb;
   v_kla_today date := (timezone('Africa/Kampala', now()))::date;
   v_needed int;
   v_take int;
 begin
+  perform public.pharmacy_assert_actor(p_tenant_id, p_actor_id);
+
   if p_reason is null or length(trim(p_reason)) = 0 then
     raise exception 'INVALID_QUANTITY: adjustment reason is required';
   end if;
@@ -310,7 +312,11 @@ begin
     raise exception 'PRODUCT_NOT_FOUND: %', p_product_id;
   end if;
 
+  -- INCREASE must go through receive semantics (genuine batch + expiry).
   if v_type = 'INCREASE' then
+    if p_quantity is null or p_quantity <= 0 then
+      raise exception 'INVALID_QUANTITY: increase quantity must be positive';
+    end if;
     return public.receive_pharmacy_stock(
       p_tenant_id, p_product_id,
       coalesce(p_batch_number, ''),
@@ -343,11 +349,12 @@ begin
         updated_at = now()
     where id = v_batch.id;
 
-    begin
-      insert into pharmacy_audit_logs (tenant_id, profile_id, action, entity, entity_id, details)
-      values (p_tenant_id, p_actor_id, 'stock.' || lower(v_type), 'pharmacy_product_batches', v_batch.id, p_reason);
-    exception when others then null;
-    end;
+    insert into pharmacy_audit_logs (tenant_id, profile_id, action, entity, entity_id, details)
+    values (
+      p_tenant_id, p_actor_id, 'stock.' || lower(v_type),
+      'pharmacy_product_batches', v_batch.id,
+      format('product=%s qty=%s reason=%s', p_product_id, v_batch.quantity, p_reason)
+    );
 
     return jsonb_build_object('ok', true, 'batch_id', v_batch.id, 'status', lower(v_type));
   end if;
@@ -356,6 +363,16 @@ begin
     if p_quantity is null or p_quantity <= 0 then
       raise exception 'INVALID_QUANTITY: decrease quantity must be positive';
     end if;
+
+    -- Refuse a decrease the recorded product total cannot cover. Decrementing
+    -- batches first and clamping the product total at zero is what let the two
+    -- drift apart.
+    v_prev := coalesce(v_product.quantity, 0);
+    if p_quantity > v_prev then
+      raise exception 'INSUFFICIENT_STOCK: short by % units', p_quantity - v_prev;
+    end if;
+    v_current := v_prev;
+
     v_needed := p_quantity;
 
     if p_batch_id is not null then
@@ -373,7 +390,16 @@ begin
           status = case when quantity - v_needed <= 0 then 'exhausted' else status end,
           updated_at = now()
       where id = v_batch.id;
+      v_take := v_needed;
+      insert into pharmacy_stock_adjustments (
+        tenant_id, product_id, batch_id, quantity, type, reason, previous_qty, new_qty, created_by
+      ) values (
+        p_tenant_id, p_product_id, v_batch.id, v_take, 'DECREASE', p_reason,
+        v_current, v_current - v_take, p_actor_id
+      );
+      v_current := v_current - v_take;
     else
+      -- FEFO decrease across sellable batches
       for v_batch in
         select * from pharmacy_product_batches
         where product_id = p_product_id and tenant_id = p_tenant_id
@@ -389,6 +415,13 @@ begin
             status = case when quantity - v_take <= 0 then 'exhausted' else status end,
             updated_at = now()
         where id = v_batch.id;
+        insert into pharmacy_stock_adjustments (
+          tenant_id, product_id, batch_id, quantity, type, reason, previous_qty, new_qty, created_by
+        ) values (
+          p_tenant_id, p_product_id, v_batch.id, v_take, 'DECREASE', p_reason,
+          v_current, v_current - v_take, p_actor_id
+        );
+        v_current := v_current - v_take;
         v_needed := v_needed - v_take;
       end loop;
       if v_needed > 0 then
@@ -396,23 +429,20 @@ begin
       end if;
     end if;
 
-    v_prev := coalesce(v_product.quantity, 0);
-    v_new := greatest(v_prev - p_quantity, 0);
+    v_new := v_current;
     update pharmacy_products set quantity = v_new, updated_at = now() where id = p_product_id;
 
-    begin
-      insert into pharmacy_stock_adjustments (
-        tenant_id, product_id, quantity, type, reason, previous_qty, new_qty, created_by
-      ) values (
-        p_tenant_id, p_product_id, p_quantity, 'DECREASE', p_reason, v_prev, v_new, p_actor_id
-      );
-    exception when undefined_table then null;
-    end;
+    insert into pharmacy_audit_logs (tenant_id, profile_id, action, entity, entity_id, details)
+    values (
+      p_tenant_id, p_actor_id, 'stock.decrease', 'pharmacy_products', p_product_id,
+      format('batch=%s qty=%s reason=%s', coalesce(p_batch_id::text, 'fefo'), p_quantity, p_reason)
+    );
 
     return jsonb_build_object('ok', true, 'previous_qty', v_prev, 'new_qty', v_new, 'decreased', p_quantity);
   end if;
 
   if v_type = 'CORRECTION' then
+    -- Batch-scoped absolute correction only — never invent batches.
     if p_batch_id is null then
       raise exception 'BATCH_NOT_FOUND: CORRECTION requires batch_id (do not correct product.quantity alone)';
     end if;
@@ -439,18 +469,28 @@ begin
         updated_at = now()
     where id = v_batch.id;
 
+    -- The delta is applied exactly. Clamping at zero is what made the product
+    -- total disagree with the sum of its batches; a negative result means the
+    -- two had already drifted. Refuse it rather than storing negative stock.
     v_prev := coalesce(v_product.quantity, 0);
-    v_new := greatest(v_prev + v_delta, 0);
+    v_new := v_prev + v_delta;
+    if v_new < 0 then
+      raise exception 'STOCK_DRIFT: product total % cannot absorb a batch correction of %; reconcile product and batch totals first', v_prev, v_delta;
+    end if;
     update pharmacy_products set quantity = v_new, updated_at = now() where id = p_product_id;
 
-    begin
-      insert into pharmacy_stock_adjustments (
-        tenant_id, product_id, quantity, type, reason, previous_qty, new_qty, created_by
-      ) values (
-        p_tenant_id, p_product_id, v_delta, 'CORRECTION', p_reason, v_prev, v_new, p_actor_id
-      );
-    exception when undefined_table then null;
-    end;
+    insert into pharmacy_stock_adjustments (
+      tenant_id, product_id, batch_id, quantity, type, reason, previous_qty, new_qty, created_by
+    ) values (
+      p_tenant_id, p_product_id, v_batch.id, v_delta, 'CORRECTION', p_reason,
+      v_prev, v_new, p_actor_id
+    );
+
+    insert into pharmacy_audit_logs (tenant_id, profile_id, action, entity, entity_id, details)
+    values (
+      p_tenant_id, p_actor_id, 'stock.correction', 'pharmacy_product_batches', v_batch.id,
+      format('product_qty %s->%s delta=%s batch=%s reason=%s', v_prev, v_new, v_delta, v_batch.id, p_reason)
+    );
 
     return jsonb_build_object(
       'ok', true, 'batch_id', v_batch.id,
@@ -1981,6 +2021,43 @@ $$;
 ALTER FUNCTION "public"."persons_assign_synapse_id"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."pharmacy_assert_actor"("p_tenant_id" "uuid", "p_actor_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $function$
+begin
+  if p_tenant_id is null then
+    raise exception 'PERMISSION: tenant is required';
+  end if;
+  if p_actor_id is null then
+    raise exception 'PERMISSION: an acting user is required';
+  end if;
+  -- A pharmacy staff row wins when there is one: it carries the activation
+  -- flag the portal and mobile auth enforce. Checking profiles first let a
+  -- deactivated pharmacist through on tenant_id alone.
+  if exists (
+    select 1 from pharmacy_user_settings
+    where profile_id = p_actor_id and tenant_id = p_tenant_id
+  ) then
+    if exists (
+      select 1 from pharmacy_user_settings
+      where profile_id = p_actor_id and tenant_id = p_tenant_id and is_active
+    ) then
+      return;
+    end if;
+    raise exception 'PERMISSION: actor % is deactivated for this pharmacy', p_actor_id;
+  end if;
+  if exists (
+    select 1 from profiles
+    where id = p_actor_id and tenant_id = p_tenant_id
+  ) then
+    return;
+  end if;
+  raise exception 'PERMISSION: actor % is not a member of this pharmacy', p_actor_id;
+end;
+$function$;
+
+
 CREATE OR REPLACE FUNCTION "public"."pos_sale_item_before_insert"() RETURNS "trigger"
     LANGUAGE "plpgsql"
     AS $$
@@ -2404,21 +2481,37 @@ declare
   v_item record;
   v_restore text := lower(coalesce(nullif(trim(p_restore_as), ''), 'quarantined'));
   v_refund_amount numeric := 0;
+  v_paid numeric := 0;
+  v_outstanding numeric := 0;
+  v_batch pharmacy_product_batches%rowtype;
   v_prev int;
   v_new int;
+  v_kla_today date := (timezone('Africa/Kampala', now()))::date;
+  v_credit public.pharmacy_credit_ledger%rowtype;
+  v_have_credit boolean := false;
+  v_reversal numeric := 0;
+  v_unreversed numeric := 0;
+  v_unposted boolean := false;
+  v_balance numeric := 0;
+  v_balance_after numeric := null;
+  v_payment_match text[];
 begin
+  perform public.pharmacy_assert_actor(p_tenant_id, p_actor_id);
+
   if p_reason is null or length(trim(p_reason)) = 0 then
     raise exception 'INVALID_QUANTITY: refund reason is required';
   end if;
   if v_restore not in ('active', 'quarantined') then
-    v_restore := 'quarantined';
+    raise exception 'INVALID_QUANTITY: restore_as must be active or quarantined';
   end if;
 
+  -- The row lock serialises concurrent refunds of the same sale: the second
+  -- caller blocks here, then sees status = 'voided' and gets ALREADY_REFUNDED.
   select * into v_sale from pharmacy_pos_sales
   where id = p_sale_id and tenant_id = p_tenant_id
   for update;
   if not found then
-    raise exception 'PRODUCT_NOT_FOUND: sale %', p_sale_id;
+    raise exception 'SALE_NOT_FOUND: sale %', p_sale_id;
   end if;
   if v_sale.status = 'voided' then
     raise exception 'ALREADY_REFUNDED: sale % already voided', v_sale.receipt_number;
@@ -2427,50 +2520,155 @@ begin
     raise exception 'SALE_NOT_REFUNDABLE: status=%', v_sale.status;
   end if;
 
+  -- What the customer actually paid. The tag and the fallbacks are exactly the
+  -- ones post_pharmacy_pos_sale_to_ledger uses for the sale's cash leg, so the
+  -- amount handed back here can never disagree with what the journal posted.
+  v_payment_match := regexp_match(coalesce(v_sale.payment_ref, ''), 'PAID:([0-9]+([.][0-9]+)?)');
+  if v_payment_match is not null then
+    v_paid := coalesce(v_payment_match[1]::numeric, 0);
+  elsif lower(coalesce(v_sale.payment_method, '')) = 'credit' then
+    v_paid := 0;
+  else
+    v_paid := coalesce(v_sale.total_amount, 0);
+  end if;
+  v_paid := least(greatest(round(v_paid, 2), 0), greatest(coalesce(v_sale.total_amount, 0), 0));
+
+  v_refund_amount := v_paid;
+  v_outstanding := round(greatest(coalesce(v_sale.total_amount, 0) - v_paid, 0), 2);
+
+  -- Match the sale and adjustment RPC lock order: product before batch. Rows
+  -- are ordered by product, so multi-product refunds use the same lock order.
   for v_item in
     select * from pharmacy_pos_sale_items
     where sale_id = p_sale_id and tenant_id = p_tenant_id
+    order by product_id, id
     for update
   loop
-    v_refund_amount := v_refund_amount + (coalesce(v_item.unit_price, 0) * coalesce(v_item.quantity, 0));
+    -- The per-line flag is what makes stock restoration idempotent: a line is
+    -- restored at most once, and lines that never decremented stock are left
+    -- alone.
+    if not coalesce(v_item.stock_decremented, false) then
+      continue;
+    end if;
+
+    select quantity into v_prev from pharmacy_products
+    where id = v_item.product_id and tenant_id = p_tenant_id for update;
+    if not found then
+      raise exception 'PRODUCT_NOT_FOUND: %', v_item.product_id;
+    end if;
+    v_prev := coalesce(v_prev, 0);
 
     if v_item.batch_id is not null then
+      select * into v_batch from pharmacy_product_batches
+      where id = v_item.batch_id
+        and tenant_id = p_tenant_id
+        and product_id = v_item.product_id
+      for update;
+      if not found then
+        raise exception 'BATCH_NOT_FOUND: batch % for product % on sale % no longer exists',
+          v_item.batch_id, v_item.product_id, v_sale.receipt_number;
+      end if;
+      if v_restore = 'active' and (
+        not v_batch.is_active
+        or coalesce(v_batch.status, 'active') not in ('active', 'exhausted')
+        or (v_batch.expiry_date is not null and v_batch.expiry_date < v_kla_today)
+      ) then
+        raise exception 'BATCH_NOT_RESTORABLE: batch % is recalled, damaged, inactive, or expired; retry with quarantined stock',
+          v_item.batch_id;
+      end if;
+
       update pharmacy_product_batches
       set quantity = quantity + v_item.quantity,
           status = case
+            when coalesce(v_batch.status, 'active') in ('recalled', 'damaged') then v_batch.status
             when v_restore = 'active' then 'active'
             else 'quarantined'
           end,
-          is_active = true,
+          is_active = v_batch.is_active,
           quarantine_reason = case
+            when coalesce(v_batch.status, 'active') in ('recalled', 'damaged') then v_batch.quarantine_reason
             when v_restore = 'quarantined' then coalesce(p_reason, 'Returned from sale void')
             else quarantine_reason
           end,
           updated_at = now()
-      where id = v_item.batch_id and tenant_id = p_tenant_id;
+      where id = v_item.batch_id
+        and tenant_id = p_tenant_id
+        and product_id = v_item.product_id;
     end if;
 
-    if v_item.product_id is not null then
-      select quantity into v_prev from pharmacy_products
-      where id = v_item.product_id and tenant_id = p_tenant_id for update;
-      v_prev := coalesce(v_prev, 0);
-      v_new := v_prev + coalesce(v_item.quantity, 0);
-      update pharmacy_products
-      set quantity = v_new, updated_at = now()
-      where id = v_item.product_id and tenant_id = p_tenant_id;
+    v_new := v_prev + v_item.quantity;
+    update pharmacy_products
+    set quantity = v_new, updated_at = now()
+    where id = v_item.product_id and tenant_id = p_tenant_id;
 
-      begin
-        insert into pharmacy_stock_adjustments (
-          tenant_id, product_id, quantity, type, reason, previous_qty, new_qty, created_by
-        ) values (
-          p_tenant_id, v_item.product_id, v_item.quantity, 'INCREASE',
-          format('Refund %s (%s): %s', v_sale.receipt_number, v_restore, p_reason),
-          v_prev, v_new, p_actor_id
-        );
-      exception when undefined_table then null;
-      end;
-    end if;
+    insert into pharmacy_stock_adjustments (
+      tenant_id, product_id, batch_id, quantity, type, reason, previous_qty, new_qty, created_by
+    ) values (
+      p_tenant_id, v_item.product_id, v_item.batch_id, v_item.quantity, 'INCREASE',
+      format('Refund %s (%s): %s', v_sale.receipt_number, v_restore, p_reason),
+      v_prev, v_new, p_actor_id
+    );
+
   end loop;
+
+  -- The balance the POS settle step posted for this sale, if it posted one.
+  -- complete-sale writes it under the sale's idempotency key, so the link is
+  -- exact even though pharmacy_credit_ledger.transaction_id points at
+  -- pharmacy_transactions and cannot store a POS sale id.
+  select * into v_credit
+  from public.pharmacy_credit_ledger
+  where tenant_id = p_tenant_id
+    and idempotency_key = 'pos-sale:' || p_sale_id::text
+  for update;
+  v_have_credit := found;
+
+  if v_have_credit and v_credit.customer_id is not null then
+    perform 1 from public.pharmacy_customers
+    where id = v_credit.customer_id and tenant_id = p_tenant_id
+    for update;
+
+    if not found then
+      -- The customer row is gone; the ledger's foreign key would reject the
+      -- reversal. Fail closed on the receivable and report it instead.
+      v_unposted := v_outstanding > 0;
+    else
+      select balance_after into v_balance
+      from public.pharmacy_credit_ledger
+      where tenant_id = p_tenant_id and customer_id = v_credit.customer_id
+      order by created_at desc, id desc
+      limit 1;
+      v_balance := coalesce(v_balance, 0);
+
+      -- Never reverse more than the sale's unpaid part, even if the ledger row
+      -- disagrees with the sale: the refund must not create value that was
+      -- never invoiced. Going below zero is intended and means the customer has
+      -- a credit with the pharmacy (they had already repaid part of the sale).
+      v_reversal := round(least(coalesce(v_credit.amount, 0), v_outstanding), 2);
+
+      if v_reversal > 0 then
+        v_balance_after := round(v_balance - v_reversal, 2);
+        insert into public.pharmacy_credit_ledger (
+          tenant_id, customer_id, transaction_id, amount, type, balance_after,
+          due_date, notes, created_by, created_at, idempotency_key, payment_method
+        ) values (
+          p_tenant_id, v_credit.customer_id, null, v_reversal, 'refund', v_balance_after,
+          null,
+          format('Refund %s: %s', v_sale.receipt_number, p_reason),
+          p_actor_id, clock_timestamp(),
+          'pos-refund:' || p_sale_id::text,
+          'credit'
+        );
+      end if;
+    end if;
+  elsif v_outstanding > 0 then
+    -- The sale left a balance but nothing was ever posted to the credit ledger
+    -- (complete-sale warns and continues when that posting fails). Refund only
+    -- the money that was received and tell the operator what is still on the
+    -- books, rather than paying out cash the customer never handed over.
+    v_unposted := true;
+  end if;
+
+  v_unreversed := round(greatest(v_outstanding - v_reversal, 0), 2);
 
   update pharmacy_pos_sales
   set status = 'voided',
@@ -2480,20 +2678,29 @@ begin
       updated_at = now()
   where id = p_sale_id and tenant_id = p_tenant_id;
 
-  begin
-    insert into pharmacy_audit_logs (tenant_id, profile_id, action, entity, entity_id, details)
-    values (
-      p_tenant_id, p_actor_id, 'REFUND_POS_SALE', 'POS_SALE', p_sale_id,
-      format('Voided %s amount %s restore_as=%s reason=%s', v_sale.receipt_number, v_refund_amount, v_restore, p_reason)
-    );
-  exception when others then null;
-  end;
+  insert into pharmacy_audit_logs (tenant_id, profile_id, action, entity, entity_id, details)
+  values (
+    p_tenant_id, p_actor_id, 'REFUND_POS_SALE', 'POS_SALE', p_sale_id,
+    format('Voided %s: cash %s, receivable reversed %s%s, restore_as=%s reason=%s',
+      v_sale.receipt_number,
+      v_refund_amount,
+      v_reversal,
+      case when v_unposted then format(', receivable %s not on ledger', v_outstanding) else '' end,
+      v_restore,
+      p_reason)
+  );
 
   return jsonb_build_object(
     'ok', true,
     'sale_id', p_sale_id,
     'receipt_number', v_sale.receipt_number,
     'refund_amount', v_refund_amount,
+    'receivable_reversal', v_reversal,
+    'receivable_outstanding', v_outstanding,
+    'receivable_unreversed', v_unreversed,
+    'receivable_unposted', v_unposted,
+    'customer_id', case when v_have_credit then v_credit.customer_id else null end,
+    'credit_balance_after', v_balance_after,
     'restore_as', v_restore,
     'status', 'voided'
   );
@@ -7244,7 +7451,7 @@ CREATE TABLE IF NOT EXISTS "public"."pharmacy_credit_ledger" (
     "notes" "text",
     "created_by" "uuid",
     "created_at" timestamp with time zone DEFAULT "now"(),
-    CONSTRAINT "pharmacy_credit_ledger_type_check" CHECK (("type" = ANY (ARRAY['credit'::"text", 'repayment'::"text"])))
+    CONSTRAINT "pharmacy_credit_ledger_type_check" CHECK (("type" = ANY (ARRAY['credit'::"text", 'repayment'::"text", 'refund'::"text"])))
 );
 
 
@@ -7768,7 +7975,7 @@ CREATE TABLE IF NOT EXISTS "public"."pharmacy_settings" (
     "footer_text" "text",
     "receipt_header" "text",
     "receipt_footer" "text",
-    "tax_rate" numeric(5,4) DEFAULT 0 NOT NULL,
+    "tax_rate" numeric(8,4) DEFAULT 0 NOT NULL,
     "currency" "text" DEFAULT 'UGX'::"text" NOT NULL,
     "low_stock_threshold" integer DEFAULT 10 NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"(),
@@ -7797,6 +8004,8 @@ CREATE TABLE IF NOT EXISTS "public"."pharmacy_settings" (
 
 
 ALTER TABLE "public"."pharmacy_settings" OWNER TO "postgres";
+
+COMMENT ON COLUMN "public"."pharmacy_settings"."tax_rate" IS 'Legacy flat tax rate as a PERCENTAGE: 18 means 18%. Read as base * rate / 100. 0 disables tax; VAT settings take priority when vat_enabled is true.';
 
 
 CREATE TABLE IF NOT EXISTS "public"."pharmacy_staff_permissions" (
@@ -21378,13 +21587,7 @@ CREATE POLICY "pharmacy_admin_own" ON "public"."pharmacy_onboarding" FOR SELECT 
 ALTER TABLE "public"."pharmacy_audit_logs" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_audit_logs_tenant_isolation" ON "public"."pharmacy_audit_logs" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_audit_logs_tenant_isolation" ON "public"."pharmacy_audit_logs" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -21412,13 +21615,7 @@ CREATE POLICY "pharmacy_cashier_sessions_tenant" ON "public"."pharmacy_cashier_s
 ALTER TABLE "public"."pharmacy_clients" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_clients_tenant_isolation" ON "public"."pharmacy_clients" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_clients_tenant_isolation" ON "public"."pharmacy_clients" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -21441,13 +21638,7 @@ CREATE POLICY "pharmacy_custom_domains_tenant_read" ON "public"."pharmacy_custom
 ALTER TABLE "public"."pharmacy_customers" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_customers_tenant_isolation" ON "public"."pharmacy_customers" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_customers_tenant_isolation" ON "public"."pharmacy_customers" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -21460,13 +21651,7 @@ ALTER TABLE "public"."pharmacy_import_sessions" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."pharmacy_inquiries" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_inquiries_tenant_isolation" ON "public"."pharmacy_inquiries" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_inquiries_tenant_isolation" ON "public"."pharmacy_inquiries" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -21476,13 +21661,7 @@ ALTER TABLE "public"."pharmacy_network_inventory" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."pharmacy_notifications" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_notifications_own_or_admin" ON "public"."pharmacy_notifications" USING ((("profile_id" = "auth"."uid"()) OR ("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_notifications_own_or_admin" ON "public"."pharmacy_notifications" TO "authenticated" USING ((("profile_id" = "auth"."uid"()) OR ("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("profile_id" = "auth"."uid"()) OR ("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -21492,26 +21671,14 @@ ALTER TABLE "public"."pharmacy_onboarding" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."pharmacy_order_items" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_order_items_tenant_isolation" ON "public"."pharmacy_order_items" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_order_items_tenant_isolation" ON "public"."pharmacy_order_items" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
 ALTER TABLE "public"."pharmacy_orders" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_orders_tenant_isolation" ON "public"."pharmacy_orders" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_orders_tenant_isolation" ON "public"."pharmacy_orders" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -21540,39 +21707,21 @@ CREATE POLICY "pharmacy_pos_sales_tenant_isolation" ON "public"."pharmacy_pos_sa
 ALTER TABLE "public"."pharmacy_product_batches" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_product_batches_tenant_isolation" ON "public"."pharmacy_product_batches" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_product_batches_tenant_isolation" ON "public"."pharmacy_product_batches" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
 ALTER TABLE "public"."pharmacy_product_packages" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_product_packages_tenant_isolation" ON "public"."pharmacy_product_packages" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_product_packages_tenant_isolation" ON "public"."pharmacy_product_packages" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
 ALTER TABLE "public"."pharmacy_products" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_products_tenant_isolation" ON "public"."pharmacy_products" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_products_tenant_isolation" ON "public"."pharmacy_products" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -21582,26 +21731,14 @@ ALTER TABLE "public"."pharmacy_profiles" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."pharmacy_purchase_order_items" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_purchase_order_items_tenant_isolation" ON "public"."pharmacy_purchase_order_items" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_purchase_order_items_tenant_isolation" ON "public"."pharmacy_purchase_order_items" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
 ALTER TABLE "public"."pharmacy_purchase_orders" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_purchase_orders_tenant_isolation" ON "public"."pharmacy_purchase_orders" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_purchase_orders_tenant_isolation" ON "public"."pharmacy_purchase_orders" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -21621,13 +21758,7 @@ ALTER TABLE "public"."pharmacy_sale_idempotency" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."pharmacy_settings" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_settings_tenant_isolation" ON "public"."pharmacy_settings" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_settings_tenant_isolation" ON "public"."pharmacy_settings" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -21637,13 +21768,7 @@ ALTER TABLE "public"."pharmacy_staff_permissions" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."pharmacy_stock_adjustments" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_stock_adjustments_tenant_isolation" ON "public"."pharmacy_stock_adjustments" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_stock_adjustments_tenant_isolation" ON "public"."pharmacy_stock_adjustments" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -21688,65 +21813,35 @@ CREATE POLICY "pharmacy_stores_tenant_isolation" ON "public"."pharmacy_stores" U
 ALTER TABLE "public"."pharmacy_suppliers" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_suppliers_tenant_isolation" ON "public"."pharmacy_suppliers" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_suppliers_tenant_isolation" ON "public"."pharmacy_suppliers" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
 ALTER TABLE "public"."pharmacy_transaction_edits" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_transaction_edits_tenant_isolation" ON "public"."pharmacy_transaction_edits" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_transaction_edits_tenant_isolation" ON "public"."pharmacy_transaction_edits" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
 ALTER TABLE "public"."pharmacy_transaction_items" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_transaction_items_tenant_isolation" ON "public"."pharmacy_transaction_items" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_transaction_items_tenant_isolation" ON "public"."pharmacy_transaction_items" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
 ALTER TABLE "public"."pharmacy_transactions" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_transactions_tenant_isolation" ON "public"."pharmacy_transactions" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_transactions_tenant_isolation" ON "public"."pharmacy_transactions" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
 ALTER TABLE "public"."pharmacy_user_settings" ENABLE ROW LEVEL SECURITY;
 
 
-CREATE POLICY "pharmacy_user_settings_tenant_isolation" ON "public"."pharmacy_user_settings" USING ((("tenant_id" = ( SELECT "profiles"."tenant_id"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1)) OR (( SELECT "profiles"."is_admin"
-   FROM "public"."profiles"
-  WHERE ("profiles"."id" = "auth"."uid"())
- LIMIT 1) = true)));
+CREATE POLICY "pharmacy_user_settings_tenant_isolation" ON "public"."pharmacy_user_settings" TO "authenticated" USING ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"())) WITH CHECK ((("tenant_id" = "public"."current_tenant_id"()) OR "public"."is_platform_admin"()));
 
 
 
@@ -24053,6 +24148,8 @@ GRANT ALL ON FUNCTION "public"."adjust_pharmacy_batch_stock"("p_tenant_id" "uuid
 
 REVOKE ALL ON FUNCTION "public"."adjust_pharmacy_stock"("p_tenant_id" "uuid", "p_product_id" "uuid", "p_delta" integer, "p_reason" "text", "p_actor" "uuid", "p_batch_id" "uuid", "p_set_status" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."adjust_pharmacy_stock"("p_tenant_id" "uuid", "p_product_id" "uuid", "p_delta" integer, "p_reason" "text", "p_actor" "uuid", "p_batch_id" "uuid", "p_set_status" "text") TO "service_role";
+REVOKE ALL ON FUNCTION "public"."pharmacy_assert_actor"("p_tenant_id" "uuid", "p_actor_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."pharmacy_assert_actor"("p_tenant_id" "uuid", "p_actor_id" "uuid") TO "service_role";
 
 
 
@@ -26339,8 +26436,6 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- Additive death/mortuary/pathway tables live in
 -- supabase/migrations/20260921080000_death_pronouncement_pathways.sql
 -- (death_pronouncements, mortuary_bodies, mortuary_storage_slots, patient_care_plans, pathway_overrides).
-
-
 
 
 

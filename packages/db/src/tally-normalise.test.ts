@@ -2,7 +2,7 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 
 import { normaliseTallyDocument } from "./tally-normalise.ts"
-import { parseTallyXmlRows } from "./tally-xml-rows.ts"
+import { parseTallyXmlRows, TALLY_XML_ROW_LIMITS } from "./tally-xml-rows.ts"
 
 function tallyExport(inner: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -322,6 +322,168 @@ describe("normaliseTallyDocument", () => {
     assert.equal(result.opening.difference, 0)
   })
 
+  it("reports the exported opening and closing stock valuation without posting it", () => {
+    const result = plan(`
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><OPENINGBALANCE>1800.00</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="Inventory"><PARENT>Current Assets</PARENT><OPENINGBALANCE>1800.00</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="Capital"><PARENT>Capital Account</PARENT><OPENINGBALANCE>-3600.00</OPENINGBALANCE></LEDGER>
+      <STOCKITEM NAME="Test Item A">
+        <OPENINGBALANCE>10 Strip</OPENINGBALANCE>
+        <OPENINGRATE>100.00</OPENINGRATE>
+        <OPENINGVALUE>1000.00</OPENINGVALUE>
+        <CLOSEBALANCE>4 Strip</CLOSEBALANCE>
+        <CLOSINGVALUE>400.00</CLOSINGVALUE>
+      </STOCKITEM>
+      <STOCKITEM NAME="Test Item B">
+        <OPENINGBALANCE>8 Strip</OPENINGBALANCE>
+        <OPENINGRATE>100.00</OPENINGRATE>
+        <OPENINGVALUE>800.00</OPENINGVALUE>
+        <CLOSEBALANCE>6 Strip</CLOSEBALANCE>
+        <CLOSINGVALUE>600.00</CLOSINGVALUE>
+      </STOCKITEM>
+    `)
+
+    assert.deepEqual(result.stock, {
+      openingValue: 1800,
+      closingValue: 1000,
+      itemsWithOpeningValue: 2,
+      itemsWithClosingValue: 2,
+      itemCount: 2,
+    })
+    assert.equal(result.stockItems[0].closingValue, 400)
+    assert.equal(result.stockItems[0].closingQuantity, 4)
+    assert.ok(!result.exceptions.some((entry) => entry.code === "STOCK_CLOSING_VALUE_MISSING"))
+  })
+
+  it("leaves closing stock unavailable when the export carries no closing values", () => {
+    const result = plan(`
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><OPENINGBALANCE>500.00</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="Inventory"><PARENT>Current Assets</PARENT><OPENINGBALANCE>500.00</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="Capital"><PARENT>Capital Account</PARENT><OPENINGBALANCE>-1000.00</OPENINGBALANCE></LEDGER>
+      <STOCKITEM NAME="Test Item A">
+        <OPENINGBALANCE>5 Strip</OPENINGBALANCE>
+        <OPENINGRATE>100.00</OPENINGRATE>
+        <OPENINGVALUE>500.00</OPENINGVALUE>
+      </STOCKITEM>
+    `)
+
+    assert.equal(result.stock.openingValue, 500)
+    assert.equal(result.stock.closingValue, null)
+    assert.equal(result.stock.itemsWithClosingValue, 0)
+    assert.ok(result.exceptions.some((entry) => entry.code === "STOCK_CLOSING_VALUE_MISSING"))
+  })
+
+  it("takes the closing balances as the opening and posts no voucher in closing mode", () => {
+    const result = plan(
+      `
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><CLOSEBALANCE>1200.00</CLOSEBALANCE></LEDGER>
+      <LEDGER NAME="Capital"><PARENT>Capital Account</PARENT><CLOSEBALANCE>-1200.00</CLOSEBALANCE></LEDGER>
+      <LEDGER NAME="Sales"><PARENT>Sales Accounts</PARENT></LEDGER>
+      <VOUCHER VCHTYPE="Journal" ACTION="Create">
+        <GUID>journal-guid</GUID>
+        <DATE>20260115</DATE>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Cash</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+          <AMOUNT>10.00</AMOUNT>
+        </ALLLEDGERENTRIES.LIST>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Capital</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+          <AMOUNT>-10.00</AMOUNT>
+        </ALLLEDGERENTRIES.LIST>
+      </VOUCHER>
+    `,
+      { mode: "closing", conversionDate: "2026-12-31" },
+    )
+
+    assert.equal(result.mode, "closing")
+    assert.equal(result.conversionDate, "2026-12-31")
+    assert.equal(result.vouchers.length, 0)
+    assert.equal(result.counts.postedVouchers, 0)
+    assert.equal(result.counts.skippedVouchers, 1)
+    assert.equal(result.opening.difference, 0)
+
+    const cash = result.accounts.find((account) => account.sourceName === "Cash")
+    assert.equal(cash?.openingMethod, "closing")
+    assert.equal(cash?.openingBalance, 1200)
+    assert.equal(cash?.openingSide, "debit")
+    assert.equal(result.opening.lines[0]?.description, "Tally closing balance")
+
+    const codes = result.exceptions.map((entry) => entry.code)
+    assert.ok(codes.includes("CLOSING_MODE_VOUCHERS_IGNORED"))
+    assert.ok(codes.includes("OPENING_BALANCE_UNAVAILABLE"))
+    assert.ok(!codes.includes("CLOSING_PERIOD_MISMATCH"))
+  })
+
+  it("blocks a closing cut-over when the export closes on another date", () => {
+    const result = plan(
+      `
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><CLOSEBALANCE>1200.00</CLOSEBALANCE></LEDGER>
+      <LEDGER NAME="Capital"><PARENT>Capital Account</PARENT><CLOSEBALANCE>-1200.00</CLOSEBALANCE></LEDGER>
+    `,
+      { mode: "closing", conversionDate: "2026-06-30" },
+    )
+
+    const mismatch = result.exceptions.find((entry) => entry.code === "CLOSING_PERIOD_MISMATCH")
+    assert.equal(mismatch?.severity, "blocking")
+    assert.match(mismatch?.message ?? "", /2026-12-31/)
+  })
+
+  it("defaults the closing cut-over date to the date the export closes on", () => {
+    const result = plan(
+      `
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><CLOSEBALANCE>1200.00</CLOSEBALANCE></LEDGER>
+      <LEDGER NAME="Capital"><PARENT>Capital Account</PARENT><CLOSEBALANCE>-1200.00</CLOSEBALANCE></LEDGER>
+    `,
+      { mode: "closing" },
+    )
+
+    assert.equal(result.conversionDate, "2026-12-31")
+    assert.ok(!result.exceptions.some((entry) => entry.code === "CLOSING_PERIOD_MISMATCH"))
+  })
+
+  it("drops master batches that do not match the closing quantity", () => {
+    const result = plan(
+      `
+      <LEDGER NAME="Inventory"><PARENT>Current Assets</PARENT><CLOSEBALANCE>400.00</CLOSEBALANCE></LEDGER>
+      <LEDGER NAME="Capital"><PARENT>Capital Account</PARENT><CLOSEBALANCE>-400.00</CLOSEBALANCE></LEDGER>
+      <STOCKITEM NAME="Test Item A">
+        <BASEUNITS>Strip</BASEUNITS>
+        <OPENINGBALANCE>12 Strip</OPENINGBALANCE>
+        <OPENINGRATE>1000.00</OPENINGRATE>
+        <OPENINGVALUE>12000.00</OPENINGVALUE>
+        <CLOSEBALANCE>4 Strip</CLOSEBALANCE>
+        <CLOSINGVALUE>400.00</CLOSINGVALUE>
+        <BATCHALLOCATIONS.LIST>
+          <BATCHNAME>B-001</BATCHNAME>
+          <EXPIRYDATE>20270228</EXPIRYDATE>
+          <ACTUALQTY>12 Strip</ACTUALQTY>
+          <AMOUNT>12000.00</AMOUNT>
+        </BATCHALLOCATIONS.LIST>
+      </STOCKITEM>
+    `,
+      { mode: "closing", conversionDate: "2026-12-31" },
+    )
+
+    const item = result.stockItems[0]
+    assert.equal(item.quantity, 4)
+    assert.equal(item.value, 400)
+    assert.equal(item.rate, 100)
+    assert.equal(item.closingQuantity, 4)
+    assert.equal(item.closingValue, 400)
+    assert.equal(item.batches.length, 0)
+    assert.equal(result.opening.difference, 0)
+
+    // The P&L figures still report Tally's own opening as exported.
+    assert.equal(result.stock.openingValue, 12000)
+    assert.equal(result.stock.closingValue, 400)
+
+    const codes = result.exceptions.map((entry) => entry.code)
+    assert.ok(codes.includes("CLOSING_STOCK_BATCHES_UNAVAILABLE"))
+    assert.ok(!codes.includes("OPENING_STOCK_QUANTITY_MISMATCH"))
+  })
+
   it("uses a stable content identity when Tally exports no voucher GUID", () => {
     const inner = `
       <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><OPENINGBALANCE>100.00</OPENINGBALANCE></LEDGER>
@@ -381,5 +543,34 @@ describe("normaliseTallyDocument", () => {
       { reference: "INV-1", amount: 700, dueDate: "2026-01-31", billType: "New Ref", dueDateDerived: true },
     ])
     assert.equal(result.opening.difference, 0)
+  })
+
+  it("blocks a plan built from a source the parser stopped reading", () => {
+    const document = parseTallyXmlRows(tallyExport(""))
+    document.truncated = { reason: "RECORD_LIMIT", limit: 250_000, recordsProcessed: 250_000 }
+
+    const result = normaliseTallyDocument(document, { conversionDate: "2026-01-01" })
+    const truncated = result.exceptions.filter((entry) => entry.code === "SOURCE_TRUNCATED")
+
+    assert.equal(truncated.length, 1)
+    assert.equal(truncated[0].severity, "blocking")
+    assert.match(truncated[0].message, /250,000 records/)
+    assert.match(truncated[0].detail ?? "", /recordsProcessed=250000/)
+    assert.match(truncated[0].detail ?? "", /reason=RECORD_LIMIT/)
+  })
+
+  it("blocks a 250,001-record export end to end with the counts the parser saw", () => {
+    const records = '<GODOWN NAME="G"/>'.repeat(TALLY_XML_ROW_LIMITS.MAX_RECORDS + 1)
+    const document = parseTallyXmlRows(tallyExport(records))
+
+    const result = normaliseTallyDocument(document, { conversionDate: "2026-01-01" })
+    const truncated = result.exceptions.filter((entry) => entry.code === "SOURCE_TRUNCATED")
+
+    assert.equal(truncated.length, 1)
+    assert.equal(truncated[0].severity, "blocking")
+    assert.equal(
+      truncated[0].detail,
+      "reason=RECORD_LIMIT; recordsProcessed=250000; limit=250000",
+    )
   })
 })

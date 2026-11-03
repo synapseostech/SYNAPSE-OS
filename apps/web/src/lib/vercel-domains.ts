@@ -25,7 +25,7 @@ function getVercelDomainConfig() {
       process.env.SYNAPSE_VERCEL_PROJECT_ID ??
       process.env.VERCEL_PROJECT_ID ??
       FALLBACK_PHARMACY_PROJECT_ID,
-    teamId: process.env.SYNAPSE_VERCEL_TEAM_ID ?? process.env.VERCEL_TEAM_ID ?? "team_ZHaBdLFb1hunAs68QC70HTBy",
+    teamId: process.env.SYNAPSE_VERCEL_TEAM_ID ?? process.env.VERCEL_TEAM_ID ?? "team_IfLX69fKbBxupsNAtDVzF573",
   };
 }
 

@@ -56,8 +56,10 @@ export type PharmacyRpcErrorCode =
   | "STORE_NOT_FOUND"
   | "BATCH_NOT_FOUND"
   | "INSUFFICIENT_BATCH"
+  | "STOCK_DRIFT"
   | "ALREADY_REFUNDED"
   | "SALE_NOT_REFUNDABLE"
+  | "SALE_NOT_FOUND"
   | "TRANSFER_NOT_FOUND"
   | "TRANSFER_EMPTY"
   | "TRANSFER_STATE_INVALID"
@@ -92,12 +94,15 @@ export function parsePharmacyRpcError(raw: string | null | undefined): PharmacyR
     STORE_NOT_FOUND: "Store was not found in this pharmacy.",
     BATCH_NOT_FOUND: "The selected batch was not found.",
     INSUFFICIENT_BATCH: "Not enough quantity remains on the selected batch.",
+    STOCK_DRIFT:
+      "This batch correction would make the product total negative. Reconcile product and batch stock before correcting.",
     INSUFFICIENT_STOCK:
       parsed.productName && parsed.shortBy != null
         ? `Only some units of ${parsed.productName} are sellable; short by ${parsed.shortBy}.`
         : "Not enough sellable stock for this sale.",
     ALREADY_REFUNDED: "This sale has already been refunded or voided.",
     SALE_NOT_REFUNDABLE: "Only completed sales can be refunded.",
+    SALE_NOT_FOUND: "This sale was not found in this pharmacy.",
     TRANSFER_NOT_FOUND: "That stock transfer was not found in this pharmacy.",
     TRANSFER_EMPTY: "This transfer has no items or shipped allocations.",
     TRANSFER_STATE_INVALID: "This transfer is not in the right state for that action.",

@@ -37,13 +37,13 @@ function sessionRow(status = "review", aiMapping: Record<string, unknown> = {}) 
   return { id: "session-1", status, ai_mapping: aiMapping }
 }
 
-function setup(row: unknown = sessionRow()) {
+function setup(row: unknown = sessionRow(), cutover: unknown = null) {
   m.db = fakeSupabase(
     (operation): FakeResult => {
       const isCutoverQuery = operation.filters.some(
         ([column, value]) => column === "source_system" && value === "Tally",
       )
-      if (isCutoverQuery) return { data: null, error: null }
+      if (isCutoverQuery) return { data: cutover, error: null }
       return operation.action === "select"
         ? { data: row, error: null }
         : { data: null, error: null }
@@ -76,6 +76,16 @@ describe("PUT /api/admin/tally/[id]/mapping", () => {
 
     expect((await put({ conversionDate: "2026-01-01" })).status).toBe(403)
     expect(m.db.operations).toHaveLength(0)
+  })
+
+  it("refuses to save a mapping once the pharmacy cut-over is complete", async () => {
+    setup(sessionRow(), { id: "session-0", completed_at: "2026-01-01T00:00:00.000Z" })
+
+    const res = await put({ conversionDate: "2026-01-01" })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_CUTOVER_COMPLETE" })
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
   })
 
   it("rejects a cut-over date that is not YYYY-MM-DD", async () => {

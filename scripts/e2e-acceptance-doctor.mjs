@@ -16,6 +16,12 @@ import {
   vercelBypassHeaders,
 } from "./e2e-acceptance-isolation.mjs"
 
+// A replacement project is supported: SYNAPSE_E2E_ACCEPTANCE_PROJECT_REF wins
+// over the documented ref, and both validators refuse production regardless.
+const DECLARED_ACCEPTANCE_REF = (process.env.SYNAPSE_E2E_ACCEPTANCE_PROJECT_REF || EXPECTED_ACCEPTANCE_PROJECT_REF)
+  .trim()
+  .toLowerCase()
+
 const checks = {
   SYNAPSE_E2E_BASE_URL: {
     source: "VERCEL",
@@ -66,13 +72,13 @@ const checks = {
     source: "SUPABASE",
     description: "Isolated E2E database URL (seed only)",
     required: true,
-    validate: (value) => validateIsolatedSupabaseUrl(value),
+    validate: (value) => validateIsolatedSupabaseUrl(value, DECLARED_ACCEPTANCE_REF),
   },
   SYNAPSE_E2E_SERVICE_ROLE_KEY: {
     source: "SUPABASE",
     description: "Service role key for seeding (seed only)",
     required: true,
-    validate: (value) => validateServiceRoleKey(value),
+    validate: (value) => validateServiceRoleKey(value, DECLARED_ACCEPTANCE_REF),
   },
   SYNAPSE_E2E_REMOTE_HOST_READY: {
     source: "ATTESTATION",
@@ -144,8 +150,8 @@ console.log("Deployment Identity & Isolation:")
 const baseUrl = process.env.SYNAPSE_E2E_BASE_URL || ""
 let baseHost = "(missing)"
 try { baseHost = new URL(baseUrl).hostname } catch { /* keep missing */ }
-const isolated = validateIsolatedSupabaseUrl(process.env.SYNAPSE_E2E_SUPABASE_URL || "")
-const service = validateServiceRoleKey(process.env.SYNAPSE_E2E_SERVICE_ROLE_KEY || "")
+const isolated = validateIsolatedSupabaseUrl(process.env.SYNAPSE_E2E_SUPABASE_URL || "", DECLARED_ACCEPTANCE_REF)
+const service = validateServiceRoleKey(process.env.SYNAPSE_E2E_SERVICE_ROLE_KEY || "", DECLARED_ACCEPTANCE_REF)
 const sha = (process.env.EXPECTED_SHA || process.env.GITHUB_SHA || "").trim() || "(not provided)"
 console.log(`  Deployment host:          ${baseHost}`)
 console.log(`  Environment:              ${process.env.SYNAPSE_E2E_ACCEPTANCE_ENV === "true" ? "acceptance" : "(not attested)"}`)
@@ -219,7 +225,7 @@ try {
   }
   const shaNote = readyCheck.commitSha ? `sha=${readyCheck.commitSha.slice(0, 7)}` : "sha=unknown"
   console.log(`✓ /api/ready                    | FOUND    | READY       | ${shaNote}`)
-  console.log(`✓ isolated project              | FOUND    | ${EXPECTED_ACCEPTANCE_PROJECT_REF} | not production`)
+  console.log(`✓ isolated project              | FOUND    | ${DECLARED_ACCEPTANCE_REF} | not production`)
   console.log(`  Git SHA (ready):              ${readyCheck.commitSha || "(missing from /api/ready)"}`)
   console.log(`  Database host/ref:            ${isolated.projectRef}`)
 } catch (error) {

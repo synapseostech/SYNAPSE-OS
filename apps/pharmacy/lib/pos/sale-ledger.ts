@@ -15,18 +15,28 @@ export type LedgerSaleRow = {
   discount: number
   tax: number
   paymentMethod: string | null
+  /** POS only: the settlement tag, so callers can separate cash paid from balance due. */
+  paymentRef?: string | null
   cashierId: string | null
   cashierName: string | null
   createdAt: string
   clientName: string | null
   notes: string | null
+  /** POS only: the cashier recorded that the receipt did not print. */
+  printFailed: boolean
   items: Array<{
     id: string
     quantity: number
     unitPrice: number
     costPrice: number | null
     totalPrice: number
-    product: { id: string; name: string; sku: string | null; cost_price?: number | null } | null
+    product: {
+      id: string
+      name: string
+      sku: string | null
+      cost_price?: number | null
+      category?: string | null
+    } | null
     batch: { batch_number: string | null; expiry_date: string | null } | null
   }>
 }
@@ -153,16 +163,23 @@ export async function listLedgerSalesForHistory(params: {
   limit?: number
   fromIso?: string
   toIso?: string
+  /** Case-insensitive receipt / transaction number fragment. */
+  search?: string
 }): Promise<LedgerSaleRow[]> {
   const db = admin()
   const limit = params.limit ?? 100
+  // Backslash is LIKE's escape character in PostgREST; an unescaped % or _
+  // from the search box would widen the filter instead of matching it.
+  const pattern = params.search
+    ? `%${params.search.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+    : null
 
   let posQ = db
     .from("pharmacy_pos_sales")
     .select(
       `
       id, receipt_number, status, subtotal, discount_total, tax_amount, total_amount,
-      payment_method, cashier_id, created_at, confirmed_at,
+      payment_method, payment_ref, cashier_id, created_at, confirmed_at, print_failed,
       items:pharmacy_pos_sale_items (
         id, quantity, unit_price, discount_amount, line_total, batch_id, product_id,
         batch:pharmacy_product_batches ( batch_number, expiry_date, cost_price ),
@@ -176,6 +193,7 @@ export async function listLedgerSalesForHistory(params: {
     .limit(limit)
   if (params.fromIso) posQ = posQ.gte("created_at", params.fromIso)
   if (params.toIso) posQ = posQ.lte("created_at", params.toIso)
+  if (pattern) posQ = posQ.ilike("receipt_number", pattern)
 
   const { data: posSales, error: posErr } = await posQ
 
@@ -207,11 +225,13 @@ export async function listLedgerSalesForHistory(params: {
     discount: Number(s.discount_total ?? 0),
     tax: Number(s.tax_amount ?? 0),
     paymentMethod: s.payment_method,
+    paymentRef: s.payment_ref ?? null,
     cashierId: s.cashier_id,
     cashierName: s.cashier_id ? cashierNames.get(s.cashier_id) ?? null : null,
     createdAt: s.created_at,
     clientName: null,
     notes: null,
+    printFailed: s.print_failed === true,
     items: (s.items ?? []).map((i: any) => ({
       id: i.id,
       quantity: Number(i.quantity ?? 0),
@@ -260,6 +280,7 @@ export async function listLedgerSalesForHistory(params: {
     .limit(limit)
   if (params.fromIso) orderQ = orderQ.gte("created_at", params.fromIso)
   if (params.toIso) orderQ = orderQ.lte("created_at", params.toIso)
+  if (pattern) orderQ = orderQ.ilike("transaction_no", pattern)
 
   // pharmacy_transactions has total_amount (pre-discount), not subtotal. Selecting a
   // missing column made PostgREST fail and every order sale vanished from history.
@@ -281,6 +302,7 @@ export async function listLedgerSalesForHistory(params: {
     createdAt: s.created_at,
     clientName: s.client_name ?? null,
     notes: s.notes ?? null,
+    printFailed: false,
     items: (s.items ?? []).map((i: any) => ({
       id: i.id,
       quantity: Number(i.quantity ?? 0),

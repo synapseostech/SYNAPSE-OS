@@ -9,6 +9,11 @@ import {
   type StructuredStockError,
 } from '@synapse/db/inventory'
 import {
+  computePharmacySaleTax,
+  taxAmountMatches,
+  type TaxableLine,
+} from '@synapse/db/pos-tax'
+import {
   isMobileAuth,
   isMobilePharmacyAdmin,
   requireMobilePharmacyAuth,
@@ -100,7 +105,7 @@ export async function POST(req: NextRequest) {
 
   const { data: settings } = await db()
     .from('pharmacy_settings')
-    .select('discount_approval_threshold_pct')
+    .select('discount_approval_threshold_pct, vat_enabled, vat_rate, tax_rate')
     .eq('tenant_id', auth.tenantId)
     .maybeSingle()
 
@@ -112,12 +117,14 @@ export async function POST(req: NextRequest) {
 
   const isAdmin = isMobilePharmacyAdmin(auth)
   const rpcItems: Record<string, unknown>[] = []
+  const taxLines: TaxableLine[] = []
 
   for (const raw of itemsIn) {
+    const lineStart = rpcItems.length
     const productId = String(raw.productId ?? '')
     const { data: product, error: productError } = await db()
       .from('pharmacy_products')
-      .select('id, price, name, is_active')
+      .select('id, price, name, is_active, vat_category')
       .eq('id', productId)
       .eq('tenant_id', auth.tenantId)
       .maybeSingle()
@@ -280,6 +287,17 @@ export async function POST(req: NextRequest) {
         })
       }
     }
+
+    const lineNet = rpcItems
+      .slice(lineStart)
+      .reduce(
+        (sum, item) =>
+          sum +
+          Number(item.unit_price ?? 0) * Number(item.quantity ?? 0) -
+          Number(item.discount_amount ?? 0),
+        0,
+      )
+    taxLines.push({ netAmount: lineNet, vatCategory: product.vat_category })
   }
 
   const saleAmount = rpcItems.reduce(
@@ -289,6 +307,49 @@ export async function POST(req: NextRequest) {
       Number(item.discount_amount ?? 0),
     0,
   )
+
+  // The phone cannot be trusted for tax either: an offline sale is replayed
+  // through this route, and a tampered or stale figure must not decide what the
+  // pharmacy owes.
+  const taxComputation = computePharmacySaleTax(
+    {
+      vatEnabled: settings?.vat_enabled,
+      vatRate: settings?.vat_rate,
+      taxRate: settings?.tax_rate,
+    },
+    taxLines,
+  )
+  if (!taxComputation.ok) {
+    return NextResponse.json(
+      { error: taxComputation.detail, code: taxComputation.code, field: taxComputation.field },
+      { status: 422 },
+    )
+  }
+  const suppliedTax = body.taxAmount
+  let taxAdjusted = false
+  if (suppliedTax !== undefined && suppliedTax !== null && suppliedTax !== '') {
+    const numericTax = Number(suppliedTax)
+    if (!Number.isFinite(numericTax) || numericTax < 0) {
+      return NextResponse.json(
+        { error: 'taxAmount must be a non-negative number', code: 'INVALID_TAX_AMOUNT' },
+        { status: 400 },
+      )
+    }
+    // The phone cannot show a VAT breakdown, so a stale or zero figure is
+    // expected here. Unlike the browser till, refusing the sale would stop a
+    // VAT-enabled pharmacy selling from the app at all; the stored sale and its
+    // receipt carry the server figure, and the response says it was adjusted.
+    taxAdjusted = !taxAmountMatches(numericTax, taxComputation.taxAmount)
+    if (taxAdjusted) {
+      console.warn('[mobile pos] client tax disagreed with settings; using server tax', {
+        tenantId: auth.tenantId,
+        supplied: numericTax,
+        expected: taxComputation.taxAmount,
+      })
+    }
+  }
+  const taxAmount = taxComputation.taxAmount
+
   const { attachSaleToTill, recordTillSale } = await import('@synapse/db/till-service')
   const { httpStatusForPharmacyError } = await import('@synapse/db/errors')
   const till = await attachSaleToTill({
@@ -316,7 +377,7 @@ export async function POST(req: NextRequest) {
     p_cart_id: body.cartId ?? null,
     p_payment_ref: body.paymentRef ?? null,
     p_discount_total: 0,
-    p_tax_amount: Number(body.taxAmount ?? 0),
+    p_tax_amount: taxAmount,
     p_patient_id: patientId,
     p_confirmed_by: auth.userId,
     // Always named: an older 11-argument overload still exists, so omitting it is ambiguous.
@@ -359,7 +420,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const responseBody = { ok: true as const, sale: data, lowStock: [] as Array<{
+  const responseBody = { ok: true as const, sale: data, taxAdjusted, lowStock: [] as Array<{
     id: string
     name: string
     quantity: number

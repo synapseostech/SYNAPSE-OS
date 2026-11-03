@@ -19,7 +19,7 @@ type LedgerRow = {
   customer_id: string | null
   transaction_id: string | null
   amount: number | string
-  type: "credit" | "repayment"
+  type: "credit" | "repayment" | "refund"
   due_date: string | null
   created_at: string
   customer: { name: string } | null
@@ -86,7 +86,10 @@ export async function GET(request: NextRequest) {
         const group: ReceivableGroup =
           groups.get(key) ??
           { name: row.customer?.name?.trim() || "Walk-in customer", invoices: [], invoiceDates: new Map(), references: new Map(), settled: 0 }
-        if (row.type === "repayment") {
+        // A refund returned goods on a credit sale: it reduces what the
+        // customer owes exactly like a repayment does. Treating it as a new
+        // invoice would age the refund as debt.
+        if (row.type === "repayment" || row.type === "refund") {
           group.settled += money(row.amount)
         } else {
           group.invoices.push({

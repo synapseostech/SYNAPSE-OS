@@ -2,6 +2,26 @@ import { NextRequest, NextResponse } from "next/server"
 import { requirePharmacyPermission, requirePharmacyTenant } from "@/lib/api-auth"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 
+// `tax_rate` is a percentage, not a fraction: every caller reads it as
+// `base * rate / 100` (apps/pharmacy/app/portal/pos/page.tsx, packages/db/src/pos-tax.ts).
+// The column shipped as numeric(5,4), which could not hold any rate of 10% or
+// more, so 18 overflowed the upsert and surfaced as a bare 500.
+// 20261102100000_pharmacy_settings_tax_rate_precision.sql widens it to
+// numeric(8,4); the guard below stays at the percentage bound either way and
+// an un-migrated database is reported as INVALID_TAX_RATE rather than a 500.
+const MAX_LEGACY_TAX_RATE = 100
+
+function numericOverflow(error: unknown): boolean {
+  const message = String((error as { message?: string } | null)?.message ?? "")
+  return /numeric field overflow|out of range/i.test(message)
+}
+
+function invalidRate(raw: unknown, max: number): boolean {
+  if (raw === undefined || raw === null || raw === "") return false
+  const value = Number(raw)
+  return !Number.isFinite(value) || value < 0 || value > max
+}
+
 function normalizePaperWidth(raw: unknown, printerType?: unknown): "58" | "80" | "a4" {
   const paper = String(raw ?? "").toLowerCase()
   if (paper === "58" || paper === "80" || paper === "a4") return paper
@@ -69,13 +89,43 @@ export async function POST(request: NextRequest) {
     const { session, tenantId } = auth
 
     const data = await request.json()
+
+    // Reject a tax figure the schema cannot store, rather than letting the
+    // upsert fail and reporting the whole save as an internal error.
+    if (invalidRate(data.taxRate, MAX_LEGACY_TAX_RATE)) {
+      return NextResponse.json(
+        {
+          error: `taxRate must be a number between 0 and ${MAX_LEGACY_TAX_RATE}`,
+          code: "INVALID_TAX_RATE",
+          field: "taxRate",
+        },
+        { status: 422 },
+      )
+    }
+    if (invalidRate(data.vatRate, 100)) {
+      return NextResponse.json(
+        { error: "vatRate must be a number between 0 and 100", code: "INVALID_VAT_RATE", field: "vatRate" },
+        { status: 422 },
+      )
+    }
+
     const printerType = data.printerType ?? "default"
     const receiptPaperWidth = normalizePaperWidth(data.receiptPaperWidth, printerType)
     const receiptFontScale = Number(data.receiptFontScale ?? 1) || 1
     const autoPrintReceipt = Boolean(data.autoPrintReceipt)
 
+    // VAT keys travel only when the caller sent them, so a save from a screen
+    // without VAT controls cannot silently switch VAT off or reset its rate.
+    const vatPayload = {
+      ...(typeof data.vatEnabled === "boolean" ? { vat_enabled: data.vatEnabled } : {}),
+      ...(data.vatRate !== undefined && data.vatRate !== null && data.vatRate !== ""
+        ? { vat_rate: Number(data.vatRate) }
+        : {}),
+    }
+
     const corePayload = {
       tenant_id: tenantId,
+      ...vatPayload,
       pharmacy_name: data.pharmacyName,
       location: data.location,
       contact: data.contact,
@@ -85,7 +135,11 @@ export async function POST(request: NextRequest) {
       receipt_header: data.receiptHeader,
       receipt_footer: data.receiptFooter,
       currency: data.currency ?? "UGX",
-      tax_rate: data.taxRate ?? 0,
+      // Only when supplied: a save from a screen without the field used to
+      // write 0 and silently switch a configured rate off.
+      ...(data.taxRate !== undefined && data.taxRate !== null && data.taxRate !== ""
+        ? { tax_rate: Number(data.taxRate) }
+        : {}),
       low_stock_threshold: data.lowStockThreshold,
       printer_type: printerType,
     }
@@ -128,6 +182,19 @@ export async function POST(request: NextRequest) {
           /* columns not present yet */
         }
       }
+    }
+
+    // A database that has not had the precision migration applied still has
+    // numeric(5,4): report the rate as the problem, not as an internal error.
+    if (error && numericOverflow(error)) {
+      return NextResponse.json(
+        {
+          error: `This database cannot store a tax rate of ${Number(data.taxRate)}. Apply 20261102100000_pharmacy_settings_tax_rate_precision.sql or enable VAT instead.`,
+          code: "TAX_RATE_COLUMN_TOO_SMALL",
+          field: "taxRate",
+        },
+        { status: 422 },
+      )
     }
 
     if (error) throw error

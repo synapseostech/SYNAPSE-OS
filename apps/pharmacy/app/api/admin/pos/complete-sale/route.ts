@@ -18,6 +18,11 @@ import {
   type SaleLineInput,
 } from "@/lib/pos/sale-validation"
 import { buildStockError, type StructuredStockError } from "@synapse/db/inventory"
+import {
+  computePharmacySaleTax,
+  taxAmountMatches,
+  type TaxableLine,
+} from "@synapse/db/pos-tax"
 import { pharmacyDispenseTimelineEvent } from "@synapse/db/timeline"
 import { publishTimelineEvent } from "@synapse/db/identity-persist"
 import { attachSaleToTill, recordTillSale } from "@/lib/pos/till-service"
@@ -129,12 +134,16 @@ export async function POST(request: NextRequest) {
   }
 
   const rpcItems: Record<string, unknown>[] = []
+  // Tax is computed from what the cart actually charges after discounts, and
+  // only for products the catalogue marks standard-rated.
+  const taxLines: TaxableLine[] = []
 
   for (const raw of itemsIn) {
+    const lineStart = rpcItems.length
     const productId = String(raw.productId ?? "")
     const { data: product } = await db
       .from("pharmacy_products")
-      .select("id, price, name, is_active")
+      .select("id, price, name, is_active, vat_category")
       .eq("id", productId)
       .eq("tenant_id", tenantId)
       .maybeSingle()
@@ -311,6 +320,19 @@ export async function POST(request: NextRequest) {
         })
       }
     }
+
+    // One tax line per cart line, net of the line discount. Batch splits above
+    // divide the same money, so they are summed back here.
+    const lineNet = rpcItems
+      .slice(lineStart)
+      .reduce(
+        (sum, item) =>
+          sum +
+          Number(item.unit_price ?? 0) * Number(item.quantity ?? 0) -
+          Number(item.discount_amount ?? 0),
+        0,
+      )
+    taxLines.push({ netAmount: lineNet, vatCategory: product.vat_category })
   }
 
   const saleAmount = rpcItems.reduce(
@@ -320,8 +342,48 @@ export async function POST(request: NextRequest) {
       Number(item.discount_amount ?? 0),
     0,
   )
-  const taxAmount = Number(body.taxAmount ?? 0)
-  const grandTotal = saleAmount + (Number.isFinite(taxAmount) ? taxAmount : 0)
+
+  // The server owns the tax. The client's figure is only a cross-check: a
+  // cashier who alters it in transit must not be able to lower (or inflate) the
+  // sale, and a till whose settings disagree must be told rather than silently
+  // overridden.
+  const taxComputation = computePharmacySaleTax(
+    {
+      vatEnabled: settings?.vat_enabled,
+      vatRate: settings?.vat_rate,
+      taxRate: settings?.tax_rate,
+    },
+    taxLines,
+  )
+  if (!taxComputation.ok) {
+    return NextResponse.json(
+      { error: taxComputation.detail, code: taxComputation.code, field: taxComputation.field },
+      { status: 422 },
+    )
+  }
+  const suppliedTax = body.taxAmount
+  if (suppliedTax !== undefined && suppliedTax !== null && suppliedTax !== "") {
+    const numericTax = Number(suppliedTax)
+    if (!Number.isFinite(numericTax) || numericTax < 0) {
+      return NextResponse.json(
+        { error: "taxAmount must be a non-negative number", code: "INVALID_TAX_AMOUNT" },
+        { status: 400 },
+      )
+    }
+    if (!taxAmountMatches(numericTax, taxComputation.taxAmount)) {
+      return NextResponse.json(
+        {
+          error:
+            "The tax on this sale does not match the pharmacy's current prices and tax settings. Refresh the cart and retry.",
+          code: "TAX_AMOUNT_MISMATCH",
+          expectedTax: taxComputation.taxAmount,
+        },
+        { status: 409 },
+      )
+    }
+  }
+  const taxAmount = taxComputation.taxAmount
+  const grandTotal = saleAmount + taxAmount
 
   const methodUpper = paymentMethod.toUpperCase()
   const isCreditSale = methodUpper === "CREDIT"

@@ -18,20 +18,35 @@ All subdomains point to the **same** `synpase-os` deployment; middleware routes 
 
 All three deploy on push to `main` via Vercel Git integration.
 
-## Build gate (automatic)
+## Build gate (branch filter, not a verification gate)
 
-Each `vercel.json` includes `ignoreCommand` that runs **before** Vercel builds:
+Only the **root** `vercel.json` has an `ignoreCommand`:
 
 ```json
 "ignoreCommand": "node scripts/vercel-build-gate.mjs web"
 ```
 
-- Exit **1** → verify passed → build continues  
-- Exit **0** → verify failed → deploy **canceled** (no broken production)
+`apps/pharmacy/vercel.json` has **none**, so the Pharmacy project builds every
+deployment Vercel receives.
 
-Pharmacy uses `node ../../scripts/vercel-build-gate.mjs pharmacy`.
+`scripts/vercel-build-gate.mjs` decides from `VERCEL_ENV` and the branch name
+alone. It does **not** run `verify`, type-check or lint — its own header says so,
+because `ignoreCommand` often runs before install. Its exit codes are Vercel's,
+not a pass/fail of the code:
 
-This is enforced from the repo — no dashboard click required after push.
+- Exit **1** → proceed with the build
+- Exit **0** → skip this deployment
+
+In practice it skips only preview deployments on branches outside
+`main`/`release/`/`hotfix/`/`clinical/`/`staging/`/`integration/`/`fix/`/`feat/`.
+Production always builds.
+
+The argument (`web`, `pharmacy`) is ignored by the script.
+
+**Therefore a Vercel deploy is not gated on tests.** The real gate is the CI
+`verify` job in `.github/workflows/ci.yml`, which runs on pull requests and on
+pushes to `main`. Protect `main` so a red CI run cannot merge — see “CI vs
+Vercel Git” below.
 
 ## Sync dashboard settings (optional)
 
@@ -73,11 +88,13 @@ Only push when both pass.
 
 ## CI vs Vercel Git
 
-- **GitHub Actions `verify`** — runs on every push/PR  
-- **Vercel Git** — deploys on push; now gated by `ignoreCommand`  
+- **GitHub Actions `verify`** — runs on every push/PR; this is the real gate
+- **Vercel Git** — deploys on push regardless of test results; its
+  `ignoreCommand` only filters branches, and Pharmacy has none
 - **`deploy-vercel` job** — optional CLI deploy after verify (needs `VERCEL_TOKEN` secret)
 
-Recommended: require GitHub **`verify`** check on `main` branch protection.
+Required: turn on `main` branch protection with GitHub **`verify`** as a
+required status check. Without that setting, a red build can reach production.
 
 ## Build commands (source of truth)
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireTallyAdmin } from "@/lib/tally/auth"
+import { requireTallyAdmin, tallyHasCapability } from "@/lib/tally/auth"
 import {
   CUTOVER_ALREADY_COMPLETE,
   findCompletedCutover,
@@ -7,6 +7,14 @@ import {
 } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import type { TallyApplyProgress } from "@/lib/tally/apply"
+import {
+  isManifestLike,
+  type TallyExtractionSummary,
+  type TallyMigrationManifest,
+} from "@/lib/tally/chunks"
+import type { TallyConsolidationReport } from "@/lib/tally/consolidate"
+import { isTallyCutoverSession } from "@/lib/tally/manifest"
+import { buildCutoverPreflight } from "@/lib/tally/preflight"
 import type { TallyPlanSummary } from "@/lib/tally/types"
 import type { TallyReconcileCheck } from "@/lib/tally/reconcile"
 
@@ -40,6 +48,54 @@ export async function GET(
   const progress = (mapping.progress as TallyApplyProgress | undefined) ?? null
   const summary = (mapping.summary as TallyPlanSummary | undefined) ?? null
   const reconcile = (mapping.reconcile as TallyReconcileCheck[] | undefined) ?? null
+  const manifest =
+    (mapping.manifest as
+      | {
+          period?: { from: string; to: string }
+          periodSource?: string
+          declaredPeriod?: { from: string; to: string }
+          updatedAt?: string
+        }
+      | undefined) ?? null
+
+  // The same preflight the apply route enforces, so the review screen can show
+  // what is blocking rather than restating the conditions of its own.
+  const tagged = isTallyCutoverSession({
+    source_system: session.source_system,
+    ai_mapping: mapping,
+  })
+  let auditRecorded: boolean | undefined
+  if (tagged && session.status === "complete") {
+    const { data: audit } = await db()
+      .from("pharmacy_audit_logs")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("action", "IMPORT_TALLY")
+      .eq("entity", "IMPORT_SESSION")
+      .eq("entity_id", id)
+      .limit(1)
+      .maybeSingle()
+    auditRecorded = Boolean(audit)
+  }
+  const cutoverPreflight = tagged
+    ? buildCutoverPreflight({
+        sessionStatus: session.status,
+        capabilities: (["inventory.adjust", "reports.financial"] as const).filter((capability) =>
+          tallyHasCapability(auth, capability),
+        ),
+        summary,
+        manifest:
+          mapping.manifest !== undefined && isManifestLike(mapping.manifest)
+            ? (mapping.manifest as TallyMigrationManifest)
+            : null,
+        manifestProblems: Array.isArray(mapping.manifestProblems)
+          ? (mapping.manifestProblems as string[])
+          : [],
+        flaggedRows: Number(session.flagged_rows ?? 0),
+        reconcile,
+        auditRecorded,
+      })
+    : null
 
   return NextResponse.json({
     id: session.id,
@@ -53,8 +109,30 @@ export async function GET(
     completedAt: session.completed_at,
     format: mapping.format ?? null,
     conversionDate: mapping.conversionDate ?? null,
+    mode: mapping.mode ?? "opening",
     preparedAt: mapping.preparedAt ?? null,
     summary,
+    // The review's coverage evidence, unchanged from what the preview returned,
+    // so a reload shows the same notice and the same acknowledgement state.
+    manifest: manifest
+      ? {
+          period: manifest.period ?? null,
+          periodSource: manifest.periodSource ?? null,
+          declaredPeriod: manifest.declaredPeriod ?? null,
+          coverage: (mapping.manifestCoverage as string | undefined) ?? null,
+          problems: Array.isArray(mapping.manifestProblems)
+            ? (mapping.manifestProblems as string[])
+            : [],
+          evidence: mapping.manifestEvidence ?? null,
+          manifestUpdatedAt: manifest.updatedAt ?? null,
+        }
+      : null,
+    manifestReason: typeof mapping.manifestReason === "string" ? mapping.manifestReason : null,
+    // Chunk progress and the merge report, so a reload can resume and review.
+    extraction: (mapping.extraction as TallyExtractionSummary | undefined) ?? null,
+    consolidation: (mapping.consolidation as TallyConsolidationReport | undefined) ?? null,
+    unverifiedAcknowledged: Boolean(mapping.unverifiedAcknowledgement),
+    cutoverPreflight,
     reconcile,
     progress,
     failures: progress ? progress.failures.slice(0, FAILURE_LIMIT) : [],

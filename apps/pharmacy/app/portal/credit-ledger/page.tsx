@@ -16,7 +16,7 @@ type LedgerEntry = {
   id: string
   customer_id: string | null
   amount: number
-  type: "credit" | "repayment"
+  type: "credit" | "repayment" | "refund"
   balance_after: number
   due_date: string | null
   notes: string | null
@@ -202,7 +202,15 @@ export default function CreditLedgerPage() {
                   <TableRow key={entry.id}>
                     <TableCell>{entry.created_at ? new Date(entry.created_at).toLocaleDateString("en-GB") : "-"}</TableCell>
                     <TableCell>{entry.customer?.name ?? entry.customer_id}</TableCell>
-                    <TableCell>{entry.type === "credit" ? <span className="text-[#E8B84B]">Credit</span> : <span className="text-[#22C55E]">Repayment</span>}</TableCell>
+                    <TableCell>
+                      {entry.type === "credit" ? (
+                        <span className="text-[#E8B84B]">Credit</span>
+                      ) : entry.type === "refund" ? (
+                        <span className="text-[#F97316]">Refund</span>
+                      ) : (
+                        <span className="text-[#22C55E]">Repayment</span>
+                      )}
+                    </TableCell>
                     <TableCell>{formatCurrency(Number(entry.amount ?? 0))}</TableCell>
                     <TableCell>{formatCurrency(Number(entry.balance_after ?? 0))}</TableCell>
                     <TableCell>{entry.due_date ? <span className="inline-flex items-center gap-1"><AlertTriangle className="h-3 w-3" /> {new Date(entry.due_date).toLocaleDateString("en-GB")}</span> : "-"}</TableCell>

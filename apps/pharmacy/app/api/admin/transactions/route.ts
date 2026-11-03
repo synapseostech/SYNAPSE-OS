@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requirePharmacyAdmin, requirePharmacyPermission } from "@/lib/api-auth"
+import { requirePharmacyPermission } from "@/lib/api-auth"
 import { supabaseAdmin } from "@/lib/supabase/admin"
+import { decodePaidAmount, roundMoney } from "@/lib/pos/partial-payment"
 import { listLedgerSalesForHistory, sumCompletedRevenue } from "@/lib/pos/sale-ledger"
 
 interface TransactionItemRow {
@@ -18,68 +19,7 @@ function calculateProfit(items: TransactionItemRow[]): number {
   }, 0)
 }
 
-// Reset all sales/transactions (Admin only)
-export async function DELETE(_request: NextRequest) {
-  try {
-    const auth = await requirePharmacyAdmin()
-    if (!auth.ok) return auth.response
-    const { session, tenantId } = auth
-
-    if (!tenantId) {
-      return NextResponse.json({ error: "No tenant" }, { status: 403 })
-    }
-
-    await (supabaseAdmin as any)
-      .from("pharmacy_pos_sale_items")
-      .delete()
-      .eq("tenant_id", tenantId)
-
-    const { data: deletedPos, error: posErr } = await (supabaseAdmin as any)
-      .from("pharmacy_pos_sales")
-      .delete()
-      .eq("tenant_id", tenantId)
-      .select("id")
-
-    if (posErr) {
-      console.error("Delete pos sales error:", posErr)
-      return NextResponse.json({ error: "Failed to delete POS sales" }, { status: 500 })
-    }
-
-    await supabaseAdmin.from("pharmacy_transaction_items").delete().eq("tenant_id", tenantId)
-
-    const { data: deletedRows, error: txError } = await supabaseAdmin
-      .from("pharmacy_transactions")
-      .delete()
-      .eq("tenant_id", tenantId)
-      .select("id")
-
-    if (txError) {
-      console.error("Delete transactions error:", txError)
-      return NextResponse.json({ error: "Failed to delete transactions" }, { status: 500 })
-    }
-
-    const deletedCount = (deletedPos?.length ?? 0) + (deletedRows?.length ?? 0)
-
-    await supabaseAdmin.from("pharmacy_audit_logs").insert({
-      tenant_id: tenantId,
-      profile_id: session.user.id,
-      action: "RESET_SALES",
-      entity: "TRANSACTION",
-      details: `Reset all sales. Deleted ${deletedCount} sales (POS + order).`,
-    })
-
-    return NextResponse.json({
-      success: true,
-      message: `Successfully reset sales. Deleted ${deletedCount} transactions.`,
-      deletedCount,
-    })
-  } catch (error) {
-    console.error("Reset sales error:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
-  }
-}
-
-export async function GET(_request: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
     const auth = await requirePharmacyPermission(["reports.operational", "pos.sell"])
     if (!auth.ok) return auth.response
@@ -89,7 +29,12 @@ export async function GET(_request: NextRequest) {
       return NextResponse.json({ error: "No tenant" }, { status: 403 })
     }
 
-    const ledger = await listLedgerSalesForHistory({ tenantId, limit: 100 })
+    const search = request.nextUrl.searchParams.get("search")?.trim() ?? ""
+    const ledger = await listLedgerSalesForHistory({
+      tenantId,
+      limit: 100,
+      search: search || undefined,
+    })
 
     const today = new Date()
     today.setHours(0, 0, 0, 0)
@@ -123,47 +68,66 @@ export async function GET(_request: NextRequest) {
           0,
         )
 
-    const normalized = ledger.map((row) => ({
-      id: row.id,
-      transactionNo: row.transactionNo,
-      clientName: row.clientName,
-      clientPhone: null,
-      clientAddress: null,
-      totalAmount: row.subtotal,
-      netAmount: row.netAmount,
-      discount: row.discount,
-      tax: row.tax,
-      paymentMethod: row.paymentMethod ?? "CASH",
-      isEdited: false,
-      createdAt: row.createdAt,
-      source: row.source,
-      user: { name: row.cashierName ?? "Unknown" },
-      items: row.items.map((item) => ({
-        id: item.id,
-        quantity: item.quantity,
-        unitPrice: item.unitPrice,
-        costPrice: item.costPrice,
-        totalPrice: item.totalPrice,
-        packageName: null,
-        packageQuantity: null,
-        batch: item.batch
-          ? {
-              batchNumber: item.batch.batch_number,
-              expiryDate: item.batch.expiry_date,
-            }
-          : null,
-        product: {
-          id: item.product?.id ?? "",
-          name: item.product?.name ?? "Unknown product",
-          sku: item.product?.sku ?? "",
-          costPrice: item.product?.cost_price != null ? Number(item.product.cost_price) : 0,
-          dosageForm: null,
-          strength: null,
-          expiryDate: null,
-          batchNumber: null,
-        },
-      })),
-    }))
+    const normalized = ledger.map((row) => {
+      // A refund hands back what the customer actually paid. For a POS sale
+      // that is the settlement tag, not the sale total; a credit balance is
+      // reversed in the ledger instead. A legacy order refunds its header.
+      const paidAmount =
+        row.source === "pos"
+          ? decodePaidAmount({
+              paymentRef: row.paymentRef ?? null,
+              total: row.netAmount,
+              method: row.paymentMethod,
+            })
+          : roundMoney(row.subtotal - row.discount + row.tax)
+      const balanceDue = row.source === "pos" ? roundMoney(Math.max(0, row.netAmount - paidAmount)) : 0
+
+      return {
+        id: row.id,
+        transactionNo: row.transactionNo,
+        status: row.status,
+        clientName: row.clientName,
+        clientPhone: null,
+        clientAddress: null,
+        totalAmount: row.subtotal,
+        netAmount: row.netAmount,
+        paidAmount,
+        balanceDue,
+        discount: row.discount,
+        tax: row.tax,
+        paymentMethod: row.paymentMethod ?? "CASH",
+        isEdited: false,
+        createdAt: row.createdAt,
+        source: row.source,
+        printFailed: row.printFailed,
+        user: { name: row.cashierName ?? "Unknown" },
+        items: row.items.map((item) => ({
+          id: item.id,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          costPrice: item.costPrice,
+          totalPrice: item.totalPrice,
+          packageName: null,
+          packageQuantity: null,
+          batch: item.batch
+            ? {
+                batchNumber: item.batch.batch_number,
+                expiryDate: item.batch.expiry_date,
+              }
+            : null,
+          product: {
+            id: item.product?.id ?? "",
+            name: item.product?.name ?? "Unknown product",
+            sku: item.product?.sku ?? "",
+            costPrice: item.product?.cost_price != null ? Number(item.product.cost_price) : 0,
+            dosageForm: null,
+            strength: null,
+            expiryDate: null,
+            batchNumber: null,
+          },
+        })),
+      }
+    })
 
     return NextResponse.json({
       transactions: normalized,

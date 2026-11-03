@@ -11,6 +11,7 @@ import type {
   TallyCutoverSale,
   TallyCutoverVoucher,
 } from "@synapse/db/tally-normalise"
+import { TALLY_SYSTEM_ACCOUNT_CODES } from "@synapse/db/tally-map"
 import type { TallyApplyStage } from "./apply"
 import { TALLY_APPLY_CHUNK, type TallyPlanSummary } from "./types"
 import {
@@ -26,9 +27,11 @@ type StaticPlan = Pick<
   | "companyKey"
   | "currency"
   | "conversionDate"
+  | "mode"
   | "accounts"
   | "parties"
   | "stockItems"
+  | "stock"
   | "opening"
   | "counts"
   | "warnings"
@@ -44,6 +47,52 @@ const SUMMARY = "plan-summary"
 const STATIC = "plan-static"
 const CHUNK = "plan-chunk"
 
+function round2(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100
+}
+
+/**
+ * The plan's own accounting, reduced to the figures a preflight compares.
+ * Parties and the opening journal are built from the same ledgers, so the two
+ * sides must agree; when they do not, one of them lost a balance.
+ */
+function reconciliationOf(plan: TallyCutoverPlan): NonNullable<TallyPlanSummary["reconciliation"]> {
+  const partyCodes = (kind: "customer" | "supplier") =>
+    new Set(plan.accounts.filter((account) => account.partyType === kind).map((account) => account.code))
+
+  const customerCodes = partyCodes("customer")
+  const supplierCodes = partyCodes("supplier")
+  const inventoryCode = TALLY_SYSTEM_ACCOUNT_CODES.INVENTORY
+
+  let customerOpening = 0
+  let supplierOpening = 0
+  let inventoryOpening: number | null = null
+
+  for (const line of plan.opening.lines) {
+    if (customerCodes.has(line.accountCode)) customerOpening += line.debit - line.credit
+    if (supplierCodes.has(line.accountCode)) supplierOpening += line.credit - line.debit
+    if (line.accountCode === inventoryCode) {
+      inventoryOpening = (inventoryOpening ?? 0) + line.debit - line.credit
+    }
+  }
+
+  let partyReceivable = 0
+  let partyPayable = 0
+  for (const party of plan.parties) {
+    if (party.kind === "customer") partyReceivable += party.openingBalance
+    else partyPayable += party.openingBalance
+  }
+
+  return {
+    inventoryOpening: inventoryOpening === null ? null : round2(inventoryOpening),
+    customerOpening: round2(customerOpening),
+    supplierOpening: round2(supplierOpening),
+    partyReceivable: round2(partyReceivable),
+    partyPayable: round2(partyPayable),
+    duplicateVouchers: plan.exceptions.filter((entry) => entry.code === "VOUCHER_DUPLICATE").length,
+  }
+}
+
 export function summarisePlan(
   plan: TallyCutoverPlan,
   format: "xml" | "xlsx" | "xls" | "csv",
@@ -54,6 +103,7 @@ export function summarisePlan(
     companyKey: plan.companyKey,
     currency: plan.currency,
     conversionDate: plan.conversionDate,
+    mode: plan.mode,
     format,
     counts: plan.counts,
     opening: {
@@ -62,6 +112,8 @@ export function summarisePlan(
       totalCredit: plan.opening.totalCredit,
       difference: plan.opening.difference,
     },
+    stock: plan.stock,
+    reconciliation: reconciliationOf(plan),
     exceptions: plan.exceptions.map((entry) => ({
       code: entry.code,
       message: entry.message,
@@ -89,9 +141,11 @@ export async function writeTallyPlan(
     companyKey: plan.companyKey,
     currency: plan.currency,
     conversionDate: plan.conversionDate,
+    mode: plan.mode,
     accounts: plan.accounts,
     parties: plan.parties,
     stockItems: plan.stockItems,
+    stock: plan.stock,
     opening: plan.opening,
     counts: plan.counts,
     warnings: plan.warnings,

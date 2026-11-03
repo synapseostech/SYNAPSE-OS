@@ -11,15 +11,32 @@ import {
   FileSpreadsheet,
   Loader2,
   RefreshCw,
+  Settings2,
   Terminal,
   Upload,
 } from "lucide-react"
+import { TallySetupAssistant, type SetupConnection } from "@/components/tally/tally-setup-assistant"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useToast } from "@/hooks/use-toast"
+import { buildBridgeCommand } from "@/lib/tally/bridge-command"
+import { requestBridgeExport, TallyBridgeError } from "@/lib/tally/bridge-client"
+import type { TallyExtractionSummary } from "@/lib/tally/chunks"
+import type { TallyConsolidationReport } from "@/lib/tally/consolidate"
+import type { TallyEditionDisclosure, TallyEditionProblem } from "@/lib/tally/editions"
+import { runTallyExtraction } from "@/lib/tally/extraction"
+import { cutoverBlockReason, track } from "@/lib/telemetry/events"
+import {
+  beginLiveExtraction,
+  createBridgeSource,
+  createLiveSession,
+  createPortalSink,
+  finishLiveExtraction,
+  type TallyLiveReview,
+} from "@/lib/tally/live-extraction"
 
 export const dynamic = "force-dynamic"
 
@@ -43,14 +60,40 @@ type Summary = {
   companyKey: string
   currency: string
   conversionDate: string
+  mode?: "opening" | "closing"
   format: string
   counts: Counts
   opening: { date: string; totalDebit: number; totalCredit: number; difference: number }
+  stock?: {
+    openingValue: number | null
+    closingValue: number | null
+    itemsWithOpeningValue: number
+    itemsWithClosingValue: number
+    itemCount: number
+  }
   exceptions: Array<{ code: string; message: string; detail?: string; severity: string }>
   chunkCount: number
   chunkSize: number
   warnings: string[]
   preparedAt: string
+}
+
+// The bridge answers failures with a code; these are the ones an operator can
+// act on themselves.
+const BRIDGE_ERRORS: Record<string, string> = {
+  TALLY_BRIDGE_COMPANY_MISMATCH:
+    "Tally answered for a different company from the one pinned. Open the pinned company in Tally, or pick the open company above and re-run the command, then connect again.",
+  TALLY_BRIDGE_COMPANY_UNVERIFIED:
+    "Tally's reply did not name the company it came from, so the export could not be checked and was refused. Send the tally-probe folder to support — this is a Tally build difference, not a mistake on this computer.",
+  TALLY_BRIDGE_COMPANY_UNPINNED:
+    "No company is pinned for this connector, so nothing can be checked. Set SYNAPSE_TALLY_COMPANY on the bridge, restart it, then connect again.",
+  TALLY_BRIDGE_TALLY_TIMEOUT:
+    "Tally took longer than one minute to answer, so the bridge stopped waiting. Nothing was imported. Export a shorter period, or send the tally-probe timing to support — the probe waits far longer than the bridge does.",
+}
+
+function bridgeMessage(error: unknown, fallback: string): string {
+  if (error instanceof TallyBridgeError) return BRIDGE_ERRORS[error.code] ?? error.message
+  return error instanceof Error && error.message ? error.message : fallback
 }
 
 type PreviewAccount = {
@@ -71,6 +114,8 @@ type PreviewStockItem = {
   name: string
   quantity?: number
   unit?: string
+  openingValue?: number
+  closingValue?: number
   batchCount: number
   receivableBatches: number
   expiredBatches: number
@@ -135,9 +180,56 @@ type ReconcileCheck = {
   note?: string
 }
 
+type TallyPeriod = { from: string; to: string }
+
+type ManifestEvidence = {
+  requestedPeriod: TallyPeriod | null
+  declaredPeriod: TallyPeriod | null
+  voucherRange: { firstDate: string | null; lastDate: string | null }
+  recordsRead: number
+  recordsStaged: { accounts: number; parties: number; products: number; vouchers: number } | null
+  independentCount: boolean
+  coverage: "verified" | "unverified"
+}
+
+/** The coverage block the preview and the session reload both return. */
+type ManifestView = {
+  period: TallyPeriod | null
+  periodSource?: "source" | "requested" | null
+  declaredPeriod?: TallyPeriod | null
+  coverage?: "verified" | "unverified" | null
+  problems: string[]
+  evidence?: ManifestEvidence | null
+  manifestUpdatedAt?: string | null
+  reason?: string
+}
+
+const formatPeriod = (period: TallyPeriod | null | undefined) =>
+  period ? `${period.from} to ${period.to}` : null
+
 type BridgeCheck = {
   status: "ok" | "tally" | "token" | "bridge" | "error"
   message: string
+}
+
+/** The server's own list of what it will refuse Apply for. */
+type PreflightView = {
+  state: "pre-cutover" | "in-progress" | "completed" | "blocked"
+  canApply: boolean
+  checks: Array<{
+    id: string
+    label: string
+    status: "pass" | "fail" | "warning" | "unavailable"
+    detail: string
+    blocksApply: boolean
+  }>
+}
+
+const PREFLIGHT_STATE_LABEL: Record<PreflightView["state"], string> = {
+  "pre-cutover": "ready to apply",
+  "in-progress": "import running",
+  completed: "applied",
+  blocked: "blocked",
 }
 
 const STAGE_LABEL: Record<string, string> = {
@@ -177,33 +269,70 @@ export default function TallyImportPage() {
   const [file, setFile] = useState<File | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [summary, setSummary] = useState<Summary | null>(null)
+  const [preflightView, setPreflightView] = useState<PreflightView | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [reconcile, setReconcile] = useState<ReconcileCheck[] | null>(null)
+  const [manifestView, setManifestView] = useState<ManifestView | null>(null)
+  const [acknowledged, setAcknowledged] = useState(false)
   const [conversionDate, setConversionDate] = useState("")
+  const [mode, setMode] = useState<"opening" | "closing">("opening")
   const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "disabled" | "error">("checking")
   const [bridgeToken, setBridgeToken] = useState("")
+  const [setupOpen, setSetupOpen] = useState(false)
   const [bridgeCheck, setBridgeCheck] = useState<BridgeCheck | null>(null)
   const [checkingBridge, setCheckingBridge] = useState(false)
   const [portalOrigin, setPortalOrigin] = useState("")
-  const [busy, setBusy] = useState<"idle" | "connecting" | "uploading" | "preview" | "applying" | "saving">("idle")
+  const [tallyHost, setTallyHost] = useState("127.0.0.1")
+  const [tallyPort, setTallyPort] = useState("9000")
+  const [tallyExecutable, setTallyExecutable] = useState("")
+  const [tallyFromDate, setTallyFromDate] = useState("")
+  const [tallyToDate, setTallyToDate] = useState("")
+  const [tallyCompany, setTallyCompany] = useState("")
+  const [tallyCompanies, setTallyCompanies] = useState<string[]>([])
+  const [bridgeEdition, setBridgeEdition] = useState("")
+  const [editionInfo, setEditionInfo] = useState<TallyEditionDisclosure | null>(null)
+  const [editionProblems, setEditionProblems] = useState<TallyEditionProblem[]>([])
+  const [extraction, setExtraction] = useState<TallyExtractionSummary | null>(null)
+  const [consolidation, setConsolidation] = useState<TallyConsolidationReport | null>(null)
+  const [busy, setBusy] = useState<
+    "idle" | "connecting" | "extracting" | "uploading" | "preview" | "applying" | "saving"
+  >("idle")
 
   const blocking = useMemo(
     () => (summary?.exceptions ?? []).filter((entry) => entry.severity === "blocking"),
     [summary],
   )
   const balanced = summary ? summary.opening.difference === 0 : false
+  const evidence = manifestView?.evidence ?? null
+  const unverifiedCoverage = manifestView?.coverage === "unverified"
+  // Unverified coverage is the operator's call, and only theirs: the checkbox
+  // records it, and Apply repeats it so the server can hold the same line.
+  const needsAcknowledgement = unverifiedCoverage && !acknowledged
   const canApply =
     cutoverAccess === "ready" &&
     Boolean(summary) &&
     balanced &&
     blocking.length === 0 &&
-    busy === "idle"
+    !needsAcknowledgement &&
+    busy === "idle" &&
+    // The server judges a wider list than this screen; when it has spoken, its
+    // answer wins. Before the session loads there is no verdict to defer to.
+    preflightView?.canApply !== false
 
-  const bridgeCommand =
-    `$env:SYNAPSE_TALLY_BRIDGE_TOKEN="<64-hex-token>"; ` +
-    `$env:SYNAPSE_TALLY_ALLOWED_ORIGINS="${portalOrigin || "https://pharm.synapseos.tech"}"; ` +
-    `node apps\\tally-bridge\\src\\cli.mjs`
+  const bridgeCommand = useMemo(
+    () =>
+      buildBridgeCommand({
+        origin: portalOrigin,
+        host: tallyHost,
+        port: tallyPort,
+        executable: tallyExecutable,
+        fromDate: tallyFromDate,
+        toDate: tallyToDate,
+        company: tallyCompany,
+      }),
+    [portalOrigin, tallyHost, tallyPort, tallyExecutable, tallyFromDate, tallyToDate, tallyCompany],
+  )
 
   useEffect(() => {
     setPortalOrigin(window.location.origin)
@@ -242,9 +371,17 @@ export default function TallyImportPage() {
       const data = await response.json()
       if (!response.ok) return
       if (data.summary) setSummary(data.summary as Summary)
+      setPreflightView((data.cutoverPreflight as PreflightView | null) ?? null)
+      if (data.manifest !== undefined) {
+        setManifestView((data.manifest as ManifestView | null) ?? null)
+        setAcknowledged(Boolean(data.unverifiedAcknowledged))
+      }
       if (data.progress) setProgress(data.progress as Progress)
       if (data.reconcile) setReconcile(data.reconcile as ReconcileCheck[])
+      setExtraction((data.extraction as TallyExtractionSummary | null) ?? null)
+      setConsolidation((data.consolidation as TallyConsolidationReport | null) ?? null)
       if (data.conversionDate) setConversionDate(data.conversionDate as string)
+      if (data.mode === "closing" || data.mode === "opening") setMode(data.mode)
     },
     [],
   )
@@ -262,7 +399,30 @@ export default function TallyImportPage() {
     if (typeof window !== "undefined") window.localStorage.setItem("tallySessionId", id)
   }
 
-  async function uploadAndPreview(selectedFile: File | null = file) {
+  /**
+   * The period the operator asked an export to cover. A bridge run always has
+   * one: it reads from the "history from" date (or full history) to the
+   * "balances close on" date, which the bridge defaults to today. A manual
+   * upload only states one when both fields are filled, because guessing the
+   * end date would flag a correct file as covering the wrong period.
+   */
+  function requestedPeriod(forBridge: boolean): { from: string; to: string } | undefined {
+    const toIso = (value: string): string | undefined => {
+      const raw = value.trim()
+      if (!/^\d{8}$/.test(raw)) return undefined
+      const iso = `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
+      const parsed = new Date(`${iso}T00:00:00.000Z`)
+      return parsed.toISOString().slice(0, 10) === iso ? iso : undefined
+    }
+    const from = toIso(tallyFromDate)
+    const to = toIso(tallyToDate) ?? (forBridge ? new Date().toISOString().slice(0, 10) : undefined)
+    return from && to ? { from, to } : undefined
+  }
+
+  async function uploadAndPreview(
+    selectedFile: File | null = file,
+    period?: { from: string; to: string },
+  ) {
     if (!selectedFile) {
       toast({ variant: "destructive", title: "Choose a Tally export first" })
       return
@@ -274,9 +434,16 @@ export default function TallyImportPage() {
 
     setBusy("uploading")
     setSummary(null)
+    setPreflightView(null)
     setPreview(null)
     setProgress(null)
     setReconcile(null)
+    setManifestView(null)
+    setExtraction(null)
+    setConsolidation(null)
+    setEditionInfo(null)
+    setEditionProblems([])
+    setAcknowledged(false)
 
     try {
       const startResponse = await fetch("/api/admin/tally/upload-url", {
@@ -317,7 +484,12 @@ export default function TallyImportPage() {
       const previewResponse = await fetch(`/api/admin/tally/${start.sessionId}/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(conversionDate ? { conversionDate } : {}),
+        body: JSON.stringify({
+          ...(conversionDate ? { conversionDate } : {}),
+          ...(period ? { period } : {}),
+          ...(bridgeEdition ? { edition: bridgeEdition } : {}),
+          mode,
+        }),
       })
       const data = await previewResponse.json()
       if (!previewResponse.ok) {
@@ -334,6 +506,12 @@ export default function TallyImportPage() {
       }
       setSummary(data.summary as Summary)
       setPreview(data.preview as Preview)
+      // A fresh preview is a fresh decision: the acknowledgement never carries
+      // over from the file it was given for.
+      setManifestView((data.manifest as ManifestView | null) ?? null)
+      setEditionInfo((data.edition as TallyEditionDisclosure | undefined) ?? null)
+      setEditionProblems((data.editionProblems as TallyEditionProblem[] | undefined) ?? [])
+      setAcknowledged(false)
       if (!conversionDate && data.summary?.conversionDate) {
         setConversionDate(data.summary.conversionDate as string)
       }
@@ -343,47 +521,144 @@ export default function TallyImportPage() {
     }
   }
 
+  /** The review the server staged from the chunks, rendered like a preview. */
+  function showReview(review: TallyLiveReview) {
+    setSummary(review.summary as Summary)
+    setPreview(review.preview as Preview)
+    setExtraction(review.extraction)
+    setConsolidation(review.consolidation)
+    setManifestView(review.manifest as unknown as ManifestView)
+    setEditionInfo(review.edition ?? null)
+    setEditionProblems(review.editionProblems ?? [])
+    // A new plan is a new decision: the acknowledgement never carries over.
+    setAcknowledged(false)
+    if (!conversionDate) {
+      const staged = (review.summary as Summary | undefined)?.conversionDate
+      if (staged) setConversionDate(staged)
+    }
+  }
+
+  function stopMessage(result: Awaited<ReturnType<typeof runTallyExtraction>>): string {
+    const failure = result.summary.failures[0]?.error
+    if (result.stopped === "cancelled") return "Extraction was cancelled."
+    if (result.stopped === "attempts_exhausted") {
+      return "A range failed on every attempt. Nothing was applied."
+    }
+    return failure
+      ? `The extraction stopped: ${failure}`
+      : "The extraction stopped before every range was read. Nothing was applied."
+  }
+
+  /** Runs or resumes the chunked read, then stages the plan for review. */
+  async function runExtraction(session: string, company: string) {
+    const result = await runTallyExtraction({
+      company,
+      mode: "opening",
+      source: createBridgeSource({ token: bridgeToken.trim() }),
+      sink: createPortalSink({ sessionId: session }),
+      onProgress: (_manifest, summary) => setExtraction(summary),
+    })
+    if (result.stopped !== "complete") {
+      toast({
+        variant: "destructive",
+        title: "Extraction did not finish",
+        description: `${stopMessage(result)} Retry the unfinished ranges below.`,
+      })
+      return
+    }
+    showReview(await finishLiveExtraction(session))
+    toast({ title: "Tally read — review the migration before applying" })
+  }
+
   async function connectToTally() {
     if (!bridgeToken.trim()) {
       toast({ variant: "destructive", title: "Enter the Tally Bridge token" })
       return
     }
+    const company = tallyCompany.trim()
+    if (!company) {
+      toast({ variant: "destructive", title: "Select the Tally company first" })
+      return
+    }
+    const period = requestedPeriod(true)
+    if (!period) {
+      toast({
+        variant: "destructive",
+        title: "Enter the history-from date",
+        description:
+          "A live extraction reads the history in date ranges, so it needs a start date in YYYYMMDD form.",
+      })
+      return
+    }
 
     setBusy("connecting")
     try {
-      const response = await fetch("http://127.0.0.1:17890/api/tally/export", {
-        method: "POST",
-        headers: { "x-synapse-tally-bridge-token": bridgeToken.trim() },
-        cache: "no-store",
-      })
-      const payload = await response.text()
-      if (!response.ok) {
-        let message = `Tally Bridge returned HTTP ${response.status}.`
-        try {
-          const error = JSON.parse(payload) as { error?: string }
-          if (error.error) message = error.error
-        } catch {
-          // Keep the explicit HTTP response when the local bridge did not return JSON.
-        }
-        throw new Error(message)
+      if (mode === "closing") {
+        // A balances-only cut-over reads the masters once and posts no voucher.
+        const exported = await requestBridgeExport({
+          token: bridgeToken.trim(),
+          mode,
+          company,
+          period,
+          scope: "masters",
+        })
+        const source = new File([exported.xml], "tally-live-export.xml", {
+          type: "application/xml",
+        })
+        setFile(source)
+        setBusy("idle")
+        await uploadAndPreview(source, period)
+        return
       }
 
-      const source = new File([payload], "tally-live-export.xml", {
-        type: "application/xml",
+      setSummary(null)
+      setPreflightView(null)
+      setPreview(null)
+      setProgress(null)
+      setReconcile(null)
+      setManifestView(null)
+      setConsolidation(null)
+      setEditionInfo(null)
+      setEditionProblems([])
+      setAcknowledged(false)
+
+      const session = await createLiveSession()
+      rememberSession(session.sessionId)
+      const begun = await beginLiveExtraction({
+        sessionId: session.sessionId,
+        company,
+        mode,
+        period,
+        ...(bridgeEdition ? { edition: bridgeEdition } : {}),
       })
-      if (source.size > MAX_UPLOAD_BYTES) {
-        throw new Error("Tally export exceeds the 25 MB import limit. Narrow the export period and try again.")
-      }
-      setFile(source)
-      setBusy("idle")
-      await uploadAndPreview(source)
+      setExtraction(begun.summary)
+
+      setBusy("extracting")
+      await runExtraction(session.sessionId, company)
     } catch (error) {
       toast({
         variant: "destructive",
-        title: error instanceof Error ? error.message : "Could not connect to the local Tally Bridge.",
+        title: bridgeMessage(error, "Could not connect to the local Tally Bridge."),
         description:
           "Start the bridge on this computer, confirm Tally's HTTP server is enabled and the correct company is open, and check the allowed portal origin.",
       })
+    } finally {
+      setBusy("idle")
+    }
+  }
+
+  /** Retries the ranges that failed, continuing from the server's manifest. */
+  async function resumeExtraction() {
+    if (!sessionId) return
+    setBusy("extracting")
+    try {
+      await runExtraction(sessionId, tallyCompany.trim())
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: bridgeMessage(error, "The extraction could not continue."),
+      })
+    } finally {
       setBusy("idle")
     }
   }
@@ -422,12 +697,18 @@ export default function TallyImportPage() {
         return
       }
 
-      const data = (await response.json()) as { tally?: string; target?: string }
+      const data = (await response.json()) as {
+        tally?: string
+        target?: string
+        edition?: string
+      }
+      if (data.edition) setBridgeEdition(data.edition)
       if (data.tally === "reachable") {
         setBridgeCheck({
           status: "ok",
           message: `Bridge is running and Tally answered at ${data.target ?? "its local port"}.`,
         })
+        await loadTallyCompanies()
         return
       }
       setBridgeCheck({
@@ -446,6 +727,28 @@ export default function TallyImportPage() {
     }
   }
 
+  // Read-only discovery: asks the bridge which companies Tally has open, so the
+  // operator pins one instead of typing its name from memory. Best-effort — a
+  // bridge without the endpoint leaves the manual field in place.
+  async function loadTallyCompanies() {
+    try {
+      const response = await fetch("http://127.0.0.1:17890/api/tally/companies", {
+        headers: { "x-synapse-tally-bridge-token": bridgeToken.trim() },
+        cache: "no-store",
+      })
+      if (!response.ok) return
+      const data = (await response.json()) as { companies?: string[]; edition?: string }
+      const companies = Array.isArray(data.companies) ? data.companies : []
+      setTallyCompanies(companies)
+      if (data.edition) setBridgeEdition(data.edition)
+      setTallyCompany((current) =>
+        current && companies.includes(current) ? current : (companies[0] ?? current),
+      )
+    } catch {
+      // Discovery fails the same way the status probe does; the operator can type the name.
+    }
+  }
+
   async function saveMapping() {
     if (!sessionId) return
     setBusy("saving")
@@ -453,7 +756,7 @@ export default function TallyImportPage() {
       const response = await fetch(`/api/admin/tally/${sessionId}/mapping`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversionDate }),
+        body: JSON.stringify({ conversionDate, mode }),
       })
       const data = await response.json()
       if (!response.ok) {
@@ -463,7 +766,11 @@ export default function TallyImportPage() {
       const previewResponse = await fetch(`/api/admin/tally/${sessionId}/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversionDate }),
+        body: JSON.stringify({
+          conversionDate,
+          mode,
+          ...(bridgeEdition ? { edition: bridgeEdition } : {}),
+        }),
       })
       const previewData = await previewResponse.json()
       if (!previewResponse.ok) {
@@ -472,6 +779,10 @@ export default function TallyImportPage() {
       }
       setSummary(previewData.summary as Summary)
       setPreview(previewData.preview as Preview)
+      setManifestView((previewData.manifest as ManifestView | null) ?? null)
+      setEditionInfo((previewData.edition as TallyEditionDisclosure | undefined) ?? null)
+      setEditionProblems((previewData.editionProblems as TallyEditionProblem[] | undefined) ?? [])
+      setAcknowledged(false)
       toast({ title: "Cut-over date applied" })
     } finally {
       setBusy("idle")
@@ -488,9 +799,14 @@ export default function TallyImportPage() {
     try {
       while (guard < 500) {
         guard += 1
-        const response = await fetch(`/api/admin/tally/${sessionId}/apply`, { method: "POST" })
+        const response = await fetch(`/api/admin/tally/${sessionId}/apply`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ acknowledgeUnverified: acknowledged }),
+        })
         const data = await response.json()
         if (!response.ok) {
+          track("tally_cutover_blocked", { reason: cutoverBlockReason(data.code) })
           toast({ variant: "destructive", title: data.error ?? "Apply stopped", description: data.progress ? `Stage: ${data.progress.stage}` : undefined })
           if (data.progress) setProgress(data.progress as Progress)
           return
@@ -502,6 +818,10 @@ export default function TallyImportPage() {
         if (data.done) {
           setCutoverAccess("complete")
           setReconcile((data.reconcile as ReconcileCheck[] | null) ?? null)
+          track("tally_cutover_completed", {
+            chunks: Number(summary?.chunkCount ?? 0),
+            documents: Number(data.progress?.counts?.journals ?? 0),
+          })
           toast({ title: "Tally cut-over applied" })
           return
         }
@@ -519,8 +839,44 @@ export default function TallyImportPage() {
 
   const currency = summary?.currency ?? "UGX"
 
+  const setupConnection: SetupConnection = {
+    token: bridgeToken,
+    host: tallyHost,
+    port: tallyPort,
+    executable: tallyExecutable,
+    company: tallyCompany,
+  }
+
+  // The setup assistant edits the same fields Step 1 uses, so finishing it
+  // leaves the extraction ready to run with nothing retyped.
+  function applySetupConnection(next: SetupConnection) {
+    setBridgeToken(next.token)
+    setTallyHost(next.host)
+    setTallyPort(next.port)
+    setTallyExecutable(next.executable)
+    setTallyCompany(next.company)
+    setBridgeCheck(null)
+  }
+
   return (
     <div className="space-y-6">
+      {setupOpen ? (
+        <TallySetupAssistant
+          origin={portalOrigin}
+          connection={setupConnection}
+          onChange={applySetupConnection}
+          onClose={() => setSetupOpen(false)}
+          onDone={() => {
+            setSetupOpen(false)
+            toast({
+              title: "Tally connection verified",
+              description: "Continue with Step 1 to read Tally and review the cut-over.",
+            })
+            void loadTallyCompanies()
+          }}
+          notify={(title, options) => toast({ title, ...options })}
+        />
+      ) : null}
       {cutoverAccess !== "ready" && (
         <div
           role={cutoverAccess === "error" ? "alert" : "status"}
@@ -560,13 +916,27 @@ export default function TallyImportPage() {
       </div>
 
       <div className="rounded-md border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm">
-        <p className="font-medium">Connect to the local Tally Bridge or upload an XML export.</p>
-        <p className="mt-1 opacity-90">
-          The bridge requests All Masters and the Day Book over Tally&apos;s local XML/HTTP interface, then sends
-          the result through this same preview. Excel and CSV work only through the multi-sheet templates below;
-          an ordinary Tally Excel report is not a complete company export. Use the stock import assistant for a
-          single-sheet stock list. This is a one-time cut-over, not continuous synchronisation.
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="font-medium">Connect to the local Tally Bridge or upload an XML export.</p>
+            <p className="mt-1 opacity-90">
+              The bridge requests All Masters and the Day Book over Tally&apos;s local XML/HTTP interface, then
+              sends the result through this same preview. Excel and CSV work only through the multi-sheet
+              templates below; an ordinary Tally Excel report is not a complete company export. Use the stock
+              import assistant for a single-sheet stock list. This is a one-time cut-over, not continuous
+              synchronisation.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="bg-background/60"
+            onClick={() => setSetupOpen(true)}
+            disabled={cutoverAccess !== "ready"}
+          >
+            <Settings2 className="h-4 w-4" /> Set up Tally connection
+          </Button>
+        </div>
       </div>
 
       <Card>
@@ -587,6 +957,119 @@ export default function TallyImportPage() {
               Open Tally, sign in, and select the company being cut over before running it.
               The bridge listens only on 127.0.0.1 and cannot type a Tally password or choose a company for you.
             </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="tally-host">Tally host</Label>
+                <Input
+                  id="tally-host"
+                  value={tallyHost}
+                  onChange={(event) => setTallyHost(event.target.value)}
+                  placeholder="127.0.0.1"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">
+                  This PC, or the Tally PC&apos;s private IPv4 address.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tally-port">Tally HTTP port</Label>
+                <Input
+                  id="tally-port"
+                  value={tallyPort}
+                  onChange={(event) => setTallyPort(event.target.value)}
+                  placeholder="9000"
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">Tally&apos;s XML/HTTP server, 9000 by default.</p>
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="tally-company">Tally company</Label>
+                <div className="flex flex-wrap gap-2">
+                  {tallyCompanies.length > 0 ? (
+                    <select
+                      id="tally-company"
+                      value={tallyCompany}
+                      onChange={(event) => setTallyCompany(event.target.value)}
+                      disabled={cutoverAccess !== "ready" || busy !== "idle"}
+                      className="h-10 min-w-64 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      {tallyCompany && !tallyCompanies.includes(tallyCompany) ? (
+                        <option value={tallyCompany}>{tallyCompany}</option>
+                      ) : null}
+                      {tallyCompanies.map((company) => (
+                        <option key={company} value={company}>
+                          {company}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <Input
+                      id="tally-company"
+                      value={tallyCompany}
+                      onChange={(event) => setTallyCompany(event.target.value)}
+                      placeholder="Company name, exactly as Tally shows it"
+                      autoComplete="off"
+                      disabled={cutoverAccess !== "ready" || busy !== "idle"}
+                      className="min-w-64 flex-1"
+                    />
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {tallyCompanies.length > 0
+                    ? `Found by Check bridge${bridgeEdition && bridgeEdition !== "unknown" ? ` on Tally ${bridgeEdition === "prime" ? "Prime" : "ERP 9"}` : ""}. The command below pins this company; run it again after changing it.`
+                    : "Run Check bridge to list the companies Tally has open, or type the name exactly."}
+                </p>
+                {tallyCompany.trim() ? null : (
+                  <p className="text-xs text-destructive">
+                    Required. Without it the bridge refuses to export anything, because an export
+                    that does not name its company cannot be checked.
+                  </p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tally-executable">Tally program path (optional)</Label>
+                <Input
+                  id="tally-executable"
+                  value={tallyExecutable}
+                  onChange={(event) => setTallyExecutable(event.target.value)}
+                  placeholder="C:\Program Files\TallyPrime\tally.exe"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Launched only when nothing answers on the port above.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tally-from-date">History from</Label>
+                <Input
+                  id="tally-from-date"
+                  value={tallyFromDate}
+                  onChange={(event) => setTallyFromDate(event.target.value)}
+                  placeholder="20200401"
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">
+                  YYYYMMDD. Required for a live extraction, which reads the history in date ranges. A
+                  manual file upload can leave it blank.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tally-to-date">Balances close on (optional)</Label>
+                <Input
+                  id="tally-to-date"
+                  value={tallyToDate}
+                  onChange={(event) => setTallyToDate(event.target.value)}
+                  placeholder="20260331"
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+                <p className="text-xs text-muted-foreground">
+                  YYYYMMDD. The date Tally reports closing balances for. Leave blank for today.
+                </p>
+              </div>
+            </div>
             <div className="rounded-md bg-muted p-3">
               <pre className="overflow-x-auto whitespace-pre-wrap break-all text-xs">{bridgeCommand}</pre>
             </div>
@@ -595,7 +1078,8 @@ export default function TallyImportPage() {
                 <Copy className="h-4 w-4" /> Copy command
               </Button>
               <span className="text-xs text-muted-foreground">
-                Replace the token placeholder with the one you paste below.
+                Run it, then paste the token it prints below. The token is generated on this computer and never
+                leaves it.
               </span>
             </div>
           </div>
@@ -621,12 +1105,16 @@ export default function TallyImportPage() {
                 onClick={() => void connectToTally()}
                 disabled={cutoverAccess !== "ready" || busy !== "idle" || !bridgeToken.trim()}
               >
-                {busy === "connecting" ? (
+                {busy === "connecting" || busy === "extracting" ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <RefreshCw className="h-4 w-4" />
                 )}
-                {busy === "connecting" ? "Reading Tally…" : "Connect and review"}
+                {busy === "extracting"
+                  ? "Extracting…"
+                  : busy === "connecting"
+                    ? "Reading Tally…"
+                    : "Connect and review"}
               </Button>
               <Button
                 variant="ghost"
@@ -666,6 +1154,35 @@ export default function TallyImportPage() {
             <span className="h-px flex-1 bg-border" />
           </div>
 
+          <div className="space-y-1.5">
+            <Label>What this export carries</Label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={mode === "opening" ? "default" : "outline"}
+                onClick={() => setMode("opening")}
+                disabled={cutoverAccess !== "ready" || busy !== "idle"}
+              >
+                Opening balances and history
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={mode === "closing" ? "default" : "outline"}
+                onClick={() => setMode("closing")}
+                disabled={cutoverAccess !== "ready" || busy !== "idle"}
+              >
+                Closing balances only
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {mode === "opening"
+                ? "Tally's opening balances are posted, then the Day Book vouchers are replayed on top."
+                : "The balances the export closes on become the opening in Synapse, and no voucher is posted. Use this when you are starting Synapse from Tally's closing position rather than rebuilding the history."}
+            </p>
+          </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="tally-file">Tally XML, workbook or CSV (max 25 MB)</Label>
@@ -687,7 +1204,9 @@ export default function TallyImportPage() {
               )}
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="cutover-date">Cut-over date</Label>
+              <Label htmlFor="cutover-date">
+                {mode === "closing" ? "Balances as at" : "Cut-over date"}
+              </Label>
               <Input
                 id="cutover-date"
                 type="date"
@@ -695,13 +1214,15 @@ export default function TallyImportPage() {
                 onChange={(event) => setConversionDate(event.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Balances are read as at this date. Vouchers before it are flagged, never double-posted.
+                {mode === "closing"
+                  ? "The export's closing balances are taken as at this date and become the opening in Synapse."
+                  : "Balances are read as at this date. Vouchers before it are flagged, never double-posted."}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => void uploadAndPreview()} disabled={cutoverAccess !== "ready" || busy !== "idle" || !file}>
+            <Button onClick={() => void uploadAndPreview(file, requestedPeriod(false))} disabled={cutoverAccess !== "ready" || busy !== "idle" || !file}>
               {busy === "uploading" || busy === "preview" ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
@@ -718,6 +1239,197 @@ export default function TallyImportPage() {
         </CardContent>
       </Card>
 
+      {extraction && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <RefreshCw className="h-5 w-5 text-primary" />
+              Extraction — {extraction.complete} of {extraction.totalChunks} ranges read
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <Stat
+                label="Ranges read"
+                value={`${extraction.complete} / ${extraction.totalChunks}`}
+                tone={extraction.completeAll ? undefined : "warn"}
+              />
+              <Stat label="Records read" value={extraction.recordsRead.toLocaleString()} />
+              <Stat
+                label="Ranges failed"
+                value={String(extraction.failed)}
+                tone={extraction.failed > 0 ? "bad" : undefined}
+              />
+              <Stat label="Attempts" value={String(extraction.attempts)} />
+            </div>
+
+            {extraction.coveredFrom || extraction.gaps.length > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {extraction.coveredFrom && extraction.coveredTo
+                  ? `Dates read: ${extraction.coveredFrom} to ${extraction.coveredTo}`
+                  : "No range has been read yet."}
+                {extraction.gaps.length > 0
+                  ? ` · ${extraction.gaps.length} stretch${extraction.gaps.length === 1 ? "" : "es"} of the period have no read range`
+                  : ""}
+              </p>
+            ) : null}
+
+            {extraction.gaps.length > 0 && (
+              <div className="rounded-lg border border-[#E8B84B]/50 bg-[#E8B84B]/10 p-4">
+                <p className="flex items-center gap-2 text-sm font-semibold">
+                  <AlertTriangle className="h-4 w-4" />
+                  Dates no read range covers
+                </p>
+                <ul className="mt-2 space-y-1 text-xs">
+                  {extraction.gaps.map((gap) => (
+                    <li key={`${gap.after}-${gap.before}`} className="font-mono">
+                      {gap.after} → {gap.before}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Apply stays disabled until every range is read.
+                </p>
+              </div>
+            )}
+
+            {extraction.failures.length > 0 && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4">
+                <p className="flex items-center gap-2 text-sm font-semibold">
+                  <AlertTriangle className="h-4 w-4" />
+                  {extraction.failures.length} range{extraction.failures.length === 1 ? "" : "s"} could not
+                  be read
+                </p>
+                <div className="mt-2 max-h-48 space-y-1 overflow-y-auto text-xs">
+                  {extraction.failures.map((failure) => (
+                    <div key={failure.id}>
+                      <span className="font-mono text-[10px] uppercase opacity-70">{failure.id}</span>{" "}
+                      {failure.error ?? "No reason was recorded."}{" "}
+                      <span className="text-muted-foreground">
+                        (attempt {failure.attempts})
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3"
+                  onClick={() => void resumeExtraction()}
+                  disabled={busy !== "idle" || !sessionId || !bridgeToken.trim()}
+                >
+                  {busy === "extracting" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                  Retry unfinished ranges
+                </Button>
+              </div>
+            )}
+
+            {consolidation && (
+              <div className="space-y-3 rounded-lg border p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-semibold">
+                    Merged from {consolidation.parts} read{consolidation.parts === 1 ? "" : "s"}
+                  </p>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                      consolidation.reconciliation === "verified"
+                        ? "bg-[#22C55E]/15 text-[#22C55E]"
+                        : consolidation.reconciliation === "mismatch"
+                          ? "bg-destructive/15 text-destructive"
+                          : "bg-[#E8B84B]/15 text-[#E8B84B]"
+                    }`}
+                  >
+                    {consolidation.reconciliation === "verified"
+                      ? "Counted against Tally"
+                      : consolidation.reconciliation === "mismatch"
+                        ? "Count does not match Tally"
+                        : "No independent count"}
+                  </span>
+                </div>
+                <div className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Master records</p>
+                    <p className="text-lg font-semibold">{consolidation.masters.total.toLocaleString()}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {consolidation.masters.duplicates} repeat
+                      {consolidation.masters.duplicates === 1 ? "" : "s"} removed ·{" "}
+                      {consolidation.masters.conflicts} conflict
+                      {consolidation.masters.conflicts === 1 ? "" : "s"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Vouchers</p>
+                    <p className="text-lg font-semibold">{consolidation.vouchers.unique.toLocaleString()}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {consolidation.vouchers.read.toLocaleString()} read ·{" "}
+                      {consolidation.vouchers.duplicates} duplicate
+                      {consolidation.vouchers.duplicates === 1 ? "" : "s"} dropped
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Cancelled</p>
+                    <p className="text-lg font-semibold">{consolidation.vouchers.cancelled.toLocaleString()}</p>
+                    <p className="text-xs text-muted-foreground">Kept out of the posted history</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">No identifier</p>
+                    <p className="text-lg font-semibold">{consolidation.vouchers.keyless.toLocaleString()}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Kept — they cannot be proven duplicates
+                    </p>
+                  </div>
+                </div>
+
+                {consolidation.vouchers.unsupported.length > 0 && (
+                  <div className="rounded-md bg-muted p-3">
+                    <p className="text-xs font-semibold">Types this cut-over does not post</p>
+                    <ul className="mt-1 space-y-1 text-xs">
+                      {consolidation.vouchers.unsupported.map((entry) => (
+                        <li key={entry.type}>
+                          <span className="font-medium">{entry.type}</span> — {entry.count} voucher
+                          {entry.count === 1 ? "" : "s"}: {entry.reason ?? "not a supported voucher type"}
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      They are counted above and stay in Tally; nothing is dropped without being listed.
+                    </p>
+                  </div>
+                )}
+
+                {consolidation.totals.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold">
+                      Amounts by type — compare these with Tally&apos;s own report
+                    </p>
+                    <div className="mt-1 grid gap-1 text-xs sm:grid-cols-2">
+                      {consolidation.totals.map((total) => (
+                        <div key={total.type} className="flex justify-between gap-4 border-b py-1">
+                          <span>{total.type}</span>
+                          <span className="font-mono">{money(total.amount, summary?.currency ?? "UGX")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {consolidation.problems.length > 0 && (
+                  <div className="space-y-1 text-xs text-destructive">
+                    {consolidation.problems.map((problem) => (
+                      <p key={problem}>{problem}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {summary && (
         <>
           <Card>
@@ -728,6 +1440,32 @@ export default function TallyImportPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <p className="text-xs text-muted-foreground">
+                {summary.mode === "closing"
+                  ? `Balances as at ${summary.conversionDate} — no Tally voucher is posted.`
+                  : `Opening balances as at ${summary.conversionDate}, then ${summary.counts.postedVouchers} vouchers replayed.`}
+              </p>
+
+              {editionInfo && (
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs">
+                    <span className="font-medium">Source edition · {editionInfo.label}</span>{" "}
+                    <span className="text-muted-foreground">
+                      {editionInfo.verified
+                        ? "confirmed against a real installation"
+                        : "not confirmed against a real installation"}
+                    </span>
+                  </p>
+                  {editionProblems.map((problem) => (
+                    <p
+                      key={problem.code}
+                      className="mt-1 text-xs text-amber-600 dark:text-amber-500"
+                    >
+                      {problem.message}
+                    </p>
+                  ))}
+                </div>
+              )}
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <Stat label="Ledger accounts" value={String(summary.counts.ledgers)} />
                 <Stat label="Stock items" value={String(summary.counts.stockItems)} />
@@ -742,7 +1480,10 @@ export default function TallyImportPage() {
               <div className="rounded-lg border p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="text-sm font-medium">Opening trial balance · {summary.opening.date}</p>
+                    <p className="text-sm font-medium">
+                      {summary.mode === "closing" ? "Trial balance carried forward" : "Opening trial balance"} ·{" "}
+                      {summary.opening.date}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       Debit {money(summary.opening.totalDebit, currency)} · Credit{" "}
                       {money(summary.opening.totalCredit, currency)}
@@ -762,6 +1503,48 @@ export default function TallyImportPage() {
                 )}
               </div>
 
+              {summary.stock && (
+                <div className="rounded-lg border p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-sm font-medium">Stock valuation · Tally profit and loss</p>
+                    <span className="text-xs text-muted-foreground">
+                      {summary.stock.itemCount} stock item
+                      {summary.stock.itemCount === 1 ? "" : "s"} in the export
+                    </span>
+                  </div>
+                  <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Opening stock</p>
+                      <p className="text-lg font-semibold">{money(summary.stock.openingValue, currency)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {summary.stock.itemsWithOpeningValue} of {summary.stock.itemCount} items carry an opening
+                        value
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Closing stock</p>
+                      <p className="text-lg font-semibold">{money(summary.stock.closingValue, currency)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {summary.stock.closingValue === null
+                          ? `Not in this export — ${summary.stock.itemsWithClosingValue} of ${summary.stock.itemCount} items carry a closing value`
+                          : `${summary.stock.itemsWithClosingValue} of ${summary.stock.itemCount} items carry a closing value`}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    {summary.mode === "closing"
+                      ? "In closing-balances mode these figures become the opening in Synapse: the closing stock is posted as opening stock and no voucher is replayed."
+                      : "These are Tally's own figures for the exported period. The cut-over posts opening stock and the history you imported; it does not post a closing balance, and nothing here is adjusted to make the two sides agree."}
+                  </p>
+                  {summary.stock.closingValue === null && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      To see closing stock, export the stock summary, or set the Tally export period to end on the
+                      cut-over date.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {summary.exceptions.length > 0 && (
                 <div className="rounded-lg border border-[#E8B84B]/50 bg-[#E8B84B]/10 p-4">
                   <p className="flex items-center gap-2 text-sm font-semibold">
@@ -780,9 +1563,122 @@ export default function TallyImportPage() {
                 </div>
               )}
 
+              {manifestView && (
+                <div
+                  className={`rounded-lg border p-4 ${
+                    unverifiedCoverage
+                      ? "border-[#E8B84B]/50 bg-[#E8B84B]/10"
+                      : "border-[#22C55E]/40 bg-[#22C55E]/10"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="flex items-center gap-2 text-sm font-semibold">
+                      <AlertTriangle className="h-4 w-4" />
+                      {unverifiedCoverage
+                        ? "Source completeness not independently verified"
+                        : manifestView.coverage === "verified"
+                          ? "Source completeness verified"
+                          : "Source plan unavailable"}
+                    </p>
+                    <span className="text-xs text-muted-foreground">
+                      Period used: {formatPeriod(manifestView.period) ?? "not established"}
+                      {manifestView.periodSource === "source"
+                        ? " (stated by the export)"
+                        : manifestView.periodSource === "requested"
+                          ? " (the period that was requested)"
+                          : ""}
+                    </span>
+                  </div>
+
+                  {manifestView.reason && (
+                    <p className="mt-2 text-xs">{manifestView.reason}</p>
+                  )}
+
+                  <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
+                    <div>
+                      <p className="text-muted-foreground">Period requested</p>
+                      <p className="font-medium">{formatPeriod(evidence?.requestedPeriod) ?? "Not recorded"}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Period stated by the export</p>
+                      <p className="font-medium">{formatPeriod(evidence?.declaredPeriod) ?? "Not stated"}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Voucher dates actually read</p>
+                      <p className="font-medium">
+                        {evidence?.voucherRange.firstDate
+                          ? `${evidence.voucherRange.firstDate} to ${evidence.voucherRange.lastDate}`
+                          : "No voucher dates"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Records read</p>
+                      <p className="font-medium">
+                        {evidence ? evidence.recordsRead.toLocaleString() : "Not recorded"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Records staged</p>
+                      <p className="font-medium">
+                        {evidence?.recordsStaged
+                          ? `${evidence.recordsStaged.accounts} accounts, ${evidence.recordsStaged.parties} parties, ${evidence.recordsStaged.products} products, ${evidence.recordsStaged.vouchers} vouchers`
+                          : "Not recorded"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Independent source count</p>
+                      <p className="font-medium">
+                        {evidence?.independentCount ? "Provided" : "None supplied"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {unverifiedCoverage ? (
+                    <>
+                      <p className="mt-3 text-xs">
+                        Nothing counted this export independently, so Synapse cannot prove that every record in the
+                        period was read. Applying accepts that risk; the coverage stays unverified and the cut-over
+                        is not marked complete on that basis.
+                      </p>
+                      <label className="mt-3 flex cursor-pointer items-start gap-2">
+                        <input
+                          id="tally-unverified-ack"
+                          type="checkbox"
+                          checked={acknowledged}
+                          onChange={(event) => setAcknowledged(event.target.checked)}
+                          className="mt-0.5 rounded"
+                        />
+                        <span className="text-sm">
+                          I have reviewed the evidence above and understand that source completeness has not been
+                          independently verified.
+                        </span>
+                      </label>
+                    </>
+                  ) : (
+                    manifestView.coverage === "verified" && (
+                      <p className="mt-3 text-xs">
+                        An independent count matched what was read for every part of this period.
+                      </p>
+                    )
+                  )}
+
+                  {manifestView.problems.length > 0 && (
+                    <div className="mt-3 space-y-1">
+                      {manifestView.problems.map((problem, index) => (
+                        <p key={`${problem}-${index}`} className="text-xs text-destructive">
+                          {problem}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="flex flex-wrap items-end gap-2">
                 <div className="space-y-1.5">
-                  <Label htmlFor="cutover-date-2">Cut-over date</Label>
+                  <Label htmlFor="cutover-date-2">
+                    {mode === "closing" ? "Balances as at" : "Cut-over date"}
+                  </Label>
                   <Input
                     id="cutover-date-2"
                     type="date"
@@ -855,6 +1751,8 @@ export default function TallyImportPage() {
                           <TableHead>SKU</TableHead>
                           <TableHead>Item</TableHead>
                           <TableHead>Qty</TableHead>
+                          <TableHead>Opening value</TableHead>
+                          <TableHead>Closing value</TableHead>
                           <TableHead>Batches</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -866,6 +1764,8 @@ export default function TallyImportPage() {
                             <TableCell className="text-xs">
                               {item.quantity ?? "—"} {item.unit ?? ""}
                             </TableCell>
+                            <TableCell className="text-xs">{money(item.openingValue, currency)}</TableCell>
+                            <TableCell className="text-xs">{money(item.closingValue, currency)}</TableCell>
                             <TableCell className="text-xs">
                               {item.receivableBatches} receivable
                               {item.expiredBatches > 0 && (
@@ -971,6 +1871,41 @@ export default function TallyImportPage() {
                 later; every step is safe to repeat.
               </p>
 
+              {preflightView && (
+                <div className="rounded-lg border p-4">
+                  <p className="text-sm font-medium">
+                    Cut-over preflight — {PREFLIGHT_STATE_LABEL[preflightView.state] ?? preflightView.state}
+                  </p>
+                  <ul className="mt-2 space-y-1 text-xs">
+                    {preflightView.checks
+                      .filter((entry) => entry.status !== "pass")
+                      .map((entry) => (
+                        <li key={entry.id} className="flex gap-2">
+                          <span
+                            className={
+                              entry.status === "fail" ? "text-destructive" : "text-[#E8B84B]"
+                            }
+                          >
+                            {entry.status === "fail"
+                              ? entry.blocksApply
+                                ? "Blocked"
+                                : "Failed"
+                              : entry.status === "unavailable"
+                                ? "Unverified"
+                                : "Note"}
+                          </span>
+                          <span>
+                            <span className="font-medium">{entry.label}:</span> {entry.detail}
+                          </span>
+                        </li>
+                      ))}
+                    {preflightView.checks.every((entry) => entry.status === "pass") && (
+                      <li className="text-muted-foreground">Every preflight check passed.</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
               <div className="flex flex-wrap gap-2">
                 <Button onClick={() => void apply()} disabled={!canApply}>
                   {busy === "applying" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
@@ -979,6 +1914,11 @@ export default function TallyImportPage() {
                 {!balanced && (
                   <span className="self-center text-xs text-destructive">
                     Apply is blocked while the opening trial balance is out.
+                  </span>
+                )}
+                {needsAcknowledgement && (
+                  <span className="self-center text-xs text-[#E8B84B]">
+                    Tick the completeness acknowledgement in Step 2 before applying.
                   </span>
                 )}
               </div>

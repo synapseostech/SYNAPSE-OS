@@ -114,9 +114,12 @@ export default function CreditLedgerScreen() {
           ) : (
             <View style={styles.list}>
               {data.entries.map((entry) => {
-                const isRepayment = entry.type === 'repayment'
+                // A refund on a credit sale reduces the balance like a repayment.
+                const isSettlement = entry.type === 'repayment' || entry.type === 'refund'
+                const label =
+                  entry.type === 'refund' ? 'Refund' : entry.type === 'repayment' ? 'Repayment' : 'Credit sale'
                 const overdue =
-                  !isRepayment && entry.balanceAfter > 0 && Boolean(entry.dueDate && entry.dueDate < today)
+                  !isSettlement && entry.balanceAfter > 0 && Boolean(entry.dueDate && entry.dueDate < today)
                 return (
                   <Card key={entry.id}>
                     <View style={styles.entryTop}>
@@ -126,15 +129,15 @@ export default function CreditLedgerScreen() {
                       <Text
                         style={[
                           styles.entryAmount,
-                          { color: isRepayment ? colors.success : colors.text },
+                          { color: isSettlement ? colors.success : colors.text },
                         ]}
                       >
-                        {isRepayment ? '−' : '+'}
+                        {isSettlement ? '−' : '+'}
                         {money(entry.amount)}
                       </Text>
                     </View>
                     <Text style={[styles.entryMeta, { color: colors.textMuted }]}>
-                      {isRepayment ? 'Repayment' : 'Credit sale'} · balance {money(entry.balanceAfter)}
+                      {label} · balance {money(entry.balanceAfter)}
                       {entry.dueDate ? ` · due ${entry.dueDate}` : ''}
                       {entry.createdAt ? ` · ${entry.createdAt.slice(0, 10)}` : ''}
                     </Text>

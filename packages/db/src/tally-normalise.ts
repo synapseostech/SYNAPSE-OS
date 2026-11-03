@@ -35,6 +35,7 @@ import type {
 
 export type TallyExceptionCode =
   | "COMPANY_MISSING"
+  | "SOURCE_TRUNCATED"
   | "CONVERSION_DATE_REQUIRED"
   | "UNCLASSIFIED_LEDGER"
   | "LEDGER_MISSING"
@@ -46,6 +47,11 @@ export type TallyExceptionCode =
   | "OPENING_STOCK_WITHOUT_VALUE"
   | "OPENING_STOCK_WITHOUT_QUANTITY"
   | "OPENING_STOCK_QUANTITY_MISMATCH"
+  | "CLOSING_STOCK_BATCHES_UNAVAILABLE"
+  | "CLOSING_PERIOD_MISMATCH"
+  | "CLOSING_PERIOD_UNKNOWN"
+  | "CLOSING_MODE_VOUCHERS_IGNORED"
+  | "STOCK_CLOSING_VALUE_MISSING"
   | "NON_INTEGER_QUANTITY"
   | "PARTY_OPENING_OPPOSITE_SIDE"
   | "PARTY_BILLS_MISMATCH"
@@ -86,7 +92,7 @@ export type TallyCutoverAccount = {
   sourceGuid?: string
   openingBalance: number
   openingSide: "debit" | "credit" | "none"
-  openingMethod: "exported" | "derived" | "none"
+  openingMethod: "exported" | "derived" | "closing" | "none"
   closingBalance?: number
 }
 
@@ -126,10 +132,26 @@ export type TallyCutoverStockItem = {
   sku: string
   name: string
   unit?: string
+  /** Posted as the opening quantity. Closing mode takes Tally's closing figure here. */
   quantity?: number
   rate?: number
   value?: number
+  /** Exported closing figures: posted in closing mode, shown only in opening mode. */
+  closingQuantity?: number
+  closingValue?: number
   batches: TallyCutoverStockBatch[]
+}
+
+/**
+ * Tally's own stock valuation for the exported period, as the profit and loss
+ * account presents it. Read from the export, never recomputed and never posted.
+ */
+export type TallyCutoverStockValuation = {
+  openingValue: number | null
+  closingValue: number | null
+  itemsWithOpeningValue: number
+  itemsWithClosingValue: number
+  itemCount: number
 }
 
 export type TallyCutoverJournalLine = {
@@ -206,7 +228,9 @@ export type TallyCutoverPlan = {
   conversionDate: string
   accounts: TallyCutoverAccount[]
   parties: TallyCutoverParty[]
+  mode: TallyCutoverMode
   stockItems: TallyCutoverStockItem[]
+  stock: TallyCutoverStockValuation
   opening: TallyCutoverOpening
   vouchers: TallyCutoverVoucher[]
   sales: TallyCutoverSale[]
@@ -226,9 +250,16 @@ export type TallyCutoverPlan = {
   warnings: TallyXmlRowWarning[]
 }
 
+/**
+ * `opening` imports Tally's opening balances and replays the Day Book.
+ * `closing` imports the balances the export closes on and posts no vouchers.
+ */
+export type TallyCutoverMode = "opening" | "closing"
+
 export type TallyNormaliseOptions = {
   conversionDate?: string
   currency?: string
+  mode?: TallyCutoverMode
   accountOverrides?: TallyAccountOverrides
   productSkuOverrides?: Record<string, string>
   /** Today in Africa/Kampala (YYYY-MM-DD). Defaults to the current date. */
@@ -330,9 +361,10 @@ export function normaliseTallyDocument(
   document: TallyXmlDocument,
   options: TallyNormaliseOptions = {},
 ): TallyCutoverPlan {
+  const mode: TallyCutoverMode = options.mode === "closing" ? "closing" : "opening"
   const conversionDate =
     options.conversionDate ??
-    document.financialPeriod.from ??
+    (mode === "closing" ? document.financialPeriod.to : document.financialPeriod.from) ??
     document.vouchers.map((voucher) => voucher.date).filter((date): date is string => Boolean(date)).sort()[0] ??
     ""
   if (!ISO_DATE_RE.test(conversionDate)) throw new Error("TALLY_CONVERSION_DATE_REQUIRED")
@@ -369,7 +401,40 @@ export function normaliseTallyDocument(
     exceptions.push({ code, severity, message, detail })
   }
 
+  if (document.truncated) {
+    const { reason, limit, recordsProcessed } = document.truncated
+    addException(
+      "SOURCE_TRUNCATED",
+      `The import stopped after ${recordsProcessed.toLocaleString("en-GB")} records because the ${limit.toLocaleString("en-GB")}-record limit was reached (${reason}). The rest of the file was never read, so this plan holds only the start of the export and cannot be applied.`,
+      `reason=${reason}; recordsProcessed=${recordsProcessed}; limit=${limit}`,
+      "blocking",
+    )
+  }
+
   if (!company) addException("COMPANY_MISSING", "The export did not name a company. Source identifiers use a hash of the file's data.")
+
+  if (mode === "closing") {
+    const periodEnd = document.financialPeriod.to
+    if (!periodEnd) {
+      addException(
+        "CLOSING_PERIOD_UNKNOWN",
+        `This export does not say which date its balances close on. Confirm in Tally that they close on ${conversionDate}; they are imported as the opening balances at that date.`,
+      )
+    } else if (periodEnd !== conversionDate) {
+      addException(
+        "CLOSING_PERIOD_MISMATCH",
+        `The export closes on ${periodEnd}, but the cut-over date is ${conversionDate}. Export the balances as at ${conversionDate}, or set the cut-over date to ${periodEnd}.`,
+        undefined,
+        "blocking",
+      )
+    }
+    if (document.vouchers.length > 0) {
+      addException(
+        "CLOSING_MODE_VOUCHERS_IGNORED",
+        `${document.vouchers.length} Day Book voucher${document.vouchers.length === 1 ? "" : "s"} were exported but not imported. A balances-only cut-over starts from the closing balances; use full history to post the vouchers.`,
+      )
+    }
+  }
 
   const mapped = mapTallyLedgers(document.ledgers, document.groups, options.accountOverrides)
   const ledgerByKey = new Map<string, TallyLedger>()
@@ -432,10 +497,13 @@ export function normaliseTallyDocument(
 
   const vouchers: TallyCutoverVoucher[] = []
   const acceptedVouchers: Array<{ voucher: TallyVoucher; sourceId: string; kind: TallyVoucherKind }> = []
-  let skippedVouchers = 0
+  // A balances-only cut-over takes the closing position, so the Day Book is
+  // reported as skipped rather than posted.
+  const sourceVouchers = mode === "closing" ? [] : document.vouchers
+  let skippedVouchers = mode === "closing" ? document.vouchers.length : 0
   const usedSourceIds = new Set<string>()
 
-  for (const voucher of document.vouchers) {
+  for (const voucher of sourceVouchers) {
     const kind = classifyTallyVoucherType(voucher.type)
     const sourceType = tallyVoucherSourceType(kind)
     if (!sourceType) {
@@ -579,9 +647,20 @@ export function normaliseTallyDocument(
     const sourceLedger = ledgerByKey.get(normaliseTallyKey(account.sourceName))
     const closing = sourceLedger?.closingBalance
     let opening: number | undefined
-    let openingMethod: "exported" | "derived" | "none" = "none"
+    let openingMethod: "exported" | "derived" | "closing" | "none" = "none"
 
-    if (sourceLedger?.openingBalance !== undefined) {
+    if (mode === "closing") {
+      if (closing !== undefined) {
+        opening = closing
+        openingMethod = "closing"
+      } else {
+        addException(
+          "OPENING_BALANCE_UNAVAILABLE",
+          `Ledger "${account.sourceName}" has no closing balance in this export, so its opening is left at zero. Re-export the balances for the cut-over date.`,
+          account.sourceName,
+        )
+      }
+    } else if (sourceLedger?.openingBalance !== undefined) {
       opening = sourceLedger.openingBalance
       openingMethod = "exported"
     } else if (
@@ -626,7 +705,7 @@ export function normaliseTallyDocument(
       accountName: account.name,
       debit: account.openingSide === "debit" ? account.openingBalance : 0,
       credit: account.openingSide === "credit" ? account.openingBalance : 0,
-      description: "Tally opening balance",
+      description: mode === "closing" ? "Tally closing balance" : "Tally opening balance",
     }))
 
   const openingDebit = openingLines.reduce((total, line) => total + cents(line.debit), 0)
@@ -667,17 +746,32 @@ export function normaliseTallyDocument(
   const productSkuOverrides = options.productSkuOverrides ?? {}
   const seenStock = new Set<string>()
   const stockItems: TallyCutoverStockItem[] = []
+  // Tally's P&L figures come from the export itself, not from the posted
+  // opening, so they read the same in either mode.
+  let exportedOpeningValue = 0
+  let exportedClosingValue = 0
+  let itemsWithOpeningValue = 0
+  let itemsWithClosingValue = 0
   for (const item of document.stockItems) {
     const key = normaliseTallyKey(item.name)
     if (!key || seenStock.has(key)) continue
     seenStock.add(key)
 
-    const quantity = item.openingQuantity
-    const value = item.openingValue
+    if (item.openingValue !== undefined) {
+      exportedOpeningValue += item.openingValue
+      itemsWithOpeningValue += 1
+    }
+    if (item.closingValue !== undefined) {
+      exportedClosingValue += item.closingValue
+      itemsWithClosingValue += 1
+    }
+
+    const quantity = mode === "closing" ? item.closingQuantity : item.openingQuantity
+    const value = mode === "closing" ? item.closingValue : item.openingValue
     const rate =
-      item.openingRate ??
+      (mode === "closing" ? undefined : item.openingRate) ??
       (quantity && quantity !== 0 && value !== undefined ? round2(value / quantity) : undefined)
-    const batches: TallyCutoverStockBatch[] = item.batches.map((batch) => {
+    let batches: TallyCutoverStockBatch[] = item.batches.map((batch) => {
       const expiryDate = batch.expiryDate
       const batchQuantity = batch.quantity
       const receivable =
@@ -694,13 +788,32 @@ export function normaliseTallyDocument(
       }
     })
 
+    const listedBatchQuantity = batches.reduce((total, batch) => total + (batch.quantity ?? 0), 0)
+    if (
+      mode === "closing" &&
+      quantity !== undefined &&
+      quantity > 0 &&
+      batches.length > 0 &&
+      Math.abs(listedBatchQuantity - quantity) >= 0.005
+    ) {
+      // The master's batch list is dated at the period start. Receiving it as
+      // the closing stock would create sellable units Tally never had.
+      addException(
+        "CLOSING_STOCK_BATCHES_UNAVAILABLE",
+        `Stock item "${item.name}" closes at ${quantity} but the export's batches total ${listedBatchQuantity}. Those batches belong to another date, so none is created; supply the closing batches in the StockBatches sheet.`,
+        item.name,
+      )
+      batches = []
+    }
+
     if (quantity !== undefined && quantity > 0) {
+      const period = mode === "closing" ? "closing" : "opening"
       const hasExpiry = batches.some((batch) => batch.expiryDate)
       const expired = batches.filter((batch) => batch.expiryDate && batch.expiryDate < today)
       if (!hasExpiry) {
         addException(
           "OPENING_STOCK_WITHOUT_EXPIRY",
-          `Stock item "${item.name}" has opening quantity ${quantity} but no batch expiry. Its opening value stays in the ledger; no stock batch is created.`,
+          `Stock item "${item.name}" has ${period} quantity ${quantity} but no batch expiry. Its value stays in the ledger; no stock batch is created.`,
           item.name,
         )
       }
@@ -715,14 +828,14 @@ export function normaliseTallyDocument(
       if (value === undefined && rate === undefined) {
         addException(
           "OPENING_STOCK_WITHOUT_VALUE",
-          `Stock item "${item.name}" has opening quantity but no opening value or rate. Its stock batch is not created.`,
+          `Stock item "${item.name}" has ${period} quantity but no ${period} value or rate. Its stock batch is not created.`,
           item.name,
         )
       }
       if (!Number.isInteger(quantity)) {
         addException(
           "NON_INTEGER_QUANTITY",
-          `Stock item "${item.name}" opens at ${quantity}, which is not a whole unit. The pharmacy stock ledger only accepts whole units, so no batch is created.`,
+          `Stock item "${item.name}" has ${period} quantity ${quantity}, which is not a whole unit. The pharmacy stock ledger only accepts whole units, so no batch is created.`,
           item.name,
         )
       }
@@ -734,10 +847,10 @@ export function normaliseTallyDocument(
           item.name,
         )
       }
-    } else if (item.openingQuantity !== undefined && item.openingQuantity < 0) {
+    } else if (quantity !== undefined && quantity < 0) {
       addException(
         "OPENING_STOCK_WITHOUT_QUANTITY",
-        `Stock item "${item.name}" has a negative opening quantity, which cannot be received. The ledger opening is still posted.`,
+        `Stock item "${item.name}" has a negative ${mode === "closing" ? "closing" : "opening"} quantity, which cannot be received. The ledger value is still posted.`,
         item.name,
       )
     }
@@ -750,8 +863,27 @@ export function normaliseTallyDocument(
       quantity,
       rate: rate === undefined ? undefined : round2(rate),
       value: value === undefined ? undefined : round2(value),
+      closingQuantity: item.closingQuantity,
+      closingValue: item.closingValue === undefined ? undefined : round2(item.closingValue),
       batches,
     })
+  }
+
+  // Tally's P&L shows the period's opening and closing stock. Report what the
+  // export actually carries; an export without closing figures shows none
+  // rather than a misleading zero.
+  const stock: TallyCutoverStockValuation = {
+    openingValue: itemsWithOpeningValue > 0 ? round2(exportedOpeningValue) : null,
+    closingValue: itemsWithClosingValue > 0 ? round2(exportedClosingValue) : null,
+    itemsWithOpeningValue,
+    itemsWithClosingValue,
+    itemCount: stockItems.length,
+  }
+  if (stockItems.length > 0 && itemsWithClosingValue === 0) {
+    addException(
+      "STOCK_CLOSING_VALUE_MISSING",
+      "This export carries opening stock but no closing stock. Tally's closing stock for the period is shown as unavailable rather than zero; export the stock summary, or set the export period to end on the cut-over date.",
+    )
   }
 
   const sales: TallyCutoverSale[] = []
@@ -890,9 +1022,11 @@ export function normaliseTallyDocument(
     companyKey,
     currency,
     conversionDate,
+    mode,
     accounts: cutoverAccounts,
     parties,
     stockItems,
+    stock,
     opening: {
       date: conversionDate,
       currency,
@@ -909,7 +1043,7 @@ export function normaliseTallyDocument(
       ledgers: document.ledgers.length,
       groups: document.groups.length,
       stockItems: document.stockItems.length,
-      vouchers: document.vouchers.length,
+      vouchers: sourceVouchers.length,
       postedVouchers: vouchers.length,
       skippedVouchers,
       sales: sales.length,

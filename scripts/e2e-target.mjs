@@ -21,6 +21,7 @@ export function resolvePlaywrightTarget(env = process.env) {
 
 export const resolveE2eTarget = resolvePlaywrightTarget
 
+/** @returns {Record<string, string>} */
 export function vercelProtectionBypassHeaders(env = process.env) {
   const secret = String(env.SYNAPSE_E2E_VERCEL_BYPASS || "").trim()
   if (!secret) return {}

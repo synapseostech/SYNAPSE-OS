@@ -31,7 +31,17 @@ const EXAMPLE_ROWS: Partial<Record<string, string[][]>> = {
 const CSV_COLUMNS: Record<string, string[]> = {
   meta: ["key", "value"],
   account: ["name", "parent", "guid", "opening_balance", "closing_balance", "email", "phone", "address"],
-  stock_item: ["name", "guid", "parent", "unit", "opening_quantity", "opening_rate", "opening_value"],
+  stock_item: [
+    "name",
+    "guid",
+    "parent",
+    "unit",
+    "opening_quantity",
+    "opening_rate",
+    "opening_value",
+    "closing_quantity",
+    "closing_value",
+  ],
   stock_batch: ["stock_item", "batch", "expiry", "quantity", "amount", "godown"],
   voucher: ["id", "type", "date", "guid", "number", "party", "narration", "currency", "cancelled"],
   voucher_line: ["voucher_id", "ledger", "debit", "credit", "narration", "party"],

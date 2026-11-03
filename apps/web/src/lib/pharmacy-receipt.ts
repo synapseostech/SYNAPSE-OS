@@ -8,6 +8,7 @@ import {
   type SaleStatus,
   type EfrisStatus,
 } from '@synapse/db/receipt'
+import { summariseReceiptTax } from './pharmacy-receipt-tax'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = () => supabaseAdmin as any
@@ -42,13 +43,26 @@ export async function loadReceiptSnapshot(
 
   if (!sale) return null
 
-  const { data: items } = await db()
-    .from('pharmacy_pos_sale_items')
-    .select('id, product_id, batch_id, quantity, unit_price, discount_amount, line_total')
-    .eq('sale_id', saleId)
-    .eq('tenant_id', tenantId)
+  // Line-level tax arrived with 20261102110000. Ask for it, but fall back to the
+  // original column set when the database predates it: a missing breakdown must
+  // never cost the receipt its lines.
+  const baseItemColumns = 'id, product_id, batch_id, quantity, unit_price, discount_amount, line_total'
+  const itemQuery = (columns: string) =>
+    db()
+      .from('pharmacy_pos_sale_items')
+      .select(columns)
+      .eq('sale_id', saleId)
+      .eq('tenant_id', tenantId)
+
+  let { data: items, error: itemsError } = await itemQuery(
+    `${baseItemColumns}, vat_category, tax_rate, taxable_amount, tax_amount, tax_source`,
+  )
+  if (itemsError) {
+    ;({ data: items } = await itemQuery(baseItemColumns))
+  }
 
   const rows = items ?? []
+  const tax = summariseReceiptTax(rows)
   const productIds = [...new Set(rows.map((r: any) => r.product_id).filter(Boolean))] as string[]
   const batchIds = [...new Set(rows.map((r: any) => r.batch_id).filter(Boolean))] as string[]
 
@@ -152,6 +166,7 @@ export async function loadReceiptSnapshot(
     subtotal: Number(sale.subtotal ?? 0),
     discountTotal: Number(sale.discount_total ?? 0),
     taxAmount: Number(sale.tax_amount ?? 0),
+    tax,
     totalAmount: Number(sale.total_amount ?? 0),
     lines,
     efris: { status: efrisStatus },

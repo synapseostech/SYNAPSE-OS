@@ -97,6 +97,32 @@ export function tallyChunkPath(
   return `tenants/${segment(tenantId, "tenant")}/imports/${segment(sessionId, "session")}/${name}${suffix}.json`
 }
 
+/**
+ * Where one extraction chunk's raw XML is kept. The name is derived from the
+ * chunk id, so a retry of the same range overwrites its own object and a second
+ * tab cannot leave two payloads for one chunk.
+ */
+export function tallyChunkSourcePath(tenantId: string, sessionId: string, chunkId: string): string {
+  const name = chunkId.toLowerCase().replace(/[^a-z0-9-]+/g, "-")
+  if (!/^[a-z0-9-]{1,40}$/.test(name)) throw new Error("TALLY_CHUNK_NAME_INVALID")
+  return `tenants/${segment(tenantId, "tenant")}/imports/${segment(sessionId, "session")}/chunks/${name}.xml`
+}
+
+export async function writeTallySourceText(
+  db: TallyStorageClient,
+  path: string,
+  xml: string,
+): Promise<number> {
+  const bytes = new TextEncoder().encode(xml)
+  if (bytes.byteLength > TALLY_SOURCE_LIMIT) throw new Error("TALLY_CHUNK_TOO_LARGE")
+  const { error } = await db.storage.from(TALLY_BUCKET).upload(path, bytes, {
+    contentType: "application/xml",
+    upsert: true,
+  })
+  if (error) throw new Error(`TALLY_CHUNK_WRITE_FAILED: ${error.message}`)
+  return bytes.byteLength
+}
+
 export type TallyUploadTarget = {
   bucket: string
   path: string
@@ -122,6 +148,25 @@ export async function createTallyUploadTarget(
     token: data.token ?? "",
     signedUrl: data.signedUrl,
   }
+}
+
+/**
+ * A signed URL the browser PUTs one chunk's XML to, so a 20 MB payload never
+ * travels through a request body the hosting platform caps near 4.5 MB.
+ */
+export async function createTallyChunkUploadTarget(
+  db: TallyStorageClient,
+  input: { tenantId: string; sessionId: string; chunkId: string },
+): Promise<TallyUploadTarget> {
+  await ensureTallyBucket(db)
+  const path = tallyChunkSourcePath(input.tenantId, input.sessionId, input.chunkId)
+  const { data, error } = await db.storage.from(TALLY_BUCKET).createSignedUploadUrl(path, {
+    upsert: true,
+  })
+  if (error || !data?.signedUrl) {
+    throw new Error(`TALLY_UPLOAD_URL_FAILED: ${error?.message ?? "no signed url"}`)
+  }
+  return { bucket: TALLY_BUCKET, path, token: data.token ?? "", signedUrl: data.signedUrl }
 }
 
 export async function readTallySource(

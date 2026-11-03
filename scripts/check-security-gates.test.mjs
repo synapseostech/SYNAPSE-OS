@@ -106,6 +106,7 @@ test("EXECUTE to authenticated fails unless the helper is allowlisted", () => {
     "execute_grant_authenticated_unexpected",
   ])
   assert.deepEqual(rulesFor("grant execute on function public.current_tenant_id() to authenticated;"), [])
+  assert.deepEqual(rulesFor("grant execute on function public.pharmacy_caller_tenants() to authenticated;"), [])
 })
 
 // --- profiles column grants ---------------------------------------------

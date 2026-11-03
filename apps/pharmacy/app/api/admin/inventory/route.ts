@@ -17,6 +17,12 @@ import {
   sameMedicineIdentity,
 } from "@synapse/db/pharmacy-purchases"
 
+/** Mirrors the `chk_vat_category` constraint; anything unknown stays exempt. */
+function vatCategoryFrom(value: unknown): "standard" | "exempt" | "zero_rated" {
+  const raw = String(value ?? "").toLowerCase()
+  return raw === "standard" || raw === "zero_rated" ? raw : "exempt"
+}
+
 function medicineNameSearchPattern(name: string): string {
   return name
     .trim()
@@ -38,6 +44,7 @@ export async function GET(request: NextRequest) {
       .select(`
         id, tenant_id, name, sku, barcode, price, cost_price, quantity, unit_of_measure,
         strength, dosage_form, active_ingredient, generic_name, requires_prescription,
+        category, vat_category,
         supplier_id, expiry_date, batch_number, is_active, created_at, updated_at,
         pharmacy_product_packages(id, name, units_per_package, price, is_default),
         pharmacy_product_batches(id, batch_number, quantity, expiry_date, cost_price,
@@ -79,6 +86,8 @@ export async function GET(request: NextRequest) {
       activeIngredient:     product.active_ingredient ?? null,
       genericName:          product.generic_name ?? null,
       requiresPrescription: product.requires_prescription ?? false,
+      category:             product.category ?? "General",
+      vatCategory:          product.vat_category ?? "exempt",
       supplierId:           product.supplier_id ?? null,
       expiryDate:           product.expiry_date ?? null,
       batchNumber:          product.batch_number ?? null,
@@ -315,6 +324,9 @@ export async function POST(request: NextRequest) {
         dosage_form: (data.dosageForm as string) || null,
         active_ingredient: (data.activeIngredient as string) || null,
         requires_prescription: (data.requiresPrescription as boolean) || false,
+        // Defaults to exempt, matching the column: a product is not taxed until
+        // someone says it is.
+        vat_category: vatCategoryFrom(data.vatCategory),
         generic_name: (data.genericName as string) || null,
         side_effects: (data.sideEffects as string) || null,
         storage_instructions: (data.storageInstructions as string) || null,
@@ -458,6 +470,11 @@ export async function PATCH(request: NextRequest) {
         dosage_form: (data.dosageForm as string) || null,
         active_ingredient: (data.activeIngredient as string) || null,
         requires_prescription: data.requiresPrescription as boolean,
+        // Only touched when the caller sends it: an edit that does not mention
+        // tax must not silently reclassify a product.
+        ...(data.vatCategory !== undefined
+          ? { vat_category: vatCategoryFrom(data.vatCategory) }
+          : {}),
         generic_name: (data.genericName as string) || null,
         side_effects: (data.sideEffects as string) || null,
         storage_instructions: (data.storageInstructions as string) || null,

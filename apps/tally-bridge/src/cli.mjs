@@ -3,8 +3,8 @@ import { createTallyBridgeServer, readBridgeConfig } from "./bridge.mjs"
 const config = readBridgeConfig()
 const server = createTallyBridgeServer(config)
 
-server.listen(config.bridgePort, "127.0.0.1", () => {
-  console.log(`Synapse Tally Bridge listening at http://127.0.0.1:${config.bridgePort}`)
+server.listen(config.bridgePort, config.bridgeBindHost, () => {
+  console.log(`Synapse Tally Bridge listening at http://${config.bridgeBindHost}:${config.bridgePort}`)
   console.log(`Tally XML target: ${config.tallyUrl.origin}`)
   console.log(`Allowed portal origins: ${[...config.allowedOrigins].join(", ")}`)
   console.log("Exports are read-only and remain staged until a pharmacy administrator applies them.")
