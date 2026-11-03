@@ -25,6 +25,12 @@ import {
 } from "@/lib/pos/keyboard"
 import { settlePayment } from "@/lib/pos/partial-payment"
 import {
+  PRINTER_UNAVAILABLE_MESSAGE,
+  resolveReceiptPrintPolicy,
+} from "@/lib/pos/receipt-print"
+import { computePharmacySaleTax } from "@synapse/db/pos-tax"
+import { paymentKind, track } from "@/lib/telemetry/events"
+import {
   allocateFefoBatches,
   DISCOUNT_REASONS,
   expiryBadgeClass,
@@ -82,6 +88,8 @@ interface Product {
   activeIngredient?: string
   genericName?: string
   requiresPrescription?: boolean
+  /** `standard` lines carry VAT when the pharmacy has VAT enabled. */
+  vatCategory?: string | null
   supplierId?: string
   supplier?: { name: string }
   barcode?: string
@@ -213,6 +221,7 @@ export default function POSPage() {
   const creditDueDateRef = useRef<HTMLInputElement>(null)
   const completeSaleRef = useRef<HTMLButtonElement>(null)
   const [liveMessage, setLiveMessage] = useState("")
+  const receiptPrintPolicy = useMemo(() => resolveReceiptPrintPolicy(settings), [settings])
 
   // Debounce search query for better performance
   const debouncedSearchQuery = useDebounce(searchQuery, 300)
@@ -314,13 +323,68 @@ export default function POSPage() {
     return () => window.removeEventListener("afterprint", handleAfterPrint)
   }, [])
 
-  const triggerReliablePrint = () => {
+  const triggerReliablePrint = (saleId?: string) => {
     // Wait for React to paint the print tree before opening the print dialog.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        setTimeout(() => window.print(), 50)
+        setTimeout(() => {
+          if (saleId) void reportPrintOutcome(saleId, "requested")
+          try {
+            window.print()
+          } catch (error) {
+            console.error("Could not open the receipt print dialog:", error)
+            if (saleId) {
+              void reportPrintOutcome(saleId, "failed", "Browser could not open the print dialog")
+            } else {
+              toast({
+                variant: "destructive",
+                title: "Unable to open print dialog",
+                description: "The sale remains saved. Reprint the receipt from Transactions.",
+              })
+            }
+          }
+        }, 50)
       })
     })
+  }
+
+  // Records the receipt print step against the sale. It never touches money or
+  // stock, so a retry or a reprint cannot duplicate or reverse the sale.
+  const reportPrintOutcome = async (
+    saleId: string,
+    outcome: "requested" | "failed",
+    reason?: string,
+  ) => {
+    if (!saleId) return false
+    try {
+      const response = await fetch(
+        `/api/admin/pos/sales/${encodeURIComponent(saleId)}/print-status`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ outcome, reason }),
+        },
+      )
+      if (!response.ok) {
+        console.error("Receipt print status was not recorded:", response.status)
+        toast({
+          variant: "destructive",
+          title: "Print attempt not fully recorded",
+          description:
+            "The sale remains saved, but the print audit could not be confirmed. Ask a supervisor to verify the attempt.",
+        })
+      }
+      return response.ok
+    } catch (error) {
+      console.error("Receipt print status was not recorded:", error)
+      toast({
+        variant: "destructive",
+        title: "Print attempt not fully recorded",
+        description:
+          "The sale remains saved, but the print audit could not be confirmed. Ask a supervisor to verify the attempt.",
+      })
+      return false
+    }
   }
 
   // Check if current user is SYNAPSE PHARM master account
@@ -625,8 +689,26 @@ export default function POSPage() {
     !cashierCanEditPrice && cartDiscountPct > discountThreshold && !discountApprovedBy
 
   const total = cart.reduce((sum, item) => sum + item.subtotal, 0)
-  const taxRate = settings?.taxRate || 0
-  const taxAmount = total * (taxRate / 100)
+  // One implementation behind both the till and the sale route, so the total the
+  // cashier reads is the total the server stores.
+  const saleTax = computePharmacySaleTax(
+    {
+      vatEnabled: settings?.vatEnabled,
+      vatRate: settings?.vatRate,
+      taxRate: settings?.taxRate,
+    },
+    cart.map((item) => ({ netAmount: item.subtotal, vatCategory: item.vatCategory })),
+  )
+  const taxConfigurationInvalid = !saleTax.ok
+  const taxRate = saleTax.ok ? saleTax.ratePct : 0
+  const taxAmount = saleTax.ok ? saleTax.taxAmount : 0
+  const taxSource = saleTax.ok ? saleTax.source : "none"
+  const taxableBase = saleTax.ok ? saleTax.taxableBase : 0
+  // VAT applies only to standard-rated lines, so the base can be smaller than
+  // the cart. Showing one percentage against the whole subtotal would overstate
+  // the tax: 18% of the subtotal is not what was charged.
+  const taxableBaseDiffers = taxAmount > 0 && taxableBase < total
+  const taxLabel = taxSource === "vat" ? `VAT (${taxRate}%)` : `Tax (${taxRate}%)`
   const grandTotal = total + taxAmount
   const settlement = settlePayment(
     grandTotal,
@@ -652,6 +734,17 @@ export default function POSPage() {
         variant: "destructive",
         title: "Error",
         description: "Cart is empty",
+      })
+      return
+    }
+
+    // Refuse rather than charge a rate nobody configured: a wrong tax total is
+    // an accounting problem the till cannot spot after the fact.
+    if (!saleTax.ok) {
+      toast({
+        variant: "destructive",
+        title: "Tax settings are invalid",
+        description: saleTax.detail,
       })
       return
     }
@@ -799,6 +892,13 @@ export default function POSPage() {
 
         if (response.ok) {
           const sale = data.sale ?? data
+          // The workflow, not the customer: no name, receipt number or amount.
+          track("sale_completed", {
+            items: cart.length,
+            payment: paymentKind(paymentMethod),
+            credit: paymentMethod === "CREDIT" || isPartialPayment,
+            offline: false,
+          })
           toast({
             title: "Success",
             description: sale?.receipt_number
@@ -854,7 +954,7 @@ export default function POSPage() {
             balanceDue: settlement.balanceDue,
           }
           setPendingReceiptMeta(receiptMeta)
-          if (settings?.autoPrintReceipt) {
+          if (receiptPrintPolicy.autoPrint) {
             setPrintReceiptData({
               transaction: printTxn,
               staffName: receiptStaffName,
@@ -862,7 +962,7 @@ export default function POSPage() {
               settings,
             })
             setIsPrintingReceipt(true)
-            triggerReliablePrint()
+            triggerReliablePrint(String(printTxn.id))
             setPendingTransaction(null)
             setReceiptStaffNamePending("")
             setPendingReceiptMeta(null)
@@ -873,6 +973,7 @@ export default function POSPage() {
           startNewSale()
           fetchProducts()
         } else {
+          track("sale_failed", { stage: "response", status: response.status })
           const missingId = String(data.error ?? "")
             .match(/^Product not found: (.+)$/)?.[1]
             ?.trim()
@@ -917,9 +1018,27 @@ export default function POSPage() {
     setIsSavingClientNameBeforePrint(false)
   }
 
+  // The cashier cannot print. The sale is already committed, so this records
+  // the failure on the sale and tells them how to recover the receipt, rather
+  // than leaving the prompt open or pretending the receipt exists.
+  const recordPrinterUnavailable = () => {
+    const saleId = pendingTransaction?.id ? String(pendingTransaction.id) : ""
+    resetPendingPrintFlow()
+    toast({
+      variant: "destructive",
+      title: "Receipt not printed",
+      description: PRINTER_UNAVAILABLE_MESSAGE,
+    })
+    if (saleId) void reportPrintOutcome(saleId, "failed")
+  }
+
   const handlePrintPromptResponse = (shouldPrint: boolean) => {
     if (!shouldPrint) {
-      resetPendingPrintFlow()
+      if (receiptPrintPolicy.requiresAttempt) {
+        recordPrinterUnavailable()
+      } else {
+        resetPendingPrintFlow()
+      }
       return
     }
 
@@ -968,7 +1087,7 @@ export default function POSPage() {
       settings,
     })
     setIsPrintingReceipt(true)
-    triggerReliablePrint()
+    triggerReliablePrint(String(updatedTransaction.id))
 
     resetPendingPrintFlow()
   }
@@ -1182,13 +1301,24 @@ export default function POSPage() {
       }
     },
     onClose: () => {
+      // The mandatory print decision has exactly two exits. Escape used to
+      // dismiss the prompt without recording either, so a cashier could skip
+      // the required step by pressing it.
+      if (showClientNameBeforePrintDialog) {
+        if (receiptPrintPolicy.requiresAttempt) recordPrinterUnavailable()
+        else resetPendingPrintFlow()
+        return
+      }
+      if (showPrintPrompt) {
+        if (receiptPrintPolicy.requiresAttempt) return
+        resetPendingPrintFlow()
+        return
+      }
       const dialogOpen =
         showMobileCart ||
         showReceiptPreview ||
         showClientDetailsBeforeSaleDialog ||
         showOrderDialog ||
-        showPrintPrompt ||
-        showClientNameBeforePrintDialog ||
         showSupervisorDialog ||
         showStaffDialog
       setShowMobileCart(false)
@@ -1197,7 +1327,6 @@ export default function POSPage() {
       setShowOrderDialog(false)
       setShowSupervisorDialog(false)
       setShowStaffDialog(false)
-      if (showPrintPrompt || showClientNameBeforePrintDialog) resetPendingPrintFlow()
       // Escape closes the open dialog first; on a bare till it goes back, like
       // the browser Back button, instead of trapping the cashier on the page.
       if (!dialogOpen) router.back()
@@ -1491,10 +1620,10 @@ export default function POSPage() {
                 <Button
                   variant="outline"
                   className="flex-1"
-                  onClick={resetPendingPrintFlow}
+                  onClick={receiptPrintPolicy.requiresAttempt ? recordPrinterUnavailable : resetPendingPrintFlow}
                   disabled={isSavingClientNameBeforePrint}
                 >
-                  Cancel
+                  {receiptPrintPolicy.requiresAttempt ? "Printer unavailable" : "Cancel"}
                 </Button>
                 <Button
                   className="flex-1"
@@ -1528,6 +1657,8 @@ export default function POSPage() {
           total={total}
           taxRate={taxRate}
           taxAmount={taxAmount}
+          taxableBase={taxableBase}
+          taxSource={taxSource}
           grandTotal={grandTotal}
           amountPaid={amountPaid}
           change={change}
@@ -1548,7 +1679,10 @@ export default function POSPage() {
             <CardContent className="space-y-4">
               <div className="bg-accent/10 border border-accent/25 rounded-lg p-3">
                 <p className="text-sm text-foreground">
-                  <strong>Important:</strong> The transaction has already been saved to the system regardless of your choice.
+                  <strong>Important:</strong>{" "}
+                  {receiptPrintPolicy.requiresAttempt
+                    ? "The sale is already saved. Choose Print Receipt, or tell us the printer is unavailable so the receipt can be reprinted later."
+                    : "The transaction has already been saved to the system regardless of your choice."}
                 </p>
               </div>
               <div className="flex gap-3">
@@ -1557,7 +1691,7 @@ export default function POSPage() {
                   className="flex-1"
                   onClick={() => handlePrintPromptResponse(false)}
                 >
-                  Skip Printing
+                  {receiptPrintPolicy.allowSkip ? "Skip Printing" : "Printer unavailable"}
                 </Button>
                 <Button
                   className="flex-1"
@@ -1879,9 +2013,21 @@ export default function POSPage() {
                   <span>Subtotal</span>
                   <span className="font-mono tabular-nums">{formatCurrency(total)}</span>
                 </div>
+                {taxConfigurationInvalid && (
+                  <p className="text-xs text-destructive">
+                    Tax settings are invalid — completing a sale is blocked until they are
+                    fixed.{!saleTax.ok && ` ${saleTax.detail}`}
+                  </p>
+                )}
+                {taxableBaseDiffers && (
+                  <div className="flex justify-between text-sm text-muted-foreground">
+                    <span>Taxable base</span>
+                    <span>{formatCurrency(taxableBase)}</span>
+                  </div>
+                )}
                 {taxRate > 0 && (
                   <div className="flex justify-between text-sm text-muted-foreground">
-                    <span>Tax ({taxRate}%)</span>
+                    <span>{taxLabel}</span>
                     <span>{formatCurrency(taxAmount)}</span>
                   </div>
                 )}
@@ -2322,6 +2468,8 @@ interface ReceiptPreviewDialogProps {
   total: number
   taxRate: number
   taxAmount: number
+  taxableBase: number
+  taxSource: string
   grandTotal: number
   amountPaid: string
   change: number
@@ -2337,6 +2485,8 @@ function ReceiptPreviewDialog({
   total,
   taxRate,
   taxAmount,
+  taxableBase,
+  taxSource,
   grandTotal,
   amountPaid,
   change,
@@ -2455,7 +2605,13 @@ function ReceiptPreviewDialog({
             {taxAmount > 0 && (
               <>
                 <div className="tr-row"><span>Subtotal</span><span>{fmt(total)}</span></div>
-                <div className="tr-row"><span>Tax ({taxRate}%)</span><span>{fmt(taxAmount)}</span></div>
+                {taxableBase < total && (
+                  <div className="tr-row"><span>Taxable base</span><span>{fmt(taxableBase)}</span></div>
+                )}
+                <div className="tr-row">
+                  <span>{taxSource === "vat" ? "VAT" : "Tax"} ({taxRate}%)</span>
+                  <span>{fmt(taxAmount)}</span>
+                </div>
                 <div className="tr-dash" />
               </>
             )}

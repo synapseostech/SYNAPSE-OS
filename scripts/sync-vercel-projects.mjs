@@ -7,19 +7,9 @@
  */
 import { spawnSync } from 'node:child_process'
 
-const TEAM_ID = 'team_ZHaBdLFb1hunAs68QC70HTBy'
+const TEAM_ID = 'team_IfLX69fKbBxupsNAtDVzF573'
 
 const PROJECTS = [
-  {
-    name: 'synpase-os',
-    id: 'prj_ST72DC6VkMfhon3M1yW2PL575mcd',
-    rootDirectory: null,
-    buildCommand:
-      'node scripts/sync-web-public.mjs && npm run build --workspace @synapse/web',
-    outputDirectory: 'apps/web/.next',
-    installCommand: 'npm install',
-    nodeVersion: '22.x',
-  },
   {
     name: 'synapse-demo',
     id: 'prj_pMAegOucrRxzMOdNgjNYCXE8G7aM',

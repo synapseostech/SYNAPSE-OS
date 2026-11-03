@@ -57,6 +57,24 @@ export type TallyPlanSummary = {
     itemsWithClosingValue: number
     itemCount: number
   }
+  /**
+   * The figures a cut-over preflight reconciles before anything is written.
+   * Absent on summaries prepared before the preflight existed; a preflight
+   * treats a missing block as unprovable rather than as zero.
+   */
+  reconciliation?: {
+    /** The inventory control account's opening lines, debit less credit. */
+    inventoryOpening: number | null
+    /** Customer ledgers' opening as the opening journal carries it. */
+    customerOpening: number
+    /** Supplier ledgers' opening as the opening journal carries it. */
+    supplierOpening: number
+    /** The same balances summed from the party records. */
+    partyReceivable: number
+    partyPayable: number
+    /** Duplicate voucher identities the parser detected; later copies were skipped. */
+    duplicateVouchers: number
+  }
   exceptions: Array<{
     code: string
     message: string

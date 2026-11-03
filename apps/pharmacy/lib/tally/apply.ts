@@ -8,6 +8,7 @@
  */
 
 import { receivePharmacyStock, parsePharmacyRpcError } from "@synapse/db/inventory-rpc"
+import { netAmountFor } from "@/lib/pos/net-amount"
 import type {
   TallyCutoverPlan,
   TallyCutoverPurchase,
@@ -74,6 +75,7 @@ export type TallyApplyChunkResult = {
 }
 
 const MAX_FAILURES = 200
+const TRUNCATION_CODE = "FAILURES_TRUNCATED"
 const INSERT_BATCH = 200
 
 export function emptyProgress(now = new Date().toISOString()): TallyApplyProgress {
@@ -100,11 +102,22 @@ class Progress {
   constructor(readonly value: TallyApplyProgress) {}
 
   fail(stage: TallyApplyStage, key: string, code: string, message: string) {
-    if (this.value.failures.length >= MAX_FAILURES) return
     const duplicate = this.value.failures.some(
       (failure) => failure.stage === stage && failure.key === key && failure.code === code,
     )
     if (duplicate) return
+    if (this.value.failures.length >= MAX_FAILURES) {
+      // Dropping the tail silently would let a review understate what the import
+      // missed. One entry stands in for everything past the cap.
+      if (this.value.failures.some((failure) => failure.code === TRUNCATION_CODE)) return
+      this.value.failures.push({
+        stage,
+        key: "apply",
+        code: TRUNCATION_CODE,
+        message: `More than ${MAX_FAILURES} items could not be imported; the rest are not listed.`,
+      })
+      return
+    }
     this.value.failures.push({ stage, key, code, message })
   }
 
@@ -251,11 +264,15 @@ async function findRow(
   db: TallyApplyDb,
   table: string,
   filters: Record<string, string>,
-): Promise<{ id: string; notes?: string | null } | null> {
-  let query = db.from(table).select("id, notes")
+  columns: string[] = [],
+): Promise<({ id: string; notes?: string | null } & Record<string, unknown>) | null> {
+  let query = db.from(table).select(["id", "notes", ...columns].join(", "))
   for (const [column, value] of Object.entries(filters)) query = query.eq(column, value)
   const { data } = await query.limit(1)
-  return ((data ?? []) as Array<{ id: string; notes?: string | null }>)[0] ?? null
+  return (
+    ((data ?? []) as Array<{ id: string; notes?: string | null } & Record<string, unknown>>)[0] ??
+    null
+  )
 }
 
 async function childRowsExist(
@@ -421,10 +438,15 @@ async function stageProducts(
   for (const item of plan.stockItems) {
     const sku = item.sku.trim().toLowerCase()
     if (known.bySku.has(sku)) continue
-    const existingId = await findByName(db, "pharmacy_products", tenantId, item.name)
+    // An ILIKE on the raw name misses a portal product whose name differs only
+    // in whitespace, and would create a duplicate for it. The unique-name map
+    // was built with productNameKey, so consult it first.
+    const existingId =
+      known.byName.get(productNameKey(item.name)) ??
+      (await findByName(db, "pharmacy_products", tenantId, item.name))
     if (existingId) {
       known.bySku.set(sku, existingId)
-      known.byName.set(item.name.trim().toLowerCase(), existingId)
+      known.byName.set(productNameKey(item.name), existingId)
       continue
     }
     // Tally exports cost, never a selling price. Cost is the only honest
@@ -450,7 +472,7 @@ async function stageProducts(
       continue
     }
     known.bySku.set(sku, (data as { id: string }).id)
-    known.byName.set(item.name.trim().toLowerCase(), (data as { id: string }).id)
+    known.byName.set(productNameKey(item.name), (data as { id: string }).id)
     progress.value.counts.products += 1
   }
 }
@@ -579,7 +601,9 @@ async function mirrorSale(
   progress: Progress,
 ): Promise<void> {
   const missing = sale.items.filter(
-    (item) => Math.round(item.quantity) > 0 && !input.products.byName.has(item.stockItemName.trim().toLowerCase()),
+    (item) =>
+      Math.round(item.quantity) > 0 &&
+      !input.products.byName.has(productNameKey(item.stockItemName)),
   )
   if (missing.length > 0) {
     progress.fail(
@@ -603,7 +627,12 @@ async function mirrorSale(
         total_amount: money(sale.total),
         discount: money(sale.discount),
         tax: money(sale.tax),
-        net_amount: money(sale.total),
+        // What the customer owed, not the pre-tax line sum. See lib/pos/net-amount.ts.
+        net_amount: netAmountFor({
+          totalAmount: money(sale.total),
+          discount: money(sale.discount),
+          tax: money(sale.tax),
+        }),
         payment_method: sale.paymentMethod,
         status: "COMPLETED",
         notes: `${TALLY_MIRROR_NOTE_PREFIX} (${input.company ?? "cut-over"}) — read-only`,
@@ -618,10 +647,15 @@ async function mirrorSale(
   const insertedId = (inserted[0] as { id: string } | undefined)?.id
   const existing = insertedId
     ? null
-    : await findRow(db, "pharmacy_transactions", {
-        tenant_id: input.tenantId,
-        transaction_no: sale.transactionNumber,
-      })
+    : await findRow(
+        db,
+        "pharmacy_transactions",
+        {
+          tenant_id: input.tenantId,
+          transaction_no: sale.transactionNumber,
+        },
+        ["total_amount", "discount", "tax"],
+      )
   // A different row under the same number was entered in the portal. Attaching
   // the imported items to it would mix the two and leave it editable, so leave
   // it alone and report the collision.
@@ -634,6 +668,25 @@ async function mirrorSale(
     )
     return
   }
+  // A different Tally voucher can carry a number this import already used. The
+  // upsert skipped the insert, and grafting the second sale's lines onto the
+  // first mirror would mix two sales; report it instead. A genuine replay of
+  // the same voucher carries identical figures and still repairs its items.
+  if (!insertedId && existing && isTallyMirrorNote(existing.notes)) {
+    const sameSale =
+      money(Number(existing.total_amount)) === money(sale.total) &&
+      money(Number(existing.discount)) === money(sale.discount) &&
+      money(Number(existing.tax)) === money(sale.tax)
+    if (!sameSale) {
+      progress.fail(
+        "journals",
+        sale.sourceId,
+        "SALE_NUMBER_COLLISION",
+        `Sale ${sale.transactionNumber} is already imported from Tally with different figures, so this voucher was not mirrored.`,
+      )
+      return
+    }
+  }
   const transactionId = insertedId ?? existing?.id
   if (!transactionId) return
 
@@ -641,7 +694,7 @@ async function mirrorSale(
   const items = saleItemsFor(sale, input.products).map((item) => ({
     tenant_id: input.tenantId,
     transaction_id: transactionId,
-    product_id: input.products.byName.get(item.stockItemName.trim().toLowerCase())!,
+    product_id: input.products.byName.get(productNameKey(item.stockItemName))!,
     quantity: Math.round(item.quantity),
     unit_price: money(item.unitPrice),
     // Tally sales vouchers carry no cost of sale. Copying the selling price
@@ -725,10 +778,15 @@ async function mirrorPurchase(
   const insertedId = (inserted[0] as { id: string } | undefined)?.id
   const existing = insertedId
     ? null
-    : await findRow(db, "pharmacy_purchases", {
-        tenant_id: input.tenantId,
-        purchase_no: purchase.purchaseNumber,
-      })
+    : await findRow(
+        db,
+        "pharmacy_purchases",
+        {
+          tenant_id: input.tenantId,
+          purchase_no: purchase.purchaseNumber,
+        },
+        ["total", "tax", "amount_paid"],
+      )
   // Same collision as a sale: a portal purchase under the same number keeps its
   // own ledger life, so the import must not graft Tally items onto it.
   if (!insertedId && existing && !isTallyMirrorNote(existing.notes)) {
@@ -740,6 +798,21 @@ async function mirrorPurchase(
     )
     return
   }
+  if (!insertedId && existing && isTallyMirrorNote(existing.notes)) {
+    const samePurchase =
+      money(Number(existing.total)) === money(purchase.total) &&
+      money(Number(existing.tax)) === money(purchase.tax) &&
+      money(Number(existing.amount_paid)) === money(purchase.amountPaid)
+    if (!samePurchase) {
+      progress.fail(
+        "journals",
+        purchase.sourceId,
+        "PURCHASE_NUMBER_COLLISION",
+        `Purchase ${purchase.purchaseNumber} is already imported from Tally with different figures, so this voucher was not mirrored.`,
+      )
+      return
+    }
+  }
   const purchaseId = insertedId ?? existing?.id
   if (!purchaseId) return
 
@@ -749,7 +822,7 @@ async function mirrorPurchase(
     .map((item) => ({
       tenant_id: input.tenantId,
       purchase_id: purchaseId,
-      product_id: input.products.byName.get(item.stockItemName.trim().toLowerCase()) ?? null,
+      product_id: input.products.byName.get(productNameKey(item.stockItemName)) ?? null,
       product_name: item.stockItemName,
       quantity: Math.round(item.quantity),
       unit_cost: money(item.unitCost),
@@ -782,6 +855,12 @@ async function stageVoucherChunk(
   maps: IdMaps,
   progress: Progress,
 ): Promise<void> {
+  // A mirror is the portal's copy of the sale the voucher posted. If the journal
+  // was refused, writing the sale anyway shows history the ledger never got —
+  // and the read-only guard makes that row impossible to remove afterwards.
+  // Only sources attempted in this chunk are tracked: a chunk carrying mirrors
+  // with no matching voucher has no journal to gate on.
+  const journalPosted = new Map<string, boolean>()
   for (const voucher of chunk.vouchers) {
     const posted = await postJournal(db, {
       tenantId,
@@ -796,11 +875,21 @@ async function stageVoucherChunk(
       stage: "journals",
       progress,
     })
+    journalPosted.set(voucher.sourceId, posted)
     if (posted) progress.value.counts.journals += 1
   }
 
   const products = { byName: maps.productsByName }
   for (const sale of chunk.sales) {
+    if (journalPosted.get(sale.sourceId) === false) {
+      progress.fail(
+        "journals",
+        sale.sourceId,
+        "SALE_JOURNAL_NOT_POSTED",
+        `Sale ${sale.transactionNumber} was not imported because its ledger journal did not post.`,
+      )
+      continue
+    }
     await mirrorSale(
       db,
       sale,
@@ -809,6 +898,15 @@ async function stageVoucherChunk(
     )
   }
   for (const purchase of chunk.purchases) {
+    if (journalPosted.get(purchase.sourceId) === false) {
+      progress.fail(
+        "journals",
+        purchase.sourceId,
+        "PURCHASE_JOURNAL_NOT_POSTED",
+        `Purchase ${purchase.purchaseNumber} was not imported because its ledger journal did not post.`,
+      )
+      continue
+    }
     await mirrorPurchase(
       db,
       purchase,
@@ -915,4 +1013,4 @@ export async function applyTallyChunk(
   }
 }
 
-export const __test__ = { money, escapeLike, isoDateTime, TALLY_APPLY_CHUNK }
+export const __test__ = { money, escapeLike, isoDateTime, TALLY_APPLY_CHUNK, Progress }

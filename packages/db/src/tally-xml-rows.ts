@@ -159,6 +159,13 @@ export type TallyVoucher = {
   inventoryLines: TallyInventoryLine[]
 }
 
+/** Why the parser stopped before the end of the file, and how much it read. */
+export type TallyXmlTruncation = {
+  reason: "RECORD_LIMIT"
+  limit: number
+  recordsProcessed: number
+}
+
 export type TallyXmlDocument = {
   company?: string
   companyGuid?: string
@@ -172,6 +179,8 @@ export type TallyXmlDocument = {
   godowns: TallyGodown[]
   vouchers: TallyVoucher[]
   warnings: TallyXmlRowWarning[]
+  /** Set when the parser stopped early; the document is what it managed to read. */
+  truncated?: TallyXmlTruncation
 }
 
 type XmlNode = {
@@ -636,10 +645,15 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
 
     if (!capturing && RECORD_ELEMENTS.has(upper)) {
       if (recordCount() >= MAX_RECORDS) {
+        // Keep the records already read, but say plainly that the rest of the
+        // file was never read. Callers must not treat this as a whole export.
         addWarning(warnings, "RECORD_LIMIT_REACHED")
-        capturing = false
-        depth++
-        continue
+        document.truncated = {
+          reason: "RECORD_LIMIT",
+          limit: MAX_RECORDS,
+          recordsProcessed: recordCount(),
+        }
+        break
       }
       capturing = true
       captureDepth = depth
@@ -679,6 +693,14 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
   }
 
   if (capturing) addWarning(warnings, "UNCLOSED_RECORD")
+
+  // A file that stops before its envelope closes was cut short — a partial
+  // download, a failed copy, a hand-edited export. Records read so far are not
+  // the whole export, and unlike the record limit there is no count to report,
+  // so refuse it instead of returning part of it as if it were complete.
+  if (!document.truncated && !/<\/ENVELOPE\s*>\s*$/i.test(text)) {
+    throw new Error("MIGRATION_XML_INCOMPLETE")
+  }
 
   return document
 }

@@ -5,16 +5,20 @@ export const dynamic = "force-dynamic"
 
 async function probeDatabase() {
   const started = Date.now()
+  // This route is unauthenticated: the driver's error text carries table,
+  // constraint and host detail, so it is logged and never returned.
+  const failure = { ok: false, latencyMs: 0, detail: "database probe failed" }
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { error } = await (supabaseAdmin as any).from("tenants").select("id").limit(1)
-    return { ok: !error, latencyMs: Date.now() - started, detail: error?.message ?? "tenants query succeeded" }
-  } catch (error) {
-    return {
-      ok: false,
-      latencyMs: Date.now() - started,
-      detail: error instanceof Error ? error.message : "db probe failed",
+    if (error) {
+      console.error("[ready] database probe failed:", error.message)
+      return { ...failure, latencyMs: Date.now() - started }
     }
+    return { ok: true, latencyMs: Date.now() - started, detail: "tenants query succeeded" }
+  } catch (error) {
+    console.error("[ready] database probe threw:", error)
+    return { ...failure, latencyMs: Date.now() - started }
   }
 }
 

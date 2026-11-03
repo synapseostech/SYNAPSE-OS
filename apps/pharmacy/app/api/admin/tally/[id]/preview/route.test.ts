@@ -114,13 +114,13 @@ function sessionRow(status = "pending", mapping: Record<string, unknown> = {}) {
   }
 }
 
-function setup(session: unknown) {
+function setup(session: unknown, cutover: unknown = null) {
   m.db = fakeSupabase(
     (operation): FakeResult => {
       const isCutoverQuery = operation.filters.some(
         ([column, value]) => column === "source_system" && value === "Tally",
       )
-      if (isCutoverQuery) return { data: null, error: null }
+      if (isCutoverQuery) return { data: cutover, error: null }
       return operation.action === "select"
         ? { data: session, error: null }
         : { data: null, error: null }
@@ -177,6 +177,16 @@ describe("POST /api/admin/tally/[id]/preview", () => {
       ["id", "session-1"],
       ["tenant_id", "tenant-1"],
     ])
+  })
+
+  it("refuses to preview once another session has completed the cut-over", async () => {
+    setup(sessionRow(), { id: "session-0", completed_at: "2026-01-01T00:00:00.000Z" })
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_CUTOVER_COMPLETE" })
+    expect(m.readSource).not.toHaveBeenCalled()
   })
 
   it("refuses to re-preview an applied import", async () => {
@@ -263,6 +273,272 @@ describe("POST /api/admin/tally/[id]/preview", () => {
       },
     })
     expect(filtersOf(update!)).toEqual({ id: "session-1", tenant_id: "tenant-1" })
+  })
+
+  it("records the edition the portal reported and warns that it is unverified", async () => {
+    const res = await post({ edition: "Tally.ERP 9" })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.edition).toMatchObject({ edition: "erp9", label: "Tally.ERP 9", verified: false })
+    expect(body.editionProblems).toEqual([
+      expect.objectContaining({ code: "TALLY_EDITION_UNVERIFIED", severity: "warning" }),
+    ])
+
+    const update = m.db.operations.find((operation) => operation.action === "update")
+    const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.edition).toBe("erp9")
+    expect(mapping.editionProblems).toEqual([
+      expect.objectContaining({ code: "TALLY_EDITION_UNVERIFIED" }),
+    ])
+  })
+
+  it("records an edition it cannot place as unknown rather than assuming one", async () => {
+    const res = await post({ edition: "Tally 7.2" })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.edition).toMatchObject({ edition: "unknown", label: "Unrecognised edition" })
+    expect(body.editionProblems).toEqual([
+      expect.objectContaining({ code: "TALLY_EDITION_UNKNOWN", severity: "warning" }),
+    ])
+    const update = m.db.operations.find((operation) => operation.action === "update")
+    const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.edition).toBe("unknown")
+  })
+
+  it("persists a chunk manifest when the export states its company and period", async () => {
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: {
+        company: "Demo Pharma",
+        currency: "UGX",
+        financialPeriod: { from: "2026-01-01", to: "2026-01-10" },
+        groups: [],
+        ledgers: [],
+        stockGroups: [],
+        stockItems: [],
+        units: [],
+        godowns: [],
+        vouchers: [{ date: "2026-01-05" }],
+        warnings: [],
+      },
+    })
+
+    const res = await post()
+
+    expect(res.status).toBe(200)
+    const update = m.db.operations.find((operation) => operation.action === "update")
+    const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifest).toMatchObject({
+      sessionId: "session-1",
+      company: "Demo Pharma",
+      mode: "opening",
+      period: { from: "2026-01-01", to: "2026-01-10" },
+      periodSource: "source",
+    })
+    expect(mapping.manifestProblems).toEqual([])
+    // Nothing independently counted the vouchers, so the review says so
+    // instead of presenting the stated period as evidence.
+    expect(mapping.manifestCoverage).toBe("unverified")
+  })
+
+  it("returns the coverage evidence the review has to show", async () => {
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: {
+        company: "Demo Pharma",
+        currency: "UGX",
+        financialPeriod: { from: "2026-01-01", to: "2026-01-10" },
+        groups: [],
+        ledgers: [],
+        stockGroups: [],
+        stockItems: [],
+        units: [],
+        godowns: [],
+        vouchers: [{ date: "2026-01-03" }, { date: "2026-01-09" }],
+        warnings: [],
+      },
+    })
+
+    const res = await post({ period: { from: "2026-01-01", to: "2026-01-10" } })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.manifest.evidence).toEqual({
+      requestedPeriod: { from: "2026-01-01", to: "2026-01-10" },
+      declaredPeriod: { from: "2026-01-01", to: "2026-01-10" },
+      voucherRange: { firstDate: "2026-01-03", lastDate: "2026-01-09" },
+      recordsRead: 2,
+      recordsStaged: { accounts: 1, parties: 1, products: 1, vouchers: 1 },
+      independentCount: false,
+      coverage: "unverified",
+    })
+    expect(body.manifest.coverage).toBe("unverified")
+    expect(body.manifest.manifestUpdatedAt).toBe("2026-01-01T00:00:00.000Z")
+
+    const update = m.db.operations.find((operation) => operation.action === "update")
+    const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifestEvidence).toEqual(body.manifest.evidence)
+  })
+
+  it("keeps the requested period separate from the one the export states", async () => {
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: {
+        company: "Demo Pharma",
+        currency: "UGX",
+        financialPeriod: { from: "2026-01-01", to: "2026-01-10" },
+        groups: [],
+        ledgers: [],
+        stockGroups: [],
+        stockItems: [],
+        units: [],
+        godowns: [],
+        vouchers: [{ date: "2026-01-05" }],
+        warnings: [],
+      },
+    })
+
+    const res = await post({ period: { from: "2026-01-01", to: "2026-01-31" } })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    // The export's own dates win, and the difference is a blocking problem;
+    // neither fact is folded into the other.
+    expect(body.manifest.period).toEqual({ from: "2026-01-01", to: "2026-01-10" })
+    expect(body.manifest.periodSource).toBe("source")
+    expect(body.manifest.evidence.requestedPeriod).toEqual({ from: "2026-01-01", to: "2026-01-31" })
+    expect(body.manifest.evidence.declaredPeriod).toEqual({ from: "2026-01-01", to: "2026-01-10" })
+    expect(body.manifest.problems).toEqual([expect.stringContaining("TALLY_PERIOD_MISMATCH")])
+  })
+
+  it("stores no manifest, and the reason, when the export names no company", async () => {
+    const res = await post()
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.manifest).toMatchObject({ period: null, reason: "TALLY_COMPANY_MISSING" })
+
+    const update = m.db.operations.find((operation) => operation.action === "update")
+    const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifest).toBeUndefined()
+    expect(mapping.manifestReason).toBe("TALLY_COMPANY_MISSING")
+    expect(mapping.manifestProblems).toEqual([expect.stringContaining("TALLY_COMPANY_MISSING")])
+  })
+
+  it("uses the period the operator asked for when the export states none", async () => {
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: {
+        company: "Demo Pharma",
+        currency: "UGX",
+        financialPeriod: {},
+        groups: [],
+        ledgers: [],
+        stockGroups: [],
+        stockItems: [],
+        units: [],
+        godowns: [],
+        vouchers: [],
+        warnings: [],
+      },
+    })
+
+    const res = await post({ period: { from: "2026-01-01", to: "2026-01-31" } })
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.manifest).toMatchObject({
+      period: { from: "2026-01-01", to: "2026-01-31" },
+      periodSource: "requested",
+      declaredPeriod: null,
+      coverage: "unverified",
+    })
+
+    const update = m.db.operations.find((operation) => operation.action === "update")
+    const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifest).toMatchObject({
+      period: { from: "2026-01-01", to: "2026-01-31" },
+      periodSource: "requested",
+    })
+    expect(mapping.manifestProblems).toEqual([])
+  })
+
+  it("rejects a requested period that is not two real days", async () => {
+    for (const period of [
+      { from: "2026-02-30", to: "2026-03-01" },
+      { from: "2026-03-02", to: "2026-03-01" },
+      { from: "2026-03-01" },
+      "2026-03-01",
+    ]) {
+      const res = await post({ period })
+
+      expect(res.status).toBe(400)
+      expect((await res.json()).code).toBe("TALLY_PERIOD_BODY_INVALID")
+    }
+    expect(m.readSource).not.toHaveBeenCalled()
+  })
+
+  it("records vouchers that fall outside the period the export declares", async () => {
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: {
+        company: "Demo Pharma",
+        currency: "UGX",
+        financialPeriod: { from: "2026-01-01", to: "2026-01-10" },
+        groups: [],
+        ledgers: [],
+        stockGroups: [],
+        stockItems: [],
+        units: [],
+        godowns: [],
+        vouchers: [{ date: "2025-12-31" }],
+        warnings: [],
+      },
+    })
+
+    const res = await post()
+
+    expect(res.status).toBe(200)
+    const update = m.db.operations.find((operation) => operation.action === "update")
+    const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifestProblems).toEqual([
+      expect.stringContaining("TALLY_VOUCHER_OUTSIDE_PERIOD"),
+    ])
+  })
+
+  it("parks a truncated source in review with the truncation as a blocking exception", async () => {
+    m.normalise.mockReturnValue({
+      ...PLAN,
+      exceptions: [
+        {
+          code: "SOURCE_TRUNCATED",
+          severity: "blocking",
+          message: "The import stopped after 250,000 records.",
+        },
+      ],
+    })
+    m.writePlan.mockResolvedValue({
+      preparedAt: "2026-01-01T00:00:00.000Z",
+      exceptions: [
+        {
+          code: "SOURCE_TRUNCATED",
+          severity: "blocking",
+          message: "The import stopped after 250,000 records.",
+        },
+      ],
+    })
+
+    const res = await post()
+
+    expect(res.status).toBe(200)
+    const update = m.db.operations.find((operation) => operation.action === "update")
+    expect(update?.payload).toMatchObject({
+      status: "review",
+      flagged_rows: 1,
+      ai_summary: "The import stopped after 250,000 records.",
+    })
   })
 
   it("records an unreadable file as a failed session", async () => {

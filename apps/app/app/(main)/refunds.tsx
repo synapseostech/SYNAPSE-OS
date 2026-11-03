@@ -108,7 +108,7 @@ export default function RefundsScreen() {
     }
     setSaving(true)
     try {
-      await postPharmacyRefund(token, {
+      const result = await postPharmacyRefund(token, {
         saleId: selected.id,
         reason: reason.trim(),
         restoreAs: 'quarantined',
@@ -119,7 +119,21 @@ export default function RefundsScreen() {
       setReceiptQuery('')
       setHits([])
       await load()
-      Alert.alert('Refunded', 'Sale voided. Stock restored as quarantined.')
+
+      // Tell the cashier what to hand over and what it did to the customer's
+      // account, not just that the sale was voided.
+      const money = (value: number) => `UGX ${Number(value ?? 0).toLocaleString()}`
+      const parts = [`Cash refunded ${money(result.refundAmount)}`]
+      if (Number(result.receivableReversal ?? 0) > 0) {
+        parts.push(`customer credit reduced by ${money(Number(result.receivableReversal))}`)
+      }
+      if (result.receivableUnposted) {
+        parts.push('an unpaid balance remains that was never posted to the credit ledger')
+      } else if (Number(result.receivableUnreversed ?? 0) > 0) {
+        parts.push(`${money(Number(result.receivableUnreversed))} of the unpaid balance stays on the account`)
+      }
+      parts.push('Stock restored as quarantined.')
+      Alert.alert('Refunded', parts.join('. '))
     } catch (err) {
       Alert.alert('Refund failed', err instanceof ApiError ? err.message : 'Try again')
     } finally {

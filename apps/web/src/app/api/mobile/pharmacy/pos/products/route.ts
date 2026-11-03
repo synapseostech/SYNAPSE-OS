@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
     .select(
       `
       id, name, sku, barcode, price, cost_price, quantity, unit_of_measure,
-      requires_prescription, is_active,
+      requires_prescription, is_active, vat_category,
       pharmacy_product_packages(id, name, units_per_package, price, is_default),
       pharmacy_product_batches(id, batch_number, quantity, expiry_date, cost_price, selling_price, is_active, status, manufacturer)
     `,
@@ -85,6 +85,9 @@ export async function GET(req: NextRequest) {
         hasPhantomStock: summary.hasPhantomStock,
         unit: product.unit_of_measure ?? 'unit',
         requiresPrescription: Boolean(product.requires_prescription),
+        // The phone computes the same VAT preview the server will charge, so
+        // the amount quoted to the customer cannot move at sync time.
+        vatCategory: (product.vat_category as string | null | undefined) ?? null,
         packages: packages
           .sort(
             (a, b) =>

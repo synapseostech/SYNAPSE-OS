@@ -229,3 +229,49 @@ describe("mobile POS complete-sale patient ownership", () => {
     expect(s.rpcCalls).toHaveLength(0)
   })
 })
+
+describe("mobile POS server-authoritative tax", () => {
+  const enableVat = (vatCategory: string) => {
+    s.tables.pharmacy_settings = [
+      {
+        tenant_id: "tenant-a",
+        discount_approval_threshold_pct: 5,
+        vat_enabled: true,
+        vat_rate: 18,
+      },
+    ]
+    s.tables.pharmacy_products = [
+      { ...s.tables.pharmacy_products[0], vat_category: vatCategory },
+    ]
+  }
+
+  it("computes VAT from the tenant settings when the phone sends none", async () => {
+    enableVat("standard")
+    const r = await POST(req(saleBody()))
+    expect(r.status).toBe(200)
+    expect(s.rpcCalls[0].args.p_tax_amount).toBe(1.8)
+  })
+
+  it("keeps the sale when the phone's stale zero disagrees, and reports the adjustment", async () => {
+    enableVat("standard")
+    const r = await POST(req(saleBody({ taxAmount: 0 })))
+    expect(r.status).toBe(200)
+    expect(s.rpcCalls[0].args.p_tax_amount).toBe(1.8)
+    expect(await r.json()).toMatchObject({ taxAdjusted: true })
+  })
+
+  it("agrees with an exempt product and never invents VAT for it", async () => {
+    enableVat("exempt")
+    const r = await POST(req(saleBody({ taxAmount: 0 })))
+    expect(r.status).toBe(200)
+    expect(s.rpcCalls[0].args.p_tax_amount).toBe(0)
+    expect(await r.json()).toMatchObject({ taxAdjusted: false })
+  })
+
+  it("rejects a negative tax before the RPC", async () => {
+    const r = await POST(req(saleBody({ taxAmount: -50 })))
+    expect(r.status).toBe(400)
+    expect(await r.json()).toMatchObject({ code: "INVALID_TAX_AMOUNT" })
+    expect(s.rpcCalls).toHaveLength(0)
+  })
+})

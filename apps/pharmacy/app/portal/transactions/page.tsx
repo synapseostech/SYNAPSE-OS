@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { formatCurrency } from "@/lib/utils"
-import { DollarSign, TrendingUp, Calendar, Filter, Download, Eye, Printer, X, RotateCcw, Edit, AlertTriangle } from "lucide-react"
+import { DollarSign, TrendingUp, Calendar, Filter, Download, Eye, Printer, X, Edit, AlertTriangle } from "lucide-react"
 
 interface TransactionItem {
   id: string
@@ -43,6 +43,7 @@ interface Transaction {
   isEdited?: boolean
   createdAt: string
   source?: "pos" | "order"
+  printFailed?: boolean
   user: {
     name: string
   }
@@ -82,7 +83,6 @@ export default function TransactionsPage() {
   const [showFilters, setShowFilters] = useState(true)
   const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null)
   const [settings, setSettings] = useState<PharmacySettings | null>(null)
-  const [isResetting, setIsResetting] = useState(false)
   const [printTransactionData, setPrintTransactionData] = useState<Transaction | null>(null)
   const [isPrintingReceipt, setIsPrintingReceipt] = useState(false)
   const [showClientNameBeforePrintDialog, setShowClientNameBeforePrintDialog] = useState(false)
@@ -101,9 +101,9 @@ export default function TransactionsPage() {
   const [transactionToDelete, setTransactionToDelete] = useState<Transaction | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
 
-  // Mirror isPharmacyAdmin: the reset and delete routes accept pharmacy_ceo and
-  // profile-level admins too, so keying the buttons off pharmacy_admin alone
-  // hides them from people the API would allow.
+  // Mirror isPharmacyAdmin: the delete route accepts pharmacy_ceo and
+  // profile-level admins too, so keying the button off pharmacy_admin alone
+  // hides it from people the API would allow.
   const isAdmin =
     Boolean(user?.isAdmin) ||
     user?.pharmacyRole === "pharmacy_admin" ||
@@ -137,11 +137,55 @@ export default function TransactionsPage() {
     return () => window.removeEventListener("afterprint", handleAfterPrint)
   }, [])
 
-  const triggerReliablePrint = () => {
+  const reportPosPrintAttempt = async (
+    saleId: string,
+    outcome: "requested" | "failed",
+    reason?: string,
+  ) => {
+    try {
+      const response = await fetch(
+        `/api/admin/pos/sales/${encodeURIComponent(saleId)}/print-status`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ outcome, reason }),
+        },
+      )
+      if (!response.ok) {
+        console.error("Receipt reprint status was not recorded:", response.status)
+        alert("The receipt action was not fully recorded. The sale remains unchanged.")
+        return
+      }
+      // Mirror what the server now holds so the "NOT PRINTED" badge reflects
+      // this attempt without waiting for a full refetch.
+      setTransactions((prev) =>
+        prev.map((t) =>
+          t.id === saleId ? { ...t, printFailed: outcome === "failed" } : t,
+        ),
+      )
+    } catch (error) {
+      console.error("Receipt reprint status was not recorded:", error)
+      alert("The receipt action was not fully recorded. The sale remains unchanged.")
+    }
+  }
+
+  const triggerReliablePrint = (saleId?: string) => {
     // Wait for React to paint the print tree before opening the print dialog.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        setTimeout(() => window.print(), 50)
+        setTimeout(() => {
+          if (saleId) void reportPosPrintAttempt(saleId, "requested")
+          try {
+            window.print()
+          } catch (error) {
+            console.error("Could not open the receipt print dialog:", error)
+            if (saleId) {
+              void reportPosPrintAttempt(saleId, "failed", "Browser could not open the print dialog")
+            } else {
+              alert("Unable to open the print dialog. The sale remains unchanged.")
+            }
+          }
+        }, 50)
       })
     })
   }
@@ -201,38 +245,6 @@ export default function TransactionsPage() {
     setStartDate("")
     setEndDate("")
     setTxnSearch("")
-  }
-
-  const handleResetTransactions = async () => {
-    if (!confirm("WARNING: This will permanently delete ALL sales transactions and cannot be undone. Are you absolutely sure you want to reset all sales to zero?")) {
-      return
-    }
-
-    // Double confirmation
-    if (!confirm("This is your FINAL confirmation. ALL transaction data will be permanently deleted. Continue?")) {
-      return
-    }
-
-    setIsResetting(true)
-    try {
-      const response = await fetch("/api/admin/transactions", {
-        method: "DELETE",
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        alert(`Successfully reset. ${data.deletedCount} transactions deleted.`)
-        fetchTransactions()
-      } else {
-        const error = await response.json()
-        alert(`Error: ${error.error || "Failed to reset transactions"}`)
-      }
-    } catch (error) {
-      console.error("Reset error:", error)
-      alert("An error occurred while resetting transactions")
-    } finally {
-      setIsResetting(false)
-    }
   }
 
   const handleDeleteTransaction = async () => {
@@ -392,7 +404,11 @@ export default function TransactionsPage() {
       if (response.ok) {
         const data = await response.json()
         if (data?.transaction) {
-          updatedTransaction = data.transaction
+          updatedTransaction = {
+            ...updatedTransaction,
+            ...data.transaction,
+            source: data.transaction.source ?? updatedTransaction.source,
+          }
         }
       }
     } catch (error) {
@@ -403,7 +419,9 @@ export default function TransactionsPage() {
 
     setPrintTransactionData(updatedTransaction)
     setIsPrintingReceipt(true)
-    triggerReliablePrint()
+    triggerReliablePrint(
+      updatedTransaction.source === "pos" ? updatedTransaction.id : undefined,
+    )
 
     resetPrintFlow()
   }
@@ -461,17 +479,6 @@ export default function TransactionsPage() {
           <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Transactions</h1>
           <p className="text-muted-foreground mt-1 sm:mt-2 text-sm sm:text-base">View and track all sales transactions</p>
         </div>
-        {isAdmin && (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={handleResetTransactions}
-            disabled={isResetting}
-          >
-            <RotateCcw className={`h-4 w-4 mr-2 ${isResetting ? 'animate-spin' : ''}`} />
-            {isResetting ? "Resetting..." : "Reset All Transactions"}
-          </Button>
-        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
@@ -632,6 +639,14 @@ export default function TransactionsPage() {
                       {transaction.isEdited && (
                         <span className="px-1.5 py-0.5 text-xs rounded bg-amber-100 text-[#E8B84B] font-medium">
                           EDITED
+                        </span>
+                      )}
+                      {transaction.printFailed && (
+                        <span
+                          className="px-1.5 py-0.5 text-xs rounded bg-red-500/15 text-red-400 font-medium"
+                          title="The cashier recorded that this receipt did not print. Use Print to reprint it."
+                        >
+                          NOT PRINTED
                         </span>
                       )}
                     </div>
@@ -1141,4 +1156,3 @@ function TransactionReceipt({
     </div>
   )
 }
-

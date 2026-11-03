@@ -88,12 +88,21 @@ export async function requireMobilePharmacyAuth(
   }
 
   // Deactivated pharmacy staff are refused server-side even with a still-valid session.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: settings } = await (supabaseAdmin as any)
+  // tenant_id is part of the filter, not an optimisation: the row is unique on
+  // (tenant_id, profile_id), so a staff member who belongs to two pharmacies has
+  // two rows. Filtering by profile_id alone made maybeSingle() error, which the
+  // old code treated as "active" — deactivating them at one pharmacy let them
+  // through at the other. An error is still fail-open (a transient read must not
+  // lock every till out) but it is no longer silent.
+  const { data: settings, error: settingsError } = await (supabaseAdmin as any)
     .from('pharmacy_user_settings')
     .select('is_active')
     .eq('profile_id', payload.sub)
+    .eq('tenant_id', tenantId)
     .maybeSingle()
+  if (settingsError) {
+    console.error('Mobile pharmacy auth: activation lookup failed:', settingsError)
+  }
   if (settings?.is_active === false) {
     return NextResponse.json({ error: 'Account deactivated', code: 'ACCOUNT_INACTIVE' }, { status: 403 })
   }

@@ -106,6 +106,34 @@ guide](https://help.tallysolutions.com/xml-integration/); live compatibility
 with the pharmacy's TallyPrime and Tally.ERP 9 test companies remains a release
 gate.
 
+### TallyPrime and Tally.ERP 9 as named targets
+
+Both editions are first-class targets and neither is assumed. They serve the
+same XML/TDL export interface, so the request envelope and the parser are
+shared; what differs is the setup an operator completes on the Tally computer
+and what a review may claim about the data it read. That difference is stated
+once, in
+[`apps/pharmacy/lib/tally/editions.ts`](../../apps/pharmacy/lib/tally/editions.ts).
+
+- The bridge reports the edition from the install path it detected
+  (`apps/tally-bridge/src/bridge.mjs`). The portal records that value on the
+  extraction manifest (`edition`: `prime`, `erp9`, or `unknown`) and on the
+  import session, and carries it through preview, review and apply evidence.
+  Anything the bridge cannot place is recorded as `unknown` and disclosed;
+  it is never promoted to either edition.
+- The review screen names the edition and shows what is *not* claimed. No
+  profile carries a `verifiedOn` date or an `evidenceUrl`, so every extraction
+  currently shows the `TALLY_EDITION_UNVERIFIED` (or `TALLY_EDITION_UNKNOWN`)
+  warning alongside the numbers. This is a warning, not a block: the plan is
+  judged on its own figures. The two fields are set together: a date without a
+  record fails `editions.test.ts`, as does a record that is missing or does not
+  name that date and edition label.
+- The per-edition setup steps, extraction requirements and the evidence each
+  edition's acceptance run must produce are in
+  [TALLY_PRIME_ERP9_ACCEPTANCE.md](./TALLY_PRIME_ERP9_ACCEPTANCE.md). The
+  synthetic XML in the test suite is a contract fixture; it is not evidence
+  that either product emits that shape.
+
 ## Existing and reusable
 
 - `portal/import-assistant` and `api/admin/import-sessions` provide the current
@@ -140,7 +168,11 @@ gate.
    verify that a second session and concurrent apply request are rejected.
 5. Expand extraction beyond the standard `All Masters` and `Day Book` reports
    where the pharmacy needs additional fields or historical stock detail. Tally
-   editions and configurations can return different fields.
+   editions and configurations can return different fields. Carrying Tally's
+   non-posting documents — orders, delivery and receipt notes, rejections,
+   stock journals, physical stock — is designed, not built, in
+   [TALLY_DOCUMENT_CHAIN_DESIGN.md](./TALLY_DOCUMENT_CHAIN_DESIGN.md); its §3
+   probe decides whether the current reports can supply them at all.
 6. Keep the existing mapping/review step explicit for medicine identity, units,
    categories, godowns, suppliers, customers, batches, and transactions. Do not
    fuzzy-match a medicine directly into sellable stock.

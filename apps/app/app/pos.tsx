@@ -32,9 +32,13 @@ import {
   syncPharmacySales,
 } from '@/lib/offline-store'
 import { SyncPayloadConflictError } from '../../../packages/db/src/sync-runtime'
+import { computePharmacySaleTax } from '../../../packages/db/src/pos-tax'
+import type { PharmacyTaxSettings } from '../../../packages/db/src/pos-tax'
+import { allocateCartDiscount, roundMoney } from '@/lib/pos-pricing'
 import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
 
 const CART_DRAFT_KEY = 'synapse.pharmacy.pos.draft.v1'
+const TAX_SETTINGS_KEY = 'synapse.pharmacy.pos.tax.v1'
 
 type PosProduct = {
   id: string
@@ -46,6 +50,7 @@ type PosProduct = {
   sellableQuantity?: number
   unit: string
   requiresPrescription: boolean
+  vatCategory?: string | null
   packages: Array<{
     id: string
     name: string
@@ -73,6 +78,8 @@ type CartLine = {
   packageLabel: string | null
   discountAmount: number
   unitsPerPackage: number
+  /** `pharmacy_products.vat_category`; null on a draft written before VAT preview. */
+  vatCategory?: string | null
 }
 
 type SaleResult = {
@@ -138,6 +145,12 @@ export default function PosScreen() {
   const [cart, setCart] = useState<CartLine[]>([])
   const [payment, setPayment] = useState<(typeof PAYMENTS)[number]['key']>('CASH')
   const [autoPrintReceipt, setAutoPrintReceipt] = useState(false)
+  // Matches the database default (true): until settings load, a sale must
+  // still end in an explicit print decision rather than a silent skip.
+  const [mandatoryReceiptPrint, setMandatoryReceiptPrint] = useState(true)
+  // null until the settings have been read at least once; a sale is blocked
+  // rather than quoted at zero tax when the device cannot know the rate.
+  const [taxSettings, setTaxSettings] = useState<PharmacyTaxSettings | null>(null)
   const [cartDiscount, setCartDiscount] = useState('')
   const [discountReason, setDiscountReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -213,19 +226,43 @@ export default function PosScreen() {
     void AsyncStorage.setItem(CART_DRAFT_KEY, JSON.stringify(payload))
   }, [cart, payment, cartDiscount, discountReason, draftRestored])
 
-  // Load pharmacy printer preference once for auto-print after sale.
+  // Load pharmacy preferences once: receipt printing, and the tax settings the
+  // till needs to quote the same VAT the server will charge. The tax settings
+  // are cached so an offline sale still quotes the right total.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       if (!token) return
       try {
-        const data = await apiRequest<{ settings?: { autoPrintReceipt?: boolean } }>(
-          '/api/mobile/pharmacy/settings',
-          { token },
-        )
-        if (!cancelled) setAutoPrintReceipt(Boolean(data.settings?.autoPrintReceipt))
+        const data = await apiRequest<{
+          settings?: {
+            autoPrintReceipt?: boolean
+            mandatoryReceiptPrint?: boolean
+            vatEnabled?: boolean
+            vatRate?: number
+            taxRate?: number
+          }
+        }>('/api/mobile/pharmacy/settings', { token })
+        if (cancelled) return
+        setAutoPrintReceipt(Boolean(data.settings?.autoPrintReceipt))
+        setMandatoryReceiptPrint(data.settings?.mandatoryReceiptPrint !== false)
+        const tax: PharmacyTaxSettings = {
+          vatEnabled: Boolean(data.settings?.vatEnabled),
+          vatRate: data.settings?.vatRate ?? null,
+          taxRate: data.settings?.taxRate ?? null,
+        }
+        setTaxSettings(tax)
+        void AsyncStorage.setItem(TAX_SETTINGS_KEY, JSON.stringify(tax))
       } catch {
-        /* non-fatal */
+        // Offline or transient failure: fall back to the last known settings
+        // rather than quoting a total the server will change.
+        const cached = await AsyncStorage.getItem(TAX_SETTINGS_KEY).catch(() => null)
+        if (cancelled || !cached) return
+        try {
+          setTaxSettings(JSON.parse(cached) as PharmacyTaxSettings)
+        } catch {
+          /* corrupt cache: leave null and block the sale */
+        }
       }
     })()
     return () => {
@@ -301,12 +338,55 @@ export default function PosScreen() {
     load()
   }, [load])
 
+  // Keep each cart line's VAT classification in step with the catalogue. This
+  // repairs a draft restored from a build that did not record it, and picks up
+  // a reclassification without the cashier re-adding the product.
+  useEffect(() => {
+    if (products.length === 0) return
+    const categoryOf = new Map(products.map((product) => [product.id, product.vatCategory ?? null]))
+    setCart((prev) => {
+      let changed = false
+      const next = prev.map((line) => {
+        const category = categoryOf.get(line.productId)
+        if (!category || category === line.vatCategory) return line
+        changed = true
+        return { ...line, vatCategory: category }
+      })
+      return changed ? next : prev
+    })
+  }, [products])
+
   const subtotal = useMemo(
     () => cart.reduce((s, line) => s + line.unitPrice * line.quantity, 0),
     [cart],
   )
   const discountN = Math.max(0, Number(cartDiscount) || 0)
-  const total = Math.max(0, subtotal - discountN)
+  // Per-line net after the cart discount, allocated in proportion to value so
+  // the taxable base does not depend on which line the cashier added first.
+  const lineNets = useMemo(
+    () => cart.map((line) => roundMoney(line.unitPrice * line.quantity)),
+    [cart],
+  )
+  const discountAllocation = useMemo(
+    () => allocateCartDiscount(lineNets, discountN),
+    [lineNets, discountN],
+  )
+  const total = Math.max(0, roundMoney(subtotal - discountN))
+  // The same function the sale route and `complete_pharmacy_sale` use, so the
+  // figure quoted here is the figure the server stores.
+  const saleTax = useMemo(
+    () =>
+      computePharmacySaleTax(
+        taxSettings,
+        cart.map((line, idx) => ({
+          netAmount: roundMoney((lineNets[idx] ?? 0) - (discountAllocation[idx] ?? 0)),
+          vatCategory: line.vatCategory,
+        })),
+      ),
+    [taxSettings, cart, lineNets, discountAllocation],
+  )
+  const taxAmount = saleTax.ok ? saleTax.taxAmount : 0
+  const grandTotal = roundMoney(total + taxAmount)
 
   const pushLine = (line: Omit<CartLine, 'key' | 'discountAmount'>) => {
     setLastSale(null)
@@ -336,6 +416,7 @@ export default function PosScreen() {
         batchLabel,
         packageLabel: opts.packageLabel,
         unitsPerPackage: opts.packageLabel ? opts.units : 1,
+        vatCategory: p.vatCategory ?? null,
       })
     }
     if (batches.length <= 1) {
@@ -415,14 +496,25 @@ export default function PosScreen() {
       )
       return
     }
+    if (!taxSettings) {
+      Alert.alert(
+        'Tax settings unavailable',
+        "Reconnect once so the till can read this pharmacy's tax settings. Selling without them could quote a total the server will not accept.",
+      )
+      return
+    }
+    if (!saleTax.ok) {
+      Alert.alert('Tax settings invalid', saleTax.detail)
+      return
+    }
     setSubmitting(true)
     try {
       const items = cart.map((l, idx) => ({
         productId: l.productId,
         quantity: l.quantity,
         unitPrice: l.unitPrice,
-        discountAmount: idx === 0 ? discountN : 0,
-        discountReason: idx === 0 && discountN > 0 ? discountReason.trim() : undefined,
+        discountAmount: discountAllocation[idx] ?? 0,
+        discountReason: (discountAllocation[idx] ?? 0) > 0 ? discountReason.trim() : undefined,
         batchId: l.batchId,
       }))
       const command = await commitPharmacySale({
@@ -432,7 +524,7 @@ export default function PosScreen() {
         payload: {
           paymentMethod: payment,
           paymentStatus: payment === 'CASH' ? 'captured' : 'offline_unverified',
-          taxAmount: 0,
+          taxAmount,
           items,
         },
       })
@@ -445,7 +537,7 @@ export default function PosScreen() {
       setLastSale({
         receipt_number: 'PENDING SYNC',
         status: 'pending',
-        total_amount: total,
+        total_amount: grandTotal,
       })
 
       const summary = await syncPharmacySales(user.tenantId, token)
@@ -460,8 +552,14 @@ export default function PosScreen() {
         setSyncBanner(null)
         load()
         const saleId = sale.sale_id
-        if (autoPrintReceipt && saleId) {
-          router.push(`/receipt/${saleId}?autoprint=1` as never)
+        // A mandatory print opens the receipt with its print decision bar;
+        // that screen keeps a failure exit ("printer unavailable") after the
+        // print attempt, so auto-opening the print sheet cannot strand the
+        // cashier the way it would on the web till.
+        if (saleId && (mandatoryReceiptPrint || autoPrintReceipt)) {
+          router.push(
+            `/receipt/${saleId}?autoprint=1${mandatoryReceiptPrint ? '&mandatory=1' : ''}` as never,
+          )
         } else if ((result?.lowStock ?? []).length > 0) {
           const names = result!.lowStock!.slice(0, 3).map((p) => p.name).join(', ')
           Alert.alert(
@@ -526,7 +624,7 @@ export default function PosScreen() {
     if (cart.length === 0) return
     Alert.alert(
       'Complete sale?',
-      `UGX ${total.toLocaleString()} · ${PAYMENTS.find((p) => p.key === payment)?.label}${
+      `UGX ${grandTotal.toLocaleString()} · ${PAYMENTS.find((p) => p.key === payment)?.label}${
         discountN > 0 ? ` · discount ${discountN.toLocaleString()}` : ''
       }`,
       [
@@ -792,11 +890,21 @@ export default function PosScreen() {
               ))}
             </View>
 
+            {taxAmount > 0 ? (
+              <View style={styles.taxRow}>
+                <Text style={styles.taxLabel}>
+                  VAT{saleTax.ok && saleTax.ratePct > 0 ? ` (${saleTax.ratePct}%)` : ''}
+                  {saleTax.ok && saleTax.taxableBase < total ? ' on taxable items' : ''}
+                </Text>
+                <Text style={styles.taxValue}>UGX {taxAmount.toLocaleString()}</Text>
+              </View>
+            ) : null}
+
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>
                 {discountN > 0 ? `Total (−${discountN.toLocaleString()})` : 'Total'}
               </Text>
-              <Text style={styles.totalValue}>UGX {total.toLocaleString()}</Text>
+              <Text style={styles.totalValue}>UGX {grandTotal.toLocaleString()}</Text>
             </View>
 
             <Button
@@ -1029,6 +1137,25 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   payChipTextOn: { color: colors.primary },
+  taxRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.xs,
+    gap: spacing.sm,
+  },
+  taxLabel: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    fontFamily: 'DMSans_500Medium',
+  },
+  taxValue: {
+    ...typography.mono,
+    fontSize: 12,
+    color: colors.textSecondary,
+    fontFamily: 'IBMPlexMono_500Medium',
+    flexShrink: 1,
+  },
   totalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

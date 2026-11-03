@@ -62,6 +62,23 @@ export function reconcileTallyPlan(
     0,
   )
 
+  const partyCodes = (kind: "customer" | "supplier") =>
+    new Set(plan.accounts.filter((account) => account.partyType === kind).map((account) => account.code))
+  const customerCodes = partyCodes("customer")
+  const supplierCodes = partyCodes("supplier")
+  const journalReceivable = plan.opening.lines
+    .filter((line) => customerCodes.has(line.accountCode))
+    .reduce((total, line) => total + line.debit - line.credit, 0)
+  const journalPayable = plan.opening.lines
+    .filter((line) => supplierCodes.has(line.accountCode))
+    .reduce((total, line) => total + line.credit - line.debit, 0)
+  const partyReceivable = plan.parties
+    .filter((party) => party.kind === "customer")
+    .reduce((total, party) => total + party.openingBalance, 0)
+  const partyPayable = plan.parties
+    .filter((party) => party.kind === "supplier")
+    .reduce((total, party) => total + party.openingBalance, 0)
+
   return [
     check(
       "opening-balance",
@@ -83,6 +100,20 @@ export function reconcileTallyPlan(
     check("sales", "Sales mirrored for reports", plan.counts.sales, counts.sales),
     check("purchases", "Purchases mirrored for reports", plan.counts.purchases, counts.purchases),
     check("opening-stock", "Opening batches received", countableBatches(plan), counts.openingStock),
+    check(
+      "receivables",
+      "Customer opening balances against their ledger lines",
+      journalReceivable,
+      partyReceivable,
+      "A difference means a customer's opening balance is missing from one of the two records.",
+    ),
+    check(
+      "payables",
+      "Supplier opening balances against their ledger lines",
+      journalPayable,
+      partyPayable,
+      "A difference means a supplier's opening balance is missing from one of the two records.",
+    ),
     check(
       "cost-of-goods",
       "Cost of goods sold",

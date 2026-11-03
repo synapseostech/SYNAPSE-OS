@@ -231,6 +231,10 @@ export type PharmacySettings = {
   location?: string
   contact?: string
   email?: string
+  /** Rates are percentages: 18 means 18%. */
+  vatEnabled?: boolean
+  vatRate?: number
+  taxRate?: number
 }
 
 export type PharmacyStaffUser = {
@@ -537,6 +541,11 @@ export function postPharmacyRefund(
     saleId: string
     receiptNumber?: string
     refundAmount: number
+    receivableReversal?: number
+    receivableOutstanding?: number
+    receivableUnreversed?: number
+    receivableUnposted?: boolean
+    creditBalanceAfter?: number | null
     restoreAs: string
     status: string
   }>('/api/mobile/pharmacy/refunds', { method: 'POST', token, body })
@@ -1052,6 +1061,7 @@ export function searchPosProducts(token: string, q: string) {
       costPrice: number | null
       quantity: number
       sellableQuantity?: number
+      vatCategory?: string | null
     }>
   }>(`/api/mobile/pharmacy/pos/products?${params}`, { token })
 }

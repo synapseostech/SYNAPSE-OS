@@ -2,7 +2,7 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 
 import { normaliseTallyDocument } from "./tally-normalise.ts"
-import { parseTallyXmlRows } from "./tally-xml-rows.ts"
+import { parseTallyXmlRows, TALLY_XML_ROW_LIMITS } from "./tally-xml-rows.ts"
 
 function tallyExport(inner: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -543,5 +543,34 @@ describe("normaliseTallyDocument", () => {
       { reference: "INV-1", amount: 700, dueDate: "2026-01-31", billType: "New Ref", dueDateDerived: true },
     ])
     assert.equal(result.opening.difference, 0)
+  })
+
+  it("blocks a plan built from a source the parser stopped reading", () => {
+    const document = parseTallyXmlRows(tallyExport(""))
+    document.truncated = { reason: "RECORD_LIMIT", limit: 250_000, recordsProcessed: 250_000 }
+
+    const result = normaliseTallyDocument(document, { conversionDate: "2026-01-01" })
+    const truncated = result.exceptions.filter((entry) => entry.code === "SOURCE_TRUNCATED")
+
+    assert.equal(truncated.length, 1)
+    assert.equal(truncated[0].severity, "blocking")
+    assert.match(truncated[0].message, /250,000 records/)
+    assert.match(truncated[0].detail ?? "", /recordsProcessed=250000/)
+    assert.match(truncated[0].detail ?? "", /reason=RECORD_LIMIT/)
+  })
+
+  it("blocks a 250,001-record export end to end with the counts the parser saw", () => {
+    const records = '<GODOWN NAME="G"/>'.repeat(TALLY_XML_ROW_LIMITS.MAX_RECORDS + 1)
+    const document = parseTallyXmlRows(tallyExport(records))
+
+    const result = normaliseTallyDocument(document, { conversionDate: "2026-01-01" })
+    const truncated = result.exceptions.filter((entry) => entry.code === "SOURCE_TRUNCATED")
+
+    assert.equal(truncated.length, 1)
+    assert.equal(truncated[0].severity, "blocking")
+    assert.equal(
+      truncated[0].detail,
+      "reason=RECORD_LIMIT; recordsProcessed=250000; limit=250000",
+    )
   })
 })

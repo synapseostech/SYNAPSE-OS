@@ -130,3 +130,59 @@ describe("receipt rendering", () => {
     expect(renderReceiptHtml(snap)).toContain("REFUNDED");
   });
 });
+
+describe("receipt tax breakdown", () => {
+  const vatSale: ReceiptSaleInput = {
+    ...baseSale,
+    subtotal: 8000,
+    taxAmount: 180,
+    totalAmount: 8180,
+    tax: { source: "vat", ratePct: 18, taxableAmount: 1000, exemptAmount: 5000, zeroRatedAmount: 2000 },
+  };
+
+  it("prints the persisted VAT split — taxable, VAT, zero-rated and exempt", () => {
+    const txt = renderReceiptText(buildReceiptSnapshot({ pharmacy, sale: vatSale }));
+    expect(txt).toContain("Taxable (18%)");
+    expect(txt).toContain("VAT (18%)");
+    expect(txt).toContain("UGX 180");
+    expect(txt).toContain("Zero-rated:");
+    expect(txt).toContain("UGX 2,000");
+    expect(txt).toContain("Exempt:");
+    expect(txt).toContain("UGX 5,000");
+
+    const html = renderReceiptHtml(buildReceiptSnapshot({ pharmacy, sale: vatSale }));
+    expect(html).toContain("Taxable (18%)");
+    expect(html).toContain("VAT (18%)");
+    expect(html).toContain("Zero-rated");
+    expect(html).toContain("Exempt");
+  });
+
+  it("shows the exempt line even when the whole sale is untaxed", () => {
+    const txt = renderReceiptText(
+      buildReceiptSnapshot({
+        pharmacy,
+        sale: { ...baseSale, taxAmount: 0, tax: { source: "vat", ratePct: 18, taxableAmount: 0, exemptAmount: 9500 } },
+      }),
+    );
+    expect(txt).toContain("Exempt:");
+    expect(txt).not.toContain("VAT (18%)");
+  });
+
+  it("keeps the flat header row for a legacy flat-rate sale", () => {
+    const txt = renderReceiptText(
+      buildReceiptSnapshot({
+        pharmacy,
+        sale: { ...baseSale, taxAmount: 475, tax: { source: "legacy", taxableAmount: 9500 } },
+      }),
+    );
+    expect(txt).toContain("Tax/VAT:");
+    expect(txt).not.toContain("VAT (");
+  });
+
+  it("falls back to the header row when the sale predates line-level tax", () => {
+    const txt = renderReceiptText(buildReceiptSnapshot({ pharmacy, sale: { ...baseSale, taxAmount: 475 } }));
+    expect(txt).toContain("Tax/VAT:");
+    expect(txt).not.toContain("Taxable");
+    expect(buildReceiptSnapshot({ pharmacy, sale: baseSale }).tax).toBeNull();
+  });
+});

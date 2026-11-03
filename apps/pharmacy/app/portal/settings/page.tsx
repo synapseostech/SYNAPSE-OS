@@ -1,7 +1,6 @@
 ﻿"use client"
 
 import { useEffect, useState } from "react"
-import { usePharmacySession } from "@/hooks/use-pharmacy-session"
 
 // Force dynamic rendering
 export const dynamic = 'force-dynamic'
@@ -11,7 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/hooks/use-toast"
-import { Loader2, Upload, X, Trash2, AlertTriangle, Printer } from "lucide-react"
+import { Loader2, Upload, X, Printer } from "lucide-react"
 import Image from "next/image"
 import { escapeHtml, safeImageSrc } from "@/lib/html"
 
@@ -23,6 +22,8 @@ interface Settings {
   footerText: string
   currency: string
   taxRate: number
+  vatEnabled: boolean
+  vatRate: number
   logo?: string
   printerType: string
   receiptPaperWidth: "58" | "80" | "a4"
@@ -31,7 +32,6 @@ interface Settings {
 }
 
 export default function SettingsPage() {
-  const { user } = usePharmacySession()
   const [settings, setSettings] = useState<Settings>({
     pharmacyName: "",
     location: "",
@@ -40,6 +40,8 @@ export default function SettingsPage() {
     footerText: "",
     currency: "UGX",
     taxRate: 0,
+    vatEnabled: false,
+    vatRate: 18,
     logo: "",
     printerType: "default",
     receiptPaperWidth: "80",
@@ -48,7 +50,6 @@ export default function SettingsPage() {
   })
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
-  const [isResettingSales, setIsResettingSales] = useState(false)
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [logoPreview, setLogoPreview] = useState<string>("")
   const { toast } = useToast()
@@ -82,6 +83,8 @@ export default function SettingsPage() {
             footerText: data.footer_text ?? data.footerText ?? "",
             currency: data.currency ?? "UGX",
             taxRate: Number(data.tax_rate ?? data.taxRate ?? 0),
+            vatEnabled: Boolean(data.vat_enabled ?? data.vatEnabled),
+            vatRate: Number(data.vat_rate ?? data.vatRate ?? 18),
             logo: data.logo ?? "",
             printerType,
             receiptPaperWidth,
@@ -118,56 +121,6 @@ export default function SettingsPage() {
     setSettings({ ...settings, logo: "" })
   }
 
-  const handleResetSales = async () => {
-    if (!confirm("⚠️ WARNING: This will permanently delete ALL sales transactions and cannot be undone. Are you absolutely sure you want to reset all sales to zero?")) {
-      return
-    }
-    
-    if (!confirm("This is your final confirmation. Type 'RESET' in the next prompt to confirm.")) {
-      return
-    }
-
-    const confirmation = prompt("Type 'RESET' to confirm:")
-    if (confirmation !== "RESET") {
-      toast({
-        variant: "destructive",
-        title: "Cancelled",
-        description: "Reset sales was cancelled.",
-      })
-      return
-    }
-
-    setIsResettingSales(true)
-    try {
-      const response = await fetch("/api/admin/transactions", {
-        method: "DELETE",
-      })
-      
-      const data = await response.json()
-      
-      if (response.ok) {
-        toast({
-          title: "Success",
-          description: data.message || "All sales have been reset to zero.",
-        })
-      } else {
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: data.error || "Failed to reset sales",
-        })
-      }
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "An error occurred while resetting sales",
-      })
-    } finally {
-      setIsResettingSales(false)
-    }
-  }
-
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsSaving(true)
@@ -193,10 +146,12 @@ export default function SettingsPage() {
         })
         setLogoFile(null)
       } else {
+        const problem = await response.json().catch(() => null)
         toast({
           variant: "destructive",
           title: "Error",
-          description: "Failed to save settings",
+          description:
+            typeof problem?.error === "string" ? problem.error : "Failed to save settings",
         })
       }
     } catch (error) {
@@ -330,13 +285,49 @@ export default function SettingsPage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="taxRate">Tax Rate (%)</Label>
+                <Label htmlFor="taxRate">Legacy Tax Rate (%)</Label>
                 <Input
                   id="taxRate"
                   type="number"
                   step="0.01"
+                  min="0"
+                  max="100"
                   value={settings.taxRate}
                   onChange={(e) => setSettings({ ...settings, taxRate: parseFloat(e.target.value) })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  A percentage: 18 means 18%, not 0.18. Applied to every line only while
+                  VAT is off. Leave at 0 to charge no tax.
+                </p>
+              </div>
+            </div>
+            <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
+              <label className="flex items-start gap-3 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={settings.vatEnabled}
+                  onChange={(e) => setSettings({ ...settings, vatEnabled: e.target.checked })}
+                />
+                <span>
+                  <span className="font-medium">Charge VAT</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5">
+                    Adds VAT to products marked standard-rated. Exempt and zero-rated
+                    products are never taxed, and sales are refused while the rate is
+                    invalid.</span>
+                </span>
+              </label>
+              <div className="space-y-2">
+                <Label htmlFor="vatRate">VAT Rate (%)</Label>
+                <Input
+                  id="vatRate"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="100"
+                  disabled={!settings.vatEnabled}
+                  value={settings.vatRate}
+                  onChange={(e) => setSettings({ ...settings, vatRate: parseFloat(e.target.value) })}
                 />
               </div>
             </div>
@@ -493,40 +484,6 @@ export default function SettingsPage() {
             )}
           </CardContent>
         </Card>
-
-        {(user?.pharmacyRole === "pharmacy_admin" || user?.pharmacyRole === "pharmacy_ceo") && (
-          <Card className="border-red-200 bg-red-50">
-            <CardHeader>
-              <CardTitle className="flex items-center text-red-800">
-                <AlertTriangle className="h-5 w-5 mr-2" />
-                Danger Zone
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-medium text-red-800">Reset All Sales Data</h4>
-                  <p className="text-sm text-destructive">
-                    Permanently delete all transaction records. This action cannot be undone.
-                  </p>
-                </div>
-                <Button 
-                  type="button"
-                  variant="destructive" 
-                  onClick={handleResetSales}
-                  disabled={isResettingSales}
-                >
-                  {isResettingSales ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-4 w-4 mr-2" />
-                  )}
-                  Reset Sales
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
 
         <div className="flex justify-end">
           <Button type="submit" disabled={isSaving}>

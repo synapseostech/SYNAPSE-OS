@@ -73,7 +73,16 @@ interface Product {
   manufacturer?: string
   packages?: ProductPackage[]
   batches?: ProductBatch[]
+  vatCategory?: string  // Mirrors the chk_vat_category constraint
 }
+
+// Every product defaults to exempt, so enabling VAT never taxes a line nobody
+// has classified. These labels are the only place the classification is set.
+const VAT_CATEGORIES = [
+  { value: "exempt", label: "Exempt — no VAT" },
+  { value: "standard", label: "Standard-rated — VAT applies" },
+  { value: "zero_rated", label: "Zero-rated — reported, not charged" },
+] as const
 
 export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([])
@@ -738,6 +747,7 @@ function CreateProductDialog({ onClose, onSuccess, suppliers }: CreateProductDia
     sideEffects: "",
     storageInstructions: "",
     regulatoryId: "",
+    vatCategory: "exempt",
   })
 
   // Section 2: Package Definitions
@@ -919,6 +929,12 @@ function CreateProductDialog({ onClose, onSuccess, suppliers }: CreateProductDia
                 <div className="space-y-1.5">
                   <Label htmlFor="price">Selling Price per {formData.unitOfMeasure} *</Label>
                   <Input id="price" type="number" step="0.01" value={formData.price} onChange={(e) => setFormData({ ...formData, price: e.target.value })} required placeholder="e.g., 100" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="vatCategory">VAT Treatment</Label>
+                  <select id="vatCategory" value={formData.vatCategory} onChange={(e) => setFormData({ ...formData, vatCategory: e.target.value })} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+                    {VAT_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </select>
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="supplierId">Supplier</Label>
@@ -1350,6 +1366,7 @@ function EditProductDialog({ product, onClose, onSuccess, suppliers }: EditProdu
     sideEffects: (product as any).sideEffects || "",
     storageInstructions: (product as any).storageInstructions || "",
     regulatoryId: (product as any).regulatoryId || "",
+    vatCategory: product.vatCategory || "exempt",
   })
 
   // Section 2: Package Definitions (load from product)
@@ -1595,6 +1612,12 @@ function EditProductDialog({ product, onClose, onSuccess, suppliers }: EditProdu
                 <div className="space-y-1.5">
                   <Label htmlFor="edit-price">Selling Price per {formData.unitOfMeasure} *</Label>
                   <Input id="edit-price" type="number" step="0.01" value={formData.price} onChange={(e) => setFormData({ ...formData, price: e.target.value })} required placeholder="e.g., 100" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-vatCategory">VAT Treatment</Label>
+                  <select id="edit-vatCategory" value={formData.vatCategory} onChange={(e) => setFormData({ ...formData, vatCategory: e.target.value })} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+                    {VAT_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </select>
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="edit-supplierId">Supplier</Label>

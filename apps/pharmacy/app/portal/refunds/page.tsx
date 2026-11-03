@@ -18,6 +18,10 @@ interface Transaction {
   totalAmount: number
   discount: number
   netAmount: number
+  /** Cash the customer actually handed over; this is what a refund pays back. */
+  paidAmount: number
+  /** Part of the sale that sits on the customer's account, not in the till. */
+  balanceDue: number
   paymentMethod: string
   status: string
   notes?: string
@@ -41,6 +45,7 @@ export default function RefundsPage() {
   const [isSearching, setIsSearching] = useState(false)
   const [showRefundDialog, setShowRefundDialog] = useState(false)
   const [refundReason, setRefundReason] = useState("")
+  const [restoreSellable, setRestoreSellable] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const { toast } = useToast()
 
@@ -69,14 +74,25 @@ export default function RefundsPage() {
       if (!response.ok) throw new Error("Failed to search")
       
       const data = await response.json()
-      const transactions = data.transactions || data
-      
-      if (Array.isArray(transactions) && transactions.length > 0) {
-        // Find exact match by transaction number
-        const exactMatch = transactions.find(
-          (t: Transaction) => t.transactionNo.toLowerCase() === searchQuery.toLowerCase()
-        )
-        setTransaction(exactMatch || transactions[0])
+      const transactions: Transaction[] = Array.isArray(data) ? data : data.transactions || []
+      const query = searchQuery.trim().toLowerCase()
+
+      // Never fall back to the newest sale: refunding the wrong receipt is far
+      // worse than asking the user to type more of the number.
+      const exact = transactions.filter(
+        (t) => String(t.transactionNo ?? "").toLowerCase() === query,
+      )
+      if (exact.length === 1) {
+        setTransaction(exact[0])
+      } else if (exact.length === 0 && transactions.length === 1) {
+        setTransaction(transactions[0])
+      } else if (transactions.length > 1) {
+        toast({
+          title: "Several matches",
+          description: "Enter the complete receipt number so the right sale is refunded.",
+          variant: "destructive",
+        })
+        setTransaction(null)
       } else {
         toast({
           title: "Not Found",
@@ -107,6 +123,7 @@ export default function RefundsPage() {
         body: JSON.stringify({
           transactionId: transaction.id,
           reason: refundReason,
+          restoreAs: restoreSellable ? "active" : "quarantined",
         }),
       })
 
@@ -117,15 +134,24 @@ export default function RefundsPage() {
 
       const data = await response.json()
 
-      toast({
-        title: "Refund Processed",
-        description: `Refunded ${formatCurrency(data.refundAmount)} successfully`,
-      })
+      const parts = [`Cash refunded ${formatCurrency(data.refundAmount)}`]
+      if (Number(data.receivableReversal ?? 0) > 0) {
+        parts.push(`customer credit reduced by ${formatCurrency(data.receivableReversal)}`)
+      }
+      if (data.receivableUnposted) {
+        parts.push("an unpaid balance remains that was never posted to the credit ledger")
+      } else if (Number(data.receivableUnreversed ?? 0) > 0) {
+        parts.push(
+          `${formatCurrency(Number(data.receivableUnreversed))} of the unpaid balance stays on the customer's account`,
+        )
+      }
+      toast({ title: "Refund Processed", description: parts.join("; ") })
 
       setShowRefundDialog(false)
       setTransaction(null)
       setSearchQuery("")
       setRefundReason("")
+      setRestoreSellable(false)
       fetchRefunds()
     } catch (error: any) {
       toast({
@@ -258,8 +284,21 @@ export default function RefundsPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <p>Are you sure you want to refund transaction <strong>{transaction.transactionNo}</strong>?</p>
-              <p className="text-lg font-bold">Refund Amount: {formatCurrency(transaction.netAmount)}</p>
-              
+
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">
+                  Sale total: {formatCurrency(transaction.netAmount)}
+                </p>
+                <p className="text-lg font-bold">
+                  Cash to refund: {formatCurrency(transaction.paidAmount ?? transaction.netAmount)}
+                </p>
+                {Number(transaction.balanceDue ?? 0) > 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    Customer credit to reverse: {formatCurrency(transaction.balanceDue)}
+                  </p>
+                )}
+              </div>
+
               <div className="space-y-2">
                 <Label>Reason for Refund</Label>
                 <Input
@@ -269,11 +308,28 @@ export default function RefundsPage() {
                 />
               </div>
 
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={restoreSellable}
+                  onChange={(e) => setRestoreSellable(e.target.checked)}
+                />
+                <span>
+                  Returned units are sellable — put them back into their batch as active stock.
+                  Leave unchecked to quarantine the batch until a pharmacist inspects it.
+                </span>
+              </label>
+
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-sm">
                 <p className="font-medium text-yellow-800">This action will:</p>
                 <ul className="list-disc list-inside text-yellow-400 mt-1">
                   <li>Mark the transaction as refunded</li>
-                  <li>Restore product quantities to inventory</li>
+                  <li>
+                    {restoreSellable
+                      ? "Return the sold units to their batch as active stock"
+                      : "Quarantine the returned units' batch so it cannot be sold until released"}
+                  </li>
                   <li>Create an audit log entry</li>
                 </ul>
               </div>
@@ -285,6 +341,7 @@ export default function RefundsPage() {
                   onClick={() => {
                     setShowRefundDialog(false)
                     setRefundReason("")
+                    setRestoreSellable(false)
                   }}
                 >
                   Cancel

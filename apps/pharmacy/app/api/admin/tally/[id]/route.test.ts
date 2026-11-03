@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { NextRequest, NextResponse } from "next/server"
 import type { TallyApplyProgress } from "@/lib/tally/apply"
+import {
+  MASTERS_CHUNK_ID,
+  createManifest,
+  recordChunkResult,
+  voucherChunkId,
+} from "@/lib/tally/chunks"
 import { fakeSupabase, filtersOf, type FakeOperation, type FakeResult } from "@/lib/tally/test-db"
 
 const m = vi.hoisted(() => ({
@@ -166,6 +172,73 @@ describe("GET /api/admin/tally/[id]", () => {
     expect(body.progress).toBeNull()
     expect(body.failures).toEqual([])
     expect(body.failureCount).toBe(0)
+  })
+
+  it("reports the same preflight the apply route enforces", async () => {
+    const period = { from: "2026-04-01", to: "2026-04-30" }
+    let manifest = createManifest({
+      sessionId: "session-1",
+      company: "Test Pharmacy Ltd",
+      mode: "opening",
+      period,
+      updatedAt: "2026-04-01T00:00:00.000Z",
+    })
+    manifest = recordChunkResult(
+      manifest,
+      MASTERS_CHUNK_ID,
+      { status: "complete", recordsRead: 0, expectedRecords: 0 },
+      "2026-04-01T00:00:00.000Z",
+    )
+    manifest = recordChunkResult(
+      manifest,
+      voucherChunkId(period),
+      { status: "complete", recordsRead: 4, expectedRecords: 4 },
+      "2026-04-01T00:00:00.000Z",
+    )
+
+    setup(
+      sessionRow("review", {
+        format: "xml",
+        manifest,
+        manifestProblems: [],
+        summary: {
+          company: "Test Pharmacy Ltd",
+          companyKey: "test-pharmacy-ltd",
+          currency: "UGX",
+          conversionDate: "2026-04-01",
+          mode: "opening",
+          format: "xml",
+          counts: {},
+          opening: {
+            date: "2026-04-01",
+            totalDebit: 100_000,
+            totalCredit: 99_000,
+            difference: 1_000,
+          },
+          stock: null,
+          reconciliation: {
+            inventoryOpening: 50_000,
+            customerOpening: 20_000,
+            supplierOpening: 30_000,
+            partyReceivable: 20_000,
+            partyPayable: 30_000,
+            duplicateVouchers: 0,
+          },
+          exceptions: [],
+          chunkCount: 1,
+          chunkSize: 250,
+          warnings: [],
+          preparedAt: "2026-04-01T00:00:00.000Z",
+        },
+      }),
+    )
+
+    const body = await (await get()).json()
+
+    expect(body.cutoverPreflight).toMatchObject({ state: "blocked", canApply: false })
+    expect(body.cutoverPreflight.checks).toContainEqual(
+      expect.objectContaining({ id: "opening-balance", status: "fail", blocksApply: true }),
+    )
   })
 })
 

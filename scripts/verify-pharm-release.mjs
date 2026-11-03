@@ -4,7 +4,10 @@
  *
  * LOCAL (default):
  *   npm run verify:pharm-release
- *   Required in-repo checks only. PASS or FAIL. No PASS_WITH_SKIPS.
+ *   Required in-repo checks only. PASS or FAIL. No PASS_WITH_SKIPS: the
+ *   pharmacy suite's skips are classified by
+ *   scripts/report-pharmacy-skips.mjs, and a skip nobody declared fails the
+ *   gate instead of passing quietly.
  *
  * LIVE:
  *   npm run verify:pharm-release:live
@@ -49,12 +52,21 @@ function printSummary(final) {
 }
 
 run('db:check (migration integrity)', 'npm', ['run', 'db:check'])
+run('db:history:check (migration history)', 'npm', ['run', 'db:history:check'])
+run('test:migration-integrity (history + RPC coverage)', 'npm', ['run', 'test:migration-integrity'])
+run('test:workflow-safety (CI gate + deploy provenance)', 'npm', ['run', 'test:workflow-safety'])
 run('lint @synapse/web', 'npm', ['run', 'lint', '--workspace', '@synapse/web'])
 run('lint @synapse/pharmacy', 'npm', ['run', 'lint', '--workspace', '@synapse/pharmacy'])
 run('type-check @synapse/web', 'npm', ['run', 'type-check', '--workspace', '@synapse/web'])
 run('type-check @synapse/pharmacy', 'npm', ['run', 'type-check', '--workspace', '@synapse/pharmacy'])
 run('type-check @synapse/app', 'npm', ['run', 'type-check', '--workspace', '@synapse/app'])
 run('test @synapse/pharmacy (unit/domain/authz/contracts)', 'npm', ['run', 'test', '--workspace', '@synapse/pharmacy'])
+run('test:pharmacy-skips (every skip declared and classified)', 'npm', ['run', 'test:pharmacy-skips'])
+run('test:tally (Tally import parsers + bridge)', 'npm', ['run', 'test:tally'])
+run('test:pharmacy-print (shared receipt-print recorder)', 'npm', ['run', 'test:pharmacy-print'])
+run('test:pharmacy-tax (shared tax engine + receipt tax split)', 'npm', ['run', 'test:pharmacy-tax'])
+run('test:pharmacy-mobile-api (mobile pharmacy BFF routes)', 'npm', ['run', 'test:pharmacy-mobile-api'])
+run('test:mobile-app (mobile till pricing, purchase draft, receipt print gate)', 'npm', ['run', 'test:mobile-app'])
 run('build @synapse/pharmacy', 'npm', ['run', 'build', '--workspace', '@synapse/pharmacy'])
 run('verify:web (type-check + Next build)', 'npm', ['run', 'verify:web'])
 run('expo export --platform android', 'npm', ['run', 'export:android', '--workspace', '@synapse/app'])

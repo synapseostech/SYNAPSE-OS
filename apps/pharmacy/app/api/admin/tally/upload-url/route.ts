@@ -25,6 +25,10 @@ const EXTENSIONS: Record<string, TallySourceExtension> = {
  * POST /api/admin/tally/upload-url
  * Creates the import session and a signed URL the browser uploads to directly.
  * No file bytes pass through the request body.
+ *
+ * `source: "bridge"` creates the session without a signed URL: the live
+ * extraction uploads each chunk to its own target, obtained from the extract
+ * route, so there is no single file for this session to point at.
  */
 export async function POST(request: NextRequest) {
   const auth = await requireTallyAdmin(request, "inventory.write")
@@ -46,11 +50,39 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  let body: { fileName?: string; fileSize?: number }
+  let body: { fileName?: string; fileSize?: number; source?: unknown }
   try {
-    body = (await request.json()) as { fileName?: string; fileSize?: number }
+    body = (await request.json()) as { fileName?: string; fileSize?: number; source?: unknown }
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
+  }
+  if (body.source !== undefined && body.source !== "file" && body.source !== "bridge") {
+    return NextResponse.json(
+      { error: "source must be either \"file\" or \"bridge\"" },
+      { status: 400 },
+    )
+  }
+
+  if (body.source === "bridge") {
+    const { data: created, error } = await db()
+      .from("pharmacy_import_sessions")
+      .insert({
+        tenant_id: tenantId,
+        source_system: "Tally",
+        file_name: "Tally live extraction",
+        status: "pending",
+        created_by: actorId,
+        ai_mapping: { format: "xml", source: "bridge", path: null },
+      })
+      .select("id")
+      .single()
+    if (error || !created) {
+      return NextResponse.json(
+        { error: error?.message ?? "Could not start the import session." },
+        { status: 500 },
+      )
+    }
+    return NextResponse.json({ sessionId: (created as { id: string }).id })
   }
 
   const fileName = String(body.fileName ?? "").trim()

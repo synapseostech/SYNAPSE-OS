@@ -4,6 +4,11 @@ node_modules/
 build/
 dist/
 coverage/
+
+# Playwright run output. Traces, screenshots and videos captured during
+# acceptance show a signed-in operator and the tenant's sales — never commit them.
+/test-results/
+/playwright-report/
 /public/synapse-logo.jpg
 /public/synapse-logo.png
 /public/team/

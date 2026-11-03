@@ -5,6 +5,12 @@ Everything below is what the portal actually accepts; the parsers are in
 `apps/pharmacy/lib/tally/` and the format dispatch is decided by file **content**,
 not by the extension.
 
+What the dates mean — requested, sent to Tally, echoed by Tally, and actually
+read — is traced separately in
+[TALLY_PERIOD_SEMANTICS.md](./TALLY_PERIOD_SEMANTICS.md). The first run against
+a real Tally installation on Windows, start to finish, is
+[TALLY_WINDOWS_INTEGRATION_TEST.md](./TALLY_WINDOWS_INTEGRATION_TEST.md).
+
 The Tally cut-over is a **one-time** migration, reachable only by the pharmacy
 administrator, and it locks itself once applied.
 
@@ -51,19 +57,50 @@ Write-Host "Copy this token into the portal: $env:SYNAPSE_TALLY_BRIDGE_TOKEN"
 node apps\tally-bridge\src\cli.mjs
 ```
 
-What it does: asks Tally for exactly two reports, `All Masters` and `Day Book`,
-for one date range, combines them, and pushes the result through the same
-preview as a manual upload. The range starts at `SYNAPSE_TALLY_FROM_DATE`
-(default `19000101`) and ends at `SYNAPSE_TALLY_TO_DATE` (default today). The
-masters request carries the end date because Tally only reports each ledger's
-and stock item's **closing balance** when `SVTODATE` is part of the request —
-which is what a balances-only cut-over reads. Set `SYNAPSE_TALLY_TO_DATE` to the
-date the balances should close on.
+What it does: asks Tally for `All Masters` and `Day Book` and pushes the result
+through the same preview as a manual upload.
+
+- **Opening balances and history** reads the masters once, then the voucher
+  history one date range at a time. The portal takes the period you entered on
+  the page, splits it into ranges, and sends each range to the bridge with its
+  own `from` / `to`. A range Tally returns too large is halved and read again;
+  a failed range is retried, and the extraction resumes from the ranges already
+  read rather than starting over. Nothing is trimmed to make a range fit.
+- **Closing balances only** reads masters in a single request. The masters
+  request carries the end date because Tally only reports each ledger's and
+  stock item's **closing balance** when `SVTODATE` is part of the request. Set
+  the period end on the page to the date the balances should close on.
+
+`SYNAPSE_TALLY_FROM_DATE` and `SYNAPSE_TALLY_TO_DATE` are only fallbacks for a
+request that states no dates; the portal always states them, so what you type on
+the page is what Tally is asked for. The bridge answers each request with the
+range, company, mode and scope it actually served, and the portal refuses a
+response whose answer does not match its request.
 
 Then in the portal: **Tally Cut-over**. The page builds this same command from
 the portal's own origin plus the Tally host, port, program path and start date
 you enter above it, behind a **Copy command** button — so you never type the
 token or the origin by hand.
+
+### Or let the setup assistant do it
+
+**Set up Tally connection**, in the banner at the top of Tally Cut-over, walks
+through the same thing on screen: paste the token, **Check My Computer**, fix
+whatever the check reports, verify, choose the company, done. It fills in the
+fields Step 1 uses, so nothing is retyped afterwards. See
+[TALLY_CONNECTOR_INSTALLATION.md](./TALLY_CONNECTOR_INSTALLATION.md) for the
+connector installer that sits behind it.
+
+The check is one read-only call to the bridge (`GET /api/tally/preflight`). It
+returns a verdict per prerequisite — Windows build, Node version, disk space,
+connector files, bind address, token, allowed origin, Tally install, port 9000,
+open company, pinned company, portal HTTPS, read-only guarantee, and whether
+this page understands the connector's contract version. Each row says what was
+measured and what to do about it. It uploads nothing and reads no balances.
+
+It blocks only on a check that is both required and `missing`/`failed`/`blocked`.
+A warning — for example an older Node major, or a portal origin that is plain
+HTTP on a LAN address — is shown but does not stop the cut-over.
 
 Paste the token into the token field and press **Check bridge** before
 **Connect and review**. It makes one read-only request to the bridge — it does not
@@ -82,18 +119,30 @@ identical from the page. If the bridge is running, check that
 `SYNAPSE_TALLY_ALLOWED_ORIGINS` names this page's origin exactly, with no
 trailing slash.
 
+When Tally answers, **Check bridge** also lists the companies Tally currently
+has open and names the edition it detected. Pick the company on the page and the
+command above pins it with `SYNAPSE_TALLY_COMPANY`. The bridge reads that
+variable at start-up, so if you change the company, run the command again before
+**Connect and review**. The pin is required: leaving it blank makes the bridge
+refuse every export with `TALLY_BRIDGE_COMPANY_UNPINNED`, so pick the company on
+the page and run the command again.
+
 | Variable | Meaning |
 |---|---|
 | `SYNAPSE_TALLY_BRIDGE_TOKEN` | 64 hex chars; required; pasted into the portal |
 | `SYNAPSE_TALLY_ALLOWED_ORIGINS` | exact portal origin, HTTPS |
 | `SYNAPSE_TALLY_TARGET_HOST` / `_PORT` | where Tally's HTTP server listens (default `127.0.0.1:9000`) |
-| `SYNAPSE_TALLY_COMPANY` | optional; pins the company, otherwise the open company is used |
+| `SYNAPSE_TALLY_COMPANY` | required; pins the company. Without it the bridge refuses every export |
 | `SYNAPSE_TALLY_EXECUTABLE` | optional; Tally is launched only if port 9000 is not already accepting |
-| `SYNAPSE_TALLY_FROM_DATE` | optional; `YYYYMMDD` |
-| `SYNAPSE_TALLY_TO_DATE` | optional; `YYYYMMDD`; the date closing balances are reported as at, default today |
+| `SYNAPSE_TALLY_FROM_DATE` | optional fallback; `YYYYMMDD`; used only when a request states no dates (default `19000101`) |
+| `SYNAPSE_TALLY_TO_DATE` | optional fallback; `YYYYMMDD`; used only when a request states no dates (default today) |
 
 The bridge listens only on `127.0.0.1:17890`. It cannot type a Tally password or
 pick a company — open Tally, sign in, select the correct company, then connect.
+
+This page requires connector **0.2.0** and bridge contract **2** (which adds the
+prerequisite endpoint). An older connector still exports, but the page reports it
+as incompatible and asks for the installer; it does not fall back silently.
 
 ---
 
@@ -171,6 +220,10 @@ Unknown or duplicated column headers are rejected per sheet.
 | Thing | Location |
 |---|---|
 | Bridge source | `apps/tally-bridge` |
+| Connector installer | `apps/tally-bridge/scripts/synapse-tally-connector.ps1` |
+| Connector launcher | `apps/tally-bridge/scripts/Start-SynapseTallyConnector.ps1` |
+| Setup assistant | `apps/pharmacy/components/tally/tally-setup-assistant.tsx` |
+| Installed connector (Windows) | `%LOCALAPPDATA%\Synapse\TallyConnector` |
 | Portal page | `apps/pharmacy/app/portal/tally-import/page.tsx` |
 | Parsers | `apps/pharmacy/lib/tally/` |
 | Uploaded import files (server side) | Supabase storage bucket `pharmacy-imports`, path `tenants/<tenant>/imports/<session>/source.<ext>` |
@@ -203,6 +256,25 @@ not today's stock; supply the closing batches in the `StockBatches` sheet.
 Preview → mapping → reconciliation → apply. Nothing is written to Synapse until
 the administrator applies a validated plan, and a completed cut-over blocks
 further Tally imports for that tenant.
+
+### Live extraction — what the page shows while it reads
+
+A live extraction is read range by range. Under **Progress** the page lists how
+many ranges are complete, which dates they cover, and any range that failed with
+its reason and attempt count. **Retry unfinished ranges** resumes from the
+manifest the server saved, so ranges already read are not read again.
+
+When every range is complete the page merges them and shows:
+
+- master records, with duplicates and conflicting duplicates counted
+- vouchers read versus vouchers unique, so a re-delivered range is visible
+- cancelled vouchers, and undated or keyless vouchers kept rather than dropped
+- voucher types the cut-over cannot post, with counts and a reason
+- amounts per voucher type, for comparing against Tally's own report
+
+**Apply stays disabled until every range is read and no blocking exception
+remains.** A merge that had no independent source count is shown as
+**unverified** and needs the acknowledgement described below.
 
 ### Opening and closing stock
 

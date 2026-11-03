@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requirePharmacyPermission } from "@/lib/api-auth"
 import { supabaseAdmin } from "@/lib/supabase/admin"
+import { decodePaidAmount } from "@/lib/pos/partial-payment"
+import { summariseLineTax, type TaxLineRow } from "@/lib/pos/tax-summary"
 
 export async function GET(request: NextRequest) {
   try {
@@ -52,11 +54,11 @@ export async function GET(request: NextRequest) {
 
     // ── SALES REPORT ─────────────────────────────────────────────────────────
     if (reportType === "sales") {
-      const [txResult, itemsResult, posResult, posItemsResult] = await Promise.all([
+      const [txResult, itemsResult, posResult, posItemsResult, taxLinesResult] = await Promise.all([
         (supabaseAdmin as any)
           .from("pharmacy_transactions")
           .select(
-            "id, transaction_no, net_amount, discount, tax, payment_method, client_name, cashier_id, created_at, profiles(full_name, first_name, last_name)"
+            "id, transaction_no, total_amount, net_amount, discount, tax, payment_method, client_name, cashier_id, created_at, profiles(full_name, first_name, last_name)"
           )
           .eq("tenant_id", tenantId)
           .eq("status", "COMPLETED")
@@ -91,6 +93,18 @@ export async function GET(request: NextRequest) {
           .eq("pharmacy_pos_sales.status", "completed")
           .gte("pharmacy_pos_sales.created_at", dateFromISO)
           .lte("pharmacy_pos_sales.created_at", dateToISO),
+        // Line-level tax lives in its own query so a database without the
+        // column (before 20261102110000) loses only the breakdown, not the
+        // POS revenue that the report above still reads.
+        (supabaseAdmin as any)
+          .from("pharmacy_pos_sale_items")
+          .select(
+            "line_total, vat_category, taxable_amount, tax_amount, tax_source, pharmacy_pos_sales!inner(status, created_at)"
+          )
+          .eq("tenant_id", tenantId)
+          .eq("pharmacy_pos_sales.status", "completed")
+          .gte("pharmacy_pos_sales.created_at", dateFromISO)
+          .lte("pharmacy_pos_sales.created_at", dateToISO),
       ])
 
       if (txResult.error) throw txResult.error
@@ -98,10 +112,13 @@ export async function GET(request: NextRequest) {
       // POS queries may fail on older schemas — treat as empty
       if (posResult.error) console.warn("[reports] pos sales:", posResult.error.message)
       if (posItemsResult.error) console.warn("[reports] pos items:", posItemsResult.error.message)
+      if (taxLinesResult.error)
+        console.warn("[reports] pos line tax:", taxLinesResult.error.message)
 
       type TxRow = {
         id: string
         transaction_no: string | null
+        total_amount: number | null
         net_amount: number | null
         discount: number | null
         tax: number | null
@@ -129,7 +146,16 @@ export async function GET(request: NextRequest) {
         } | null
       }
 
-      const orderTxs = (txResult.data ?? []) as unknown as TxRow[]
+      // `net_amount` does not mean the same thing in every writer: the Tally
+      // import stores the pre-tax voucher total there, while the edit route
+      // stores what the customer owes (total - discount + tax). Summing it as
+      // revenue charges VAT twice on an edited Tally sale. `total_amount` is
+      // the pre-tax line sum everywhere and `discount` is what is taken off it,
+      // so that difference is the tax-exclusive sales basis for every row.
+      const orderTxs = ((txResult.data ?? []) as unknown as TxRow[]).map((tx) => ({
+        ...tx,
+        net_amount: Number(tx.total_amount ?? 0) - Number(tx.discount ?? 0),
+      }))
       const posTxs = ((posResult.data ?? []) as Array<{
         id: string
         receipt_number: string
@@ -142,7 +168,11 @@ export async function GET(request: NextRequest) {
       }>).map((s) => ({
         id: s.id,
         transaction_no: s.receipt_number,
-        net_amount: Number(s.total_amount ?? 0),
+        // `pharmacy_pos_sales.total_amount` is stored tax-inclusive
+        // (subtotal - discount + tax). Reporting the tax-exclusive, net-of-
+        // discount figure on both sides keeps the Tax card from being a slice
+        // of Total Sales counted a second time.
+        net_amount: Number(s.total_amount ?? 0) - Number(s.tax_amount ?? 0),
         discount: Number(s.discount_total ?? 0),
         tax: Number(s.tax_amount ?? 0),
         payment_method: s.payment_method,
@@ -152,19 +182,50 @@ export async function GET(request: NextRequest) {
         profiles: null,
       })) as TxRow[]
 
+      // POS sales store only `cashier_id`; without this lookup every POS sale
+      // is attributed to "Unknown Staff" in the staff breakdown.
+      const posCashierIds = [
+        ...new Set(posTxs.map((tx) => tx.cashier_id).filter(Boolean)),
+      ] as string[]
+      if (posCashierIds.length > 0) {
+        const { data: posProfiles } = await (supabaseAdmin as any)
+          .from("profiles")
+          .select("id, full_name, first_name, last_name")
+          .in("id", posCashierIds)
+        const byId = new Map<string, TxRow["profiles"]>(
+          (posProfiles ?? []).map(
+            (p: { id: string; full_name: string | null; first_name: string | null; last_name: string | null }) => [
+              p.id,
+              { full_name: p.full_name, first_name: p.first_name, last_name: p.last_name },
+            ],
+          ),
+        )
+        for (const tx of posTxs) {
+          tx.profiles = tx.cashier_id ? (byId.get(tx.cashier_id) ?? null) : null
+        }
+      }
+
       const transactions = [...posTxs, ...orderTxs].sort(
         (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
       )
 
       const orderItems = (itemsResult.data ?? []) as unknown as ItemRow[]
-      const posItems = ((posItemsResult.data ?? []) as Array<{
+      const posItemsRaw = (posItemsResult.data ?? []) as Array<{
         product_id: string | null
         quantity: number | null
         unit_price: number | null
         discount_amount: number | null
         line_total: number | null
         pharmacy_products: ItemRow["pharmacy_products"]
-      }>).map((i) => ({
+      }>
+      // POS discounts live on the lines, not on `discount_total` (the sale RPC
+      // is called with `p_discount_total: 0` so it cannot double-count them),
+      // so the summary has to read them from the items.
+      const posLineDiscount = posItemsRaw.reduce(
+        (sum, i) => sum + Number(i.discount_amount ?? 0),
+        0,
+      )
+      const posItems = posItemsRaw.map((i) => ({
         product_id: i.product_id,
         quantity: i.quantity,
         total_price:
@@ -188,6 +249,14 @@ export async function GET(request: NextRequest) {
         totalDiscountAmt += tx.discount ?? 0
         totalTaxAmt += tx.tax ?? 0
       }
+      totalDiscountAmt += posLineDiscount
+
+      // ── Tax breakdown from the persisted sale lines ───────────────────────
+      const posHeaderTax = posTxs.reduce((sum, tx) => sum + Number(tx.tax ?? 0), 0)
+      const { tax: taxBreakdown, reconciliation: posTaxReconciliation } = summariseLineTax(
+        (taxLinesResult.data ?? []) as TaxLineRow[],
+        posHeaderTax,
+      )
 
       // Sales by payment method (JS aggregation — no groupBy in Supabase JS client)
       const paymentMethodMap = new Map<
@@ -325,9 +394,11 @@ export async function GET(request: NextRequest) {
       for (const tx of transactions) {
         const uid = tx.cashier_id ?? "unknown"
         const profile = tx.profiles
+        // `??` cannot drop the empty string a bare `.join(" ")` produces, so a
+        // captured name of "" would suppress the "Unknown Staff" fallback.
         const name =
-          profile?.full_name ??
-          [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ??
+          profile?.full_name ||
+          [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
           null
         const existing = salesByUserMap.get(uid) ?? {
           cashier_id: uid,
@@ -365,6 +436,8 @@ export async function GET(request: NextRequest) {
           averageTransaction:
             transactionCount > 0 ? totalSalesAmt / transactionCount : 0,
         },
+        tax: taxBreakdown,
+        taxReconciliation: posTaxReconciliation,
         salesByPaymentMethod,
         salesByDay,
         salesByCategory,
@@ -601,7 +674,7 @@ export async function GET(request: NextRequest) {
           profitByProduct[productId].profit += revenue - cost
           profitByProduct[productId].quantity += item.quantity
 
-          const category = "Uncategorized"
+          const category = item.product?.category ?? "Uncategorized"
           if (!profitByCategory[category]) {
             profitByCategory[category] = {
               category,
@@ -655,7 +728,10 @@ export async function GET(request: NextRequest) {
         .order("purchase_date", { ascending: false })
 
       if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 })
+        // Same rule as /api/ready (PR-003): the client gets a message, the log
+        // gets the database error.
+        console.error("[reports] purchases:", error)
+        return NextResponse.json({ error: "Failed to load purchases" }, { status: 500 })
       }
 
       const rows = purchases ?? []
@@ -706,6 +782,121 @@ export async function GET(request: NextRequest) {
           status: row.status,
           date: row.purchase_date,
         })),
+      })
+    }
+
+    // ── REFUNDS REPORT ───────────────────────────────────────────────────────
+    // A refund is not a negative sale: part of what went back may have been a
+    // receivable the customer never paid, so cash out and credit reversed are
+    // reported separately and never summed into a single "refunded" figure.
+    if (reportType === "refunds") {
+      const [voidsResult, ledgerResult, orderResult] = await Promise.all([
+        (supabaseAdmin as any)
+          .from("pharmacy_pos_sales")
+          .select(
+            "id, receipt_number, total_amount, payment_method, payment_ref, voided_reason, voided_at, cashier_id",
+          )
+          .eq("tenant_id", tenantId)
+          .eq("status", "voided")
+          .gte("voided_at", dateFromISO)
+          .lte("voided_at", dateToISO)
+          .order("voided_at", { ascending: false }),
+        (supabaseAdmin as any)
+          .from("pharmacy_credit_ledger")
+          .select("idempotency_key, amount")
+          .eq("tenant_id", tenantId)
+          .eq("type", "refund")
+          .gte("created_at", dateFromISO)
+          .lte("created_at", dateToISO),
+        (supabaseAdmin as any)
+          .from("pharmacy_transactions")
+          .select("id", { count: "exact", head: true })
+          .eq("tenant_id", tenantId)
+          .eq("status", "REFUNDED")
+          .gte("updated_at", dateFromISO)
+          .lte("updated_at", dateToISO),
+      ])
+
+      if (voidsResult.error) {
+        console.error("[reports] refunds:", voidsResult.error)
+        return NextResponse.json({ error: "Failed to load refunds" }, { status: 500 })
+      }
+      if (ledgerResult.error) {
+        console.error("[reports] refund receivables:", ledgerResult.error)
+        return NextResponse.json({ error: "Failed to load refunds" }, { status: 500 })
+      }
+
+      const reversedBySale = new Map<string, number>()
+      for (const row of (ledgerResult.data ?? []) as Array<Record<string, unknown>>) {
+        const key = String(row.idempotency_key ?? "")
+        if (!key.startsWith("pos-refund:")) continue
+        reversedBySale.set(key.slice("pos-refund:".length), Number(row.amount ?? 0))
+      }
+
+      const voids = (voidsResult.data ?? []) as Array<Record<string, unknown>>
+      const cashierIds = [...new Set(voids.map((row) => row.cashier_id).filter(Boolean))] as string[]
+      const cashierNames = new Map<string, string>()
+      if (cashierIds.length > 0) {
+        const { data: profiles } = await (supabaseAdmin as any)
+          .from("profiles")
+          .select("id, full_name, first_name, last_name")
+          .in("id", cashierIds)
+        for (const profile of profiles ?? []) {
+          cashierNames.set(
+            String(profile.id),
+            profile.full_name ||
+              [profile.first_name, profile.last_name].filter(Boolean).join(" ") ||
+              "Unknown",
+          )
+        }
+      }
+
+      const money = (value: unknown) => Math.round(Number(value ?? 0) * 100) / 100
+
+      const rows = voids.map((row) => {
+        const total = money(row.total_amount)
+        const cashRefunded = decodePaidAmount({
+          paymentRef: row.payment_ref as string | null,
+          total,
+          method: row.payment_method as string | null,
+        })
+        const outstanding = money(Math.max(total - cashRefunded, 0))
+        const receivableReversed = money(reversedBySale.get(String(row.id)) ?? 0)
+        return {
+          saleId: String(row.id),
+          receiptNumber: String(row.receipt_number ?? ""),
+          date: row.voided_at as string | null,
+          cashier: cashierNames.get(String(row.cashier_id)) ?? "Unknown",
+          paymentMethod: String(row.payment_method ?? "cash"),
+          saleTotal: total,
+          cashRefunded,
+          receivableReversed,
+          // A sale whose balance never reached the credit ledger still has an
+          // unpaid part; saying so is the difference between a report and a guess.
+          receivableUnposted: outstanding > 0 && receivableReversed === 0,
+          reason: (row.voided_reason as string | null) ?? null,
+        }
+      })
+
+      const round = (value: number) => Math.round(value * 100) / 100
+      return NextResponse.json({
+        type: "refunds",
+        period,
+        dateFrom,
+        dateTo,
+        summary: {
+          refundCount: rows.length,
+          cashRefunded: round(rows.reduce((sum, row) => sum + row.cashRefunded, 0)),
+          receivableReversed: round(rows.reduce((sum, row) => sum + row.receivableReversed, 0)),
+          refundedValue: round(
+            rows.reduce((sum, row) => sum + row.cashRefunded + row.receivableReversed, 0),
+          ),
+          unpostedReceivables: rows.filter((row) => row.receivableUnposted).length,
+          // Legacy order refunds carry no structured amount or till movement,
+          // so they are counted here rather than estimated into the totals.
+          excludedOrderRefunds: orderResult.error ? null : Number(orderResult.count ?? 0),
+        },
+        rows,
       })
     }
 

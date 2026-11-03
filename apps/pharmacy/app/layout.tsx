@@ -4,6 +4,12 @@ import { SynapseThemeProvider } from "@synapse/ui"
 import "@synapse/config/typography.css"
 import "./globals.css"
 import { Toaster } from "@/components/ui/toaster"
+import {
+  ANALYTICS_SCRIPT,
+  SPEED_INSIGHTS_SCRIPT,
+  telemetryBootstrap,
+  telemetryEnabled,
+} from "@/lib/telemetry/bootstrap"
 
 /** Same type stack as synapseos.tech — IBM Plex Sans + Mono. */
 export const metadata: Metadata = {
@@ -30,6 +36,7 @@ function serviceWorkerRegistrar(): string {
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const telemetry = telemetryEnabled()
   return (
     <html
       lang="en"
@@ -53,6 +60,14 @@ export default function RootLayout({
             __html: synapseThemeFoucScript({ syncDarkLightClass: true }),
           }}
         />
+        {telemetry ? (
+          <>
+            {/* Queues and privacy hooks first: the first pageview must already be scrubbed. */}
+            <script dangerouslySetInnerHTML={{ __html: telemetryBootstrap(telemetry) }} />
+            <script defer src={ANALYTICS_SCRIPT} />
+            <script defer src={SPEED_INSIGHTS_SCRIPT} />
+          </>
+        ) : null}
       </head>
       <body className="font-sans antialiased bg-background text-foreground">
         <SynapseThemeProvider>

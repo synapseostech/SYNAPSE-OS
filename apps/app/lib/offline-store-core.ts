@@ -73,6 +73,7 @@ export type CatalogueProduct = {
   sellableQuantity?: number
   unit?: string
   requiresPrescription?: boolean
+  vatCategory?: string | null
   packages?: Array<{
     id: string
     name: string

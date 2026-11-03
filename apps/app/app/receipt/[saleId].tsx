@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Alert,
+  BackHandler,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -8,7 +9,7 @@ import {
   View,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
-import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import * as Print from 'expo-print'
 import * as Sharing from 'expo-sharing'
@@ -18,6 +19,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, apiFetchText, ApiError } from '@/lib/api'
+import { resolveReceiptExit } from '@/lib/receipt-print-gate'
 import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
 
 interface ReceiptLine {
@@ -63,20 +65,48 @@ interface ReceiptSnapshot {
   subtotal: number
   discountTotal: number
   taxAmount: number
+  tax?: {
+    source: 'vat' | 'legacy' | 'none'
+    ratePct: number | null
+    taxableAmount: number
+    exemptAmount: number
+    zeroRatedAmount: number
+  } | null
   totalAmount: number
   payment: { method: string; reference: string | null; amountReceived: number | null; change: number | null }
   fiscal: { status: string; documentNumber: string | null; verificationCode: string | null }
 }
 
 export default function ReceiptScreen() {
-  const { saleId, autoprint } = useLocalSearchParams<{ saleId: string; autoprint?: string }>()
+  const { saleId, autoprint, mandatory } = useLocalSearchParams<{
+    saleId: string
+    autoprint?: string
+    mandatory?: string
+  }>()
   const { token } = useAuth()
   const router = useRouter()
+  const navigation = useNavigation()
   const insets = useSafeAreaInsets()
   const [receipt, setReceipt] = useState<ReceiptSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<null | string>(null)
   const autoPrintTried = useRef(false)
+  // The last print outcome this device recorded on the server. `requested`
+  // means the print sheet opened; it is not proof that paper came out, so the
+  // wording below never says "printed".
+  const [printOutcome, setPrintOutcome] = useState<'requested' | 'failed' | null>(null)
+  const [printUnrecorded, setPrintUnrecorded] = useState(false)
+  const requiresPrintDecision = mandatory === '1'
+  // The prompt is an instruction until the exit is gated: back must lead to
+  // one of the two decisions, never past them.
+  const blockExit =
+    resolveReceiptExit({
+      mandatory: requiresPrintDecision,
+      status: receipt?.status,
+      outcome: printOutcome,
+    }) === 'decide'
+  const printerUnavailableNote =
+    'The sale is saved and no money needs to be taken again. Reprint this receipt from Transactions when a printer is available.'
 
   const money = (n: number) => `${receipt?.currency ?? 'UGX'} ${Number(n).toLocaleString()}`
 
@@ -129,18 +159,136 @@ export default function ReceiptScreen() {
     [saleId, token],
   )
 
+  /**
+   * Record the print outcome on the sale through the same audited endpoint the
+   * web till uses. Returns false when the server did not record it, so the
+   * cashier is told the status is missing rather than being left to assume.
+   */
+  const reportPrintOutcome = useCallback(
+    async (outcome: 'requested' | 'failed', reason?: string): Promise<boolean> => {
+      try {
+        await apiRequest(`/api/mobile/pharmacy/sales/${saleId}/print-status`, {
+          method: 'POST',
+          token,
+          body: { outcome, reason },
+        })
+        setPrintOutcome(outcome)
+        setPrintUnrecorded(false)
+        return true
+      } catch {
+        setPrintUnrecorded(true)
+        return false
+      }
+    },
+    [saleId, token],
+  )
+
   const handlePrint = async () => {
     setBusy('print')
     try {
       const html = await apiFetchText(`/api/mobile/pharmacy/sales/${saleId}/receipt.pdf`, { token })
       await Print.printAsync({ html })
-      await logShare('print')
+      // Dismissing the OS print sheet is not evidence that paper came out.
+      const recorded = await reportPrintOutcome('requested')
+      if (!recorded) {
+        Alert.alert(
+          'Print status not recorded',
+          'The receipt was sent to the print sheet, but this device could not record the attempt. The sale is unchanged.',
+        )
+      }
     } catch (err) {
-      Alert.alert('Print failed', err instanceof Error ? err.message : 'Try again.')
+      const reason = err instanceof Error && err.message ? err.message : 'printer unavailable'
+      const recorded = await reportPrintOutcome('failed', reason)
+      Alert.alert(
+        'Receipt not printed',
+        `${printerUnavailableNote}${recorded ? '' : '\n\nThis failure could not be recorded — tell your supervisor.'}`,
+      )
     } finally {
       setBusy(null)
     }
   }
+
+  const reportPrinterUnavailable = async (): Promise<boolean> => {
+    setBusy('unavailable')
+    try {
+      return await reportPrintOutcome('failed', 'cashier reported no printer')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const recordPrinterUnavailable = async () => {
+    const recorded = await reportPrinterUnavailable()
+    if (!recorded) {
+      Alert.alert(
+        'Not recorded',
+        'This device could not reach the server. Tell your supervisor that the receipt was not printed.',
+      )
+    }
+  }
+
+  /**
+   * Leaving is never held on the network: the sale is already committed, and a
+   * cashier who cannot reach the server must still be able to close the
+   * screen. A failed recording is reported and then they go — the same
+   * trade-off the web till makes.
+   */
+  const leaveAsPrinterUnavailable = async () => {
+    const recorded = await reportPrinterUnavailable()
+    if (!recorded) {
+      Alert.alert(
+        'Not recorded',
+        'This device could not reach the server. Tell your supervisor that the receipt was not printed.',
+        [{ text: 'Leave', onPress: () => router.back() }],
+        { cancelable: false },
+      )
+      return
+    }
+    router.back()
+  }
+
+  // Back cannot dismiss the decision: both exits record a print outcome, and
+  // `cancelable: false` stops Android dismissing this prompt either.
+  const requestPrintDecision = () => {
+    Alert.alert(
+      'Receipt print required',
+      'This pharmacy requires a print decision before you leave. The sale is already saved either way.',
+      [
+        { text: 'Stay', style: 'cancel' },
+        { text: 'Printer unavailable', onPress: () => void leaveAsPrinterUnavailable() },
+        { text: 'Print now', onPress: () => void handlePrint() },
+      ],
+      { cancelable: false },
+    )
+  }
+
+  const handleBack = () => {
+    if (blockExit) {
+      requestPrintDecision()
+      return
+    }
+    router.back()
+  }
+
+  // The hardware listener must outlive re-renders without re-subscribing on
+  // every keystroke, so it reads the latest handler through a ref.
+  const backHandler = useRef(handleBack)
+  backHandler.current = handleBack
+
+  useFocusEffect(
+    useCallback(() => {
+      const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+        backHandler.current()
+        return true
+      })
+      return () => subscription.remove()
+    }, []),
+  )
+
+  // iOS swipe-back is the third way out; disable it while the decision is owed.
+  useEffect(() => {
+    navigation.setOptions({ gestureEnabled: !blockExit })
+  }, [navigation, blockExit])
 
   useEffect(() => {
     if (loading || !receipt || !token || autoPrintTried.current) return
@@ -225,7 +373,17 @@ export default function ReceiptScreen() {
       setReceipt(data.receipt)
       const html = await apiFetchText(`/api/mobile/pharmacy/sales/${saleId}/receipt.pdf?reprint=1`, { token })
       await Print.printAsync({ html })
+      // A reprint is a print attempt too; the server records that it was asked
+      // for, never that paper came out, and it never creates a new sale.
+      const recorded = await reportPrintOutcome('requested')
+      if (!recorded) {
+        Alert.alert(
+          'Reprint status not recorded',
+          'The reprint was sent to the print sheet, but this device could not record it. The sale is unchanged.',
+        )
+      }
     } catch (err) {
+      await reportPrintOutcome('failed', 'reprint could not open the print sheet')
       Alert.alert('Reprint failed', err instanceof ApiError ? err.message : 'Try again.')
     } finally {
       setBusy(null)
@@ -235,7 +393,7 @@ export default function ReceiptScreen() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
+        <Pressable onPress={handleBack} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={22} color={colors.primary} />
         </Pressable>
         <Text style={styles.title}>Receipt</Text>
@@ -298,7 +456,20 @@ export default function ReceiptScreen() {
               <View style={styles.divider} />
               <Row k="Subtotal" v={money(receipt.subtotal)} />
               {receipt.discountTotal > 0 ? <Row k="Discount" v={`−${money(receipt.discountTotal)}`} /> : null}
-              {receipt.taxAmount > 0 ? <Row k="Tax/VAT" v={money(receipt.taxAmount)} /> : null}
+              {receipt.tax && receipt.tax.source === 'vat' ? (
+                <>
+                  {receipt.tax.taxableAmount > 0 ? (
+                    <Row k={`Taxable${receipt.tax.ratePct != null ? ` (${receipt.tax.ratePct}%)` : ''}`} v={money(receipt.tax.taxableAmount)} />
+                  ) : null}
+                  {receipt.taxAmount > 0 ? (
+                    <Row k={`VAT${receipt.tax.ratePct != null ? ` (${receipt.tax.ratePct}%)` : ''}`} v={money(receipt.taxAmount)} />
+                  ) : null}
+                  {receipt.tax.zeroRatedAmount > 0 ? <Row k="Zero-rated" v={money(receipt.tax.zeroRatedAmount)} /> : null}
+                  {receipt.tax.exemptAmount > 0 ? <Row k="Exempt" v={money(receipt.tax.exemptAmount)} /> : null}
+                </>
+              ) : receipt.taxAmount > 0 ? (
+                <Row k="Tax/VAT" v={money(receipt.taxAmount)} />
+              ) : null}
               <Row k="TOTAL" v={money(receipt.totalAmount)} strong />
               <Row k="Payment" v={receipt.payment.method} />
               {receipt.payment.reference ? <Row k="Ref" v={receipt.payment.reference} /> : null}
@@ -327,6 +498,39 @@ export default function ReceiptScreen() {
               <Button label="Email" onPress={handleEmail} loading={busy === 'email'} variant="ghost" style={styles.actionBtn} />
               <Button label="Reprint" onPress={handleReprint} loading={busy === 'reprint'} variant="ghost" style={styles.actionBtn} />
             </View>
+
+            {requiresPrintDecision && receipt.status === 'completed' ? (
+              <View style={styles.printNotice}>
+                {printOutcome === null ? (
+                  <Text style={styles.printNoticeText}>
+                    This pharmacy requires a receipt print. Print now, or record that no printer is
+                    available — the sale is already saved either way.
+                  </Text>
+                ) : printOutcome === 'requested' ? (
+                  <Text style={styles.printNoticeText}>
+                    Print requested. Check the receipt came out — this app cannot confirm it did.
+                  </Text>
+                ) : (
+                  <Text style={[styles.printNoticeText, styles.printWarn]}>
+                    Receipt not printed. {printerUnavailableNote}
+                  </Text>
+                )}
+                {printUnrecorded ? (
+                  <Text style={[styles.printNoticeText, styles.printWarn]}>
+                    This device could not record the print status. Tell your supervisor.
+                  </Text>
+                ) : null}
+                {printOutcome !== 'requested' ? (
+                  <Button
+                    label="Printer unavailable"
+                    onPress={recordPrinterUnavailable}
+                    loading={busy === 'unavailable'}
+                    variant="ghost"
+                  />
+                ) : null}
+              </View>
+            ) : null}
+
             {receipt.status === 'completed' ? (
               <Button label="Refund / void sale" onPress={handleRefund} loading={busy === 'refund'} variant="danger" />
             ) : null}
@@ -397,5 +601,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   actionRow: { flexDirection: 'row', gap: spacing.sm },
+  printNotice: {
+    gap: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    backgroundColor: colors.surface,
+  },
+  printNoticeText: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    fontFamily: 'DMSans_400Regular',
+  },
+  printWarn: { color: TONE_COLORS.amber },
   actionBtn: { flex: 1 },
 })

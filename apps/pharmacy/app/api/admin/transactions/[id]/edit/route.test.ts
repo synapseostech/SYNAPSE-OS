@@ -1,77 +1,158 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { NextRequest } from "next/server"
-import { fakeSupabase, type FakeOperation, type FakeResult } from "@/lib/tally/test-db"
 
-const m = vi.hoisted(() => ({
-  auth: null as unknown,
-  db: null as unknown as { client: unknown; operations: FakeOperation[] },
+// An in-place edit changes prices, not the taxable mix. Recomputing tax from a
+// hardcoded 0 erased the record's tax and moved net_amount, which reports sum.
+const state = vi.hoisted(() => ({
+  existing: {} as Record<string, unknown>,
+  transactionUpdates: [] as Array<Record<string, unknown>>,
+  inserts: [] as Array<{ table: string; payload: unknown }>,
 }))
 
 vi.mock("@/lib/api-auth", () => ({
-  requirePharmacyTenant: vi.fn(async () => m.auth),
+  requirePharmacyTenant: async () => ({
+    ok: true as const,
+    tenantId: "tenant-A",
+    session: { user: { id: "user-A" }, userId: "user-A", tenantId: "tenant-A" },
+  }),
 }))
-vi.mock("@/lib/supabase/admin", () => ({
-  get supabaseAdmin() {
-    return m.db.client
-  },
-}))
+
+vi.mock("@/lib/supabase/admin", () => {
+  const from = (table: string) => {
+    const q: any = {
+      select: () => q,
+      eq: () => q,
+      in: () => q,
+      order: () => q,
+      update: (payload: Record<string, unknown>) => {
+        if (table === "pharmacy_transactions") state.transactionUpdates.push(payload)
+        q.applied = payload
+        return q
+      },
+      insert: async (payload: unknown) => {
+        state.inserts.push({ table, payload })
+        return { error: null }
+      },
+      maybeSingle: async () =>
+        table === "pharmacy_pos_sales"
+          ? { data: null, error: null }
+          : { data: state.existing, error: null },
+      single: async () => ({
+        data: q.applied ? { ...state.existing, ...q.applied } : state.existing,
+        error: null,
+      }),
+      then: (resolve: (value: unknown) => unknown) => resolve({ data: [], error: null }),
+    }
+    return q
+  }
+  return { supabaseAdmin: { from } }
+})
 
 import { PUT } from "./route"
 
-const ADMIN = { ok: true, tenantId: "tenant-1", session: { user: { id: "user-1" } } }
-const params = { params: Promise.resolve({ id: "transaction-1" }) }
+const URL_ = "http://pharm.test/api/admin/transactions/tx-1/edit"
 
-const MIRROR_NOTE = "Imported from Tally (Test Pharmacy Ltd) — read-only"
-
-function setup(transaction: unknown) {
-  m.db = fakeSupabase((operation): FakeResult => {
-    if (operation.table === "pharmacy_pos_sales") return { data: null, error: null }
-    if (operation.table === "pharmacy_transactions") return { data: transaction, error: null }
-    return { data: [], error: null }
-  })
-}
-
-function put(body: unknown) {
+function put(body: Record<string, unknown>) {
   return PUT(
-    new NextRequest("http://localhost/api/admin/transactions/transaction-1/edit", {
+    new Request(URL_, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-    params,
+      body: JSON.stringify({
+        reason: "Corrected the unit price after a supplier repricing",
+        paymentMethod: "cash",
+        ...body,
+      }),
+    }) as any,
+    { params: Promise.resolve({ id: "tx-1" }) },
   )
 }
 
-function transaction(overrides: Record<string, unknown> = {}) {
-  return { id: "transaction-1", notes: null, items: [], discount: 0, ...overrides }
+const baseTransaction = {
+  id: "tx-1",
+  tenant_id: "tenant-A",
+  transaction_no: "TX-0001",
+  notes: null,
+  items: [{ id: "item-1", quantity: 2 }],
 }
 
-const EDIT = {
-  items: [],
-  paymentMethod: "CASH",
-  reason: "Correcting a mistyped price",
-}
-
-describe("PUT /api/admin/transactions/[id]/edit", () => {
+describe("transaction edit keeps the record's tax", () => {
   beforeEach(() => {
-    m.auth = ADMIN
-    setup(transaction({ notes: MIRROR_NOTE }))
+    state.transactionUpdates.length = 0
+    state.inserts.length = 0
+    state.existing = { ...baseTransaction }
   })
 
-  it("refuses to edit a Tally mirror sale", async () => {
-    const res = await put(EDIT)
+  it("re-applies the record's own effective rate to the new base", async () => {
+    state.existing = {
+      ...baseTransaction,
+      total_amount: 1000,
+      discount: 0,
+      tax: 180,
+      net_amount: 1180,
+    }
 
-    expect(res.status).toBe(409)
-    expect(await res.json()).toMatchObject({ code: "TALLY_MIRROR_READ_ONLY" })
-    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
-  })
-
-  it("still edits a sale entered in the portal", async () => {
-    setup(transaction())
-
-    const res = await put({ ...EDIT, items: [{ id: "item-1", quantity: 1, unitPrice: 40 }] })
+    const res = await put({ items: [{ id: "item-1", quantity: 2, unitPrice: 600 }] })
 
     expect(res.status).toBe(200)
-    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(true)
+    expect(state.transactionUpdates[0]).toMatchObject({
+      total_amount: 1200,
+      tax: 216,
+      net_amount: 1416,
+    })
+  })
+
+  it("leaves an untaxed sale untaxed instead of inventing tax", async () => {
+    state.existing = {
+      ...baseTransaction,
+      total_amount: 1000,
+      discount: 0,
+      tax: 0,
+      net_amount: 1000,
+    }
+
+    const res = await put({ items: [{ id: "item-1", quantity: 2, unitPrice: 600 }] })
+
+    expect(res.status).toBe(200)
+    expect(state.transactionUpdates[0]).toMatchObject({
+      total_amount: 1200,
+      tax: 0,
+      net_amount: 1200,
+    })
+  })
+
+  it("applies the effective rate to the discounted base, not the gross", async () => {
+    state.existing = {
+      ...baseTransaction,
+      total_amount: 1000,
+      discount: 100,
+      tax: 162,
+      net_amount: 1062,
+    }
+
+    const res = await put({ items: [{ id: "item-1", quantity: 2, unitPrice: 550 }] })
+
+    expect(res.status).toBe(200)
+    // 162 / (1000 - 100) = 0.18; base 1100 - 100 = 1000; tax 180.
+    expect(state.transactionUpdates[0]).toMatchObject({
+      total_amount: 1100,
+      discount: 100,
+      tax: 180,
+      net_amount: 1180,
+    })
+  })
+
+  it("refuses rather than dropping tax when the record has no taxable base", async () => {
+    state.existing = {
+      ...baseTransaction,
+      total_amount: 0,
+      discount: 0,
+      tax: 50,
+      net_amount: 50,
+    }
+
+    const res = await put({ items: [{ id: "item-1", quantity: 2, unitPrice: 600 }] })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TAX_BASE_MISSING" })
+    expect(state.transactionUpdates).toHaveLength(0)
   })
 })

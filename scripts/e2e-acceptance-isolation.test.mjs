@@ -7,6 +7,8 @@ import {
   validateIsolatedSupabaseUrl,
   validateAcceptanceBaseUrl,
   validateServiceRoleKey,
+  validateAnonKey,
+  resolveAcceptanceTarget,
   interpretReadyPayload,
   vercelBypassHeaders,
 } from "./e2e-acceptance-isolation.mjs"
@@ -62,6 +64,90 @@ test("service role JWT must belong to the isolated project", () => {
   assert.equal(validateServiceRoleKey(prod).status, "INVALID")
   const anon = fakeJwt({ ref: EXPECTED_ACCEPTANCE_PROJECT_REF, role: "anon" })
   assert.equal(validateServiceRoleKey(anon).status, "INVALID")
+})
+
+test("anon key must belong to the isolated project and carry the anon role", () => {
+  const good = fakeJwt({ ref: EXPECTED_ACCEPTANCE_PROJECT_REF, role: "anon" })
+  assert.equal(validateAnonKey(good).status, "FOUND")
+  assert.equal(validateAnonKey(fakeJwt({ ref: PRODUCTION_PROJECT_REF, role: "anon" })).status, "INVALID")
+  assert.equal(validateAnonKey(fakeJwt({ ref: EXPECTED_ACCEPTANCE_PROJECT_REF, role: "service_role" })).status, "INVALID")
+})
+
+function acceptanceEnv(overrides = {}) {
+  return {
+    SYNAPSE_E2E_SUPABASE_URL: `https://${EXPECTED_ACCEPTANCE_PROJECT_REF}.supabase.co`,
+    SYNAPSE_E2E_SERVICE_ROLE_KEY: fakeJwt({ ref: EXPECTED_ACCEPTANCE_PROJECT_REF, role: "service_role" }),
+    SYNAPSE_E2E_ANON_KEY: fakeJwt({ ref: EXPECTED_ACCEPTANCE_PROJECT_REF, role: "anon" }),
+    ...overrides,
+  }
+}
+
+test("resolves the documented acceptance project when no ref is supplied", () => {
+  const target = resolveAcceptanceTarget(acceptanceEnv())
+  assert.equal(target.status, "FOUND", target.problems.join("; "))
+  assert.equal(target.projectRef, EXPECTED_ACCEPTANCE_PROJECT_REF)
+  assert.equal(target.explicitRef, false)
+})
+
+test("accepts an explicitly supplied project ref only when every credential agrees", () => {
+  const other = "abcdefghijklmnopqrst"
+  const target = resolveAcceptanceTarget({
+    SYNAPSE_E2E_ACCEPTANCE_PROJECT_REF: other,
+    SYNAPSE_E2E_SUPABASE_URL: `https://${other}.supabase.co`,
+    SYNAPSE_E2E_SERVICE_ROLE_KEY: fakeJwt({ ref: other, role: "service_role" }),
+    SYNAPSE_E2E_ANON_KEY: fakeJwt({ ref: other, role: "anon" }),
+  })
+  assert.equal(target.status, "FOUND", target.problems.join("; "))
+  assert.equal(target.projectRef, other)
+
+  const mismatched = resolveAcceptanceTarget({
+    ...acceptanceEnv(),
+    SYNAPSE_E2E_ACCEPTANCE_PROJECT_REF: other,
+  })
+  assert.equal(mismatched.status, "INVALID")
+  assert.ok(mismatched.problems.some((problem) => problem.includes("SYNAPSE_E2E_SUPABASE_URL")))
+})
+
+test("refuses production even when it is declared as the acceptance target", () => {
+  const target = resolveAcceptanceTarget({
+    SYNAPSE_E2E_ACCEPTANCE_PROJECT_REF: PRODUCTION_PROJECT_REF,
+    SYNAPSE_E2E_SUPABASE_URL: `https://${PRODUCTION_PROJECT_REF}.supabase.co`,
+    SYNAPSE_E2E_SERVICE_ROLE_KEY: fakeJwt({ ref: PRODUCTION_PROJECT_REF, role: "service_role" }),
+    SYNAPSE_E2E_ANON_KEY: fakeJwt({ ref: PRODUCTION_PROJECT_REF, role: "anon" }),
+  })
+  assert.equal(target.status, "INVALID")
+  assert.ok(target.problems.some((problem) => /production/i.test(problem)))
+})
+
+test("refuses a shell that mixes the acceptance project with another target", () => {
+  const alias = resolveAcceptanceTarget(
+    acceptanceEnv({ SUPABASE_URL: `https://${PRODUCTION_PROJECT_REF}.supabase.co` }),
+  )
+  assert.equal(alias.status, "INVALID")
+  assert.ok(alias.problems.some((problem) => problem.includes("SUPABASE_URL")))
+
+  const direct = resolveAcceptanceTarget(
+    acceptanceEnv({ DATABASE_URL: "postgresql://user:pass@db.example.test/postgres" }),
+  )
+  assert.equal(direct.status, "INVALID")
+  assert.ok(direct.problems.some((problem) => problem.includes("DATABASE_URL")))
+
+  const token = resolveAcceptanceTarget(acceptanceEnv({ SUPABASE_ACCESS_TOKEN: "sbp_test" }))
+  assert.equal(token.status, "INVALID")
+  assert.ok(token.problems.some((problem) => problem.includes("SUPABASE_ACCESS_TOKEN")))
+})
+
+test("refuses a malformed declared ref and a missing anon key", () => {
+  const malformed = resolveAcceptanceTarget(
+    acceptanceEnv({ SYNAPSE_E2E_ACCEPTANCE_PROJECT_REF: "not-a-ref" }),
+  )
+  assert.equal(malformed.status, "INVALID")
+
+  const noAnon = acceptanceEnv()
+  delete noAnon.SYNAPSE_E2E_ANON_KEY
+  const missing = resolveAcceptanceTarget(noAnon)
+  assert.equal(missing.status, "INVALID")
+  assert.ok(missing.problems.some((problem) => problem.includes("anon key")))
 })
 
 test("ready payload fails closed without a live database", () => {

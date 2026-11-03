@@ -329,6 +329,37 @@ async function ensureTenant() {
   return created?.[0] ?? { id: tenantId, slug: PILOT_SLUG, name: PILOT_NAME }
 }
 
+/**
+ * A tenant with no `tenant_subscriptions` row fails every `has_feature()` check,
+ * so the seeded pharmacy could not complete a sale. Onboarding must create this
+ * row; the seed does the same for the pilot tenant.
+ */
+async function ensureSubscription(tenantId) {
+  const existing = await rest(
+    `tenant_subscriptions?tenant_id=eq.${tenantId}&select=id,status,plan_id&limit=1`,
+  )
+  if (existing?.length) return existing[0]
+
+  const plans = await rest(
+    "subscription_plans?slug=eq.synapse_pharmacy_annual&select=id,slug&limit=1",
+  )
+  const plan = plans?.[0]
+  if (!plan) throw new Error("Plan synapse_pharmacy_annual is missing from this project")
+
+  const rows = await rest("tenant_subscriptions", {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: tenantId,
+      plan_id: plan.id,
+      status: "active",
+      starts_at: new Date().toISOString(),
+      current_period_start: new Date().toISOString(),
+      current_period_end: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+    }),
+  })
+  return rows?.[0] ?? { tenant_id: tenantId, plan_id: plan.id, status: "active" }
+}
+
 async function ensureStaff(tenantId, passwordHash) {
   const out = []
   for (const person of STAFF) {
@@ -338,7 +369,9 @@ async function ensureStaff(tenantId, passwordHash) {
     let profileId = rows?.[0]?.id
     if (!profileId) {
       profileId = crypto.randomUUID()
-      const [first, ...rest] = person.fullName.split(" ")
+      // `rest` is the HTTP helper at module scope; a local `...rest` here
+      // shadowed it and made every call below throw "rest is not a function".
+      const [first, ...nameRest] = person.fullName.split(" ")
       await rest("profiles", {
         method: "POST",
         body: JSON.stringify({
@@ -346,7 +379,7 @@ async function ensureStaff(tenantId, passwordHash) {
           email: person.email,
           full_name: person.fullName,
           first_name: first,
-          last_name: rest.join(" ") || "Pilot",
+          last_name: nameRest.join(" ") || "Pilot",
           role: person.profileRole,
           tenant_id: tenantId,
           is_admin: person.isAdmin,
@@ -620,6 +653,9 @@ async function main() {
   } catch {
     /* may already exist */
   }
+
+  const subscription = await ensureSubscription(tenantId)
+  console.log(`Subscription: ${subscription.status} ${subscription.plan_id}`)
 
   const staff = await ensureStaff(tenantId, passwordHash)
   const store = await ensureStore(tenantId)

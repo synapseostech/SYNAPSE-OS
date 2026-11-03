@@ -27,7 +27,7 @@ type CreditRow = {
   customer_id: string | null
   transaction_id: string | null
   amount: number | string
-  type: 'credit' | 'repayment'
+  type: 'credit' | 'repayment' | 'refund'
   due_date: string | null
   created_at: string
   customer: { name: string } | null
@@ -144,7 +144,8 @@ export async function GET(req: NextRequest) {
             references: new Map(),
             settled: 0,
           }
-        if (row.type === 'repayment') {
+        // A refund on a credit sale reduces the receivable, like a repayment.
+        if (row.type === 'repayment' || row.type === 'refund') {
           group.settled += money(row.amount)
         } else {
           group.invoices.push({

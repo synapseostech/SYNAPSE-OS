@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requirePharmacyAdmin } from "@/lib/api-auth"
 import { supabaseAdmin } from "@/lib/supabase/admin"
+import { netAmountFor } from "@/lib/pos/net-amount"
 import { generateTransactionNo } from "@/lib/utils"
 import { adjustPharmacyBatchStock } from "@synapse/db/inventory-rpc"
 import { pharmacyDomainError, httpStatusForPharmacyError } from "@synapse/db/errors"
@@ -94,7 +95,7 @@ export async function POST(request: NextRequest) {
         total_amount: order.total_amount,
         discount: 0,
         tax: 0,
-        net_amount: order.total_amount,
+        net_amount: netAmountFor({ totalAmount: order.total_amount, discount: 0, tax: 0 }),
         payment_method: paymentMethod,
         status: "COMPLETED",
       })

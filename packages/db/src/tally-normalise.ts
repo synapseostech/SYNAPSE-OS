@@ -35,6 +35,7 @@ import type {
 
 export type TallyExceptionCode =
   | "COMPANY_MISSING"
+  | "SOURCE_TRUNCATED"
   | "CONVERSION_DATE_REQUIRED"
   | "UNCLASSIFIED_LEDGER"
   | "LEDGER_MISSING"
@@ -398,6 +399,16 @@ export function normaliseTallyDocument(
       return
     }
     exceptions.push({ code, severity, message, detail })
+  }
+
+  if (document.truncated) {
+    const { reason, limit, recordsProcessed } = document.truncated
+    addException(
+      "SOURCE_TRUNCATED",
+      `The import stopped after ${recordsProcessed.toLocaleString("en-GB")} records because the ${limit.toLocaleString("en-GB")}-record limit was reached (${reason}). The rest of the file was never read, so this plan holds only the start of the export and cannot be applied.`,
+      `reason=${reason}; recordsProcessed=${recordsProcessed}; limit=${limit}`,
+      "blocking",
+    )
   }
 
   if (!company) addException("COMPANY_MISSING", "The export did not name a company. Source identifiers use a hash of the file's data.")

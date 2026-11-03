@@ -83,6 +83,31 @@ describe("parseTallyXmlRows", () => {
     assert.deepEqual(document.warnings, [])
   })
 
+  it("reads the company and period the bridge packages into <DATA>", () => {
+    // The exact shape the Windows bridge emits after packaging: the company it
+    // pinned, and the export dates Tally echoed, sit inside <DATA> beside the
+    // masters, with no <TALLYMESSAGE> wrapper of their own.
+    const document = parseTallyXmlRows(
+      `<ENVELOPE><HEADER><VERSION>1</VERSION><STATUS>1</STATUS></HEADER><BODY><DATA><COMPANY NAME="Nakawa &amp; Sons"><COMPANYNAME>Nakawa &amp; Sons</COMPANYNAME><SVFROMDATE>20260401</SVFROMDATE><SVTODATE>20261031</SVTODATE></COMPANY><TALLYMESSAGE><LEDGER NAME="Cash"/></TALLYMESSAGE></DATA></BODY></ENVELOPE>`,
+      "tally.xml",
+    )
+
+    assert.equal(document.company, "Nakawa & Sons")
+    assert.deepEqual(document.financialPeriod, { from: "2026-04-01", to: "2026-10-31" })
+    assert.equal(document.ledgers[0]?.name, "Cash")
+    assert.deepEqual(document.warnings, [])
+  })
+
+  it("leaves the period empty when the packaged file states no dates", () => {
+    const document = parseTallyXmlRows(
+      `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA><COMPANY NAME="Test Pharmacy"><COMPANYNAME>Test Pharmacy</COMPANYNAME></COMPANY><TALLYMESSAGE><LEDGER NAME="Cash"/></TALLYMESSAGE></DATA></BODY></ENVELOPE>`,
+      "tally.xml",
+    )
+
+    assert.equal(document.company, "Test Pharmacy")
+    assert.deepEqual(document.financialPeriod, {})
+  })
+
   it("reads a voucher's party, tax and inventory lines without losing the accounting side", () => {
     const document = parseTallyXmlRows(
       tallyExport(`
@@ -228,6 +253,81 @@ describe("parseTallyXmlRows", () => {
     )
   })
 
+  it("accepts a source that holds exactly the record limit and ends normally", () => {
+    const records = '<GODOWN NAME="G"/>'.repeat(TALLY_XML_ROW_LIMITS.MAX_RECORDS)
+    const document = parseTallyXmlRows(tallyExport(records))
+
+    assert.equal(document.godowns.length, TALLY_XML_ROW_LIMITS.MAX_RECORDS)
+    assert.equal(document.truncated, undefined)
+  })
+
+  it("reports a source that stopped at the record limit instead of returning it as whole", () => {
+    const records = '<GODOWN NAME="G"/>'.repeat(TALLY_XML_ROW_LIMITS.MAX_RECORDS + 1)
+    const document = parseTallyXmlRows(tallyExport(records))
+
+    assert.equal(document.godowns.length, TALLY_XML_ROW_LIMITS.MAX_RECORDS)
+    assert.deepEqual(document.truncated, {
+      reason: "RECORD_LIMIT",
+      limit: TALLY_XML_ROW_LIMITS.MAX_RECORDS,
+      recordsProcessed: TALLY_XML_ROW_LIMITS.MAX_RECORDS,
+    })
+  })
+
+  it("counts every record type against the limit and reports the true total", () => {
+    // 120,000 godowns + 130,000 groups fill the limit exactly; the ledger that
+    // follows is the one that must not be read.
+    const records =
+      '<GODOWN NAME="G"/>'.repeat(120_000) +
+      '<GROUP NAME="P"/>'.repeat(130_000) +
+      '<LEDGER NAME="L"/>'
+    const document = parseTallyXmlRows(tallyExport(records))
+
+    assert.equal(document.godowns.length, 120_000)
+    assert.equal(document.groups.length, 130_000)
+    assert.equal(document.ledgers.length, 0)
+    assert.deepEqual(document.truncated, {
+      reason: "RECORD_LIMIT",
+      limit: 250_000,
+      recordsProcessed: 250_000,
+    })
+  })
+
+  it("reports the record limit, with its counts, even when the file also ends early", () => {
+    const records = '<GODOWN NAME="G"/>'.repeat(TALLY_XML_ROW_LIMITS.MAX_RECORDS + 1)
+    // No closing envelope: the record limit is the specific reason, so it wins
+    // over the generic "incomplete" refusal and keeps the numbers to report.
+    const document = parseTallyXmlRows(`<ENVELOPE><BODY><DATA>${records}`)
+
+    assert.deepEqual(document.truncated, {
+      reason: "RECORD_LIMIT",
+      limit: TALLY_XML_ROW_LIMITS.MAX_RECORDS,
+      recordsProcessed: TALLY_XML_ROW_LIMITS.MAX_RECORDS,
+    })
+  })
+
+  it("refuses a document that ends before its closing envelope", () => {
+    const complete = tallyExport('<GODOWN NAME="G"/>')
+    const cutShort = complete.slice(0, complete.indexOf("</ENVELOPE>"))
+
+    assert.throws(() => parseTallyXmlRows(cutShort), /MIGRATION_XML_INCOMPLETE/)
+    assert.throws(
+      () => parseTallyXmlRows(`${complete}<EXTRA>junk</EXTRA>`),
+      /MIGRATION_XML_INCOMPLETE/,
+    )
+    // The same export, whole, still parses.
+    assert.equal(parseTallyXmlRows(complete).godowns.length, 1)
+  })
+
+  it("refuses a document cut in the middle of a record", () => {
+    const cut = `<?xml version="1.0" encoding="UTF-8"?><ENVELOPE><BODY><DATA><TALLYMESSAGE><LEDGER NAME="Cash"><PARENT>Cash-in`
+
+    assert.throws(() => parseTallyXmlRows(cut), /MIGRATION_XML_INCOMPLETE/)
+  })
+
+  it("refuses input that is not XML at all", () => {
+    assert.throws(() => parseTallyXmlRows("not xml"), /MIGRATION_XML_MALFORMED/)
+  })
+
   it("bounds captured text and warns instead of throwing on unreadable values", () => {
     const document = parseTallyXmlRows(
       tallyExport(`
@@ -250,7 +350,10 @@ describe("parseTallyXmlRows", () => {
   it("scans hostile whitespace and identifier runs in linear time", () => {
     const started = Date.now()
     // Both shapes backtrack quadratically against an unbounded, overlapping scan.
-    assert.deepEqual(parseTallyXmlRows(`<ENVELOPE><${" ".repeat(200_000)}`).ledgers, [])
+    assert.deepEqual(
+      parseTallyXmlRows(`<ENVELOPE><${" ".repeat(200_000)}></ENVELOPE>`).ledgers,
+      [],
+    )
     assert.equal(
       parseTallyXmlRows(`<ENVELOPE><LEDGER ${"A".repeat(200_000)}></LEDGER></ENVELOPE>`).ledgers.length,
       1,

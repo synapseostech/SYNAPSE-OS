@@ -103,9 +103,11 @@ export async function POST(req: NextRequest) {
     const status =
       error.code === 'ALREADY_REFUNDED'
         ? 409
-        : error.code === 'PRODUCT_NOT_FOUND'
+        : error.code === 'SALE_NOT_FOUND'
           ? 404
-          : 400
+          : error.code === 'PRODUCT_NOT_FOUND'
+            ? 409
+            : 400
     return NextResponse.json(
       { error: error.humanMessage, code: error.code, detail: error.message },
       { status },
@@ -134,6 +136,14 @@ export async function POST(req: NextRequest) {
     saleId: (data as any)?.sale_id ?? saleId,
     receiptNumber: (data as any)?.receipt_number,
     refundAmount,
+    // Same receivable figures the web refund screen reports, so a phone and a
+    // till tell the customer the same story about their credit.
+    receivableReversal: Number((data as any)?.receivable_reversal ?? 0),
+    receivableOutstanding: Number((data as any)?.receivable_outstanding ?? 0),
+    receivableUnreversed: Number((data as any)?.receivable_unreversed ?? 0),
+    receivableUnposted: (data as any)?.receivable_unposted === true,
+    creditBalanceAfter:
+      (data as any)?.credit_balance_after == null ? null : Number((data as any).credit_balance_after),
     restoreAs: (data as any)?.restore_as ?? restoreAs,
     status: (data as any)?.status ?? 'voided',
   })

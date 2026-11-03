@@ -164,6 +164,52 @@ describe("POST /api/admin/tally/upload-url", () => {
     expect(filtersOf(update!)).toEqual({ id: "session-1", tenant_id: "tenant-1" })
   })
 
+  it("starts a live extraction session with no upload target of its own", async () => {
+    setup(sessions())
+
+    const res = await post({ source: "bridge" })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    // No signed URL and no path: each chunk gets its own target later.
+    expect(body).toEqual({ sessionId: "session-1" })
+    expect(m.targets).toEqual([])
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+
+    const insert = m.db.operations.find((operation) => operation.action === "insert")
+    expect(insert?.payload).toMatchObject({
+      tenant_id: "tenant-1",
+      source_system: "Tally",
+      file_name: "Tally live extraction",
+      status: "pending",
+      created_by: "user-1",
+      ai_mapping: { format: "xml", source: "bridge", path: null },
+    })
+  })
+
+  it("refuses an unknown source instead of guessing", async () => {
+    setup(sessions())
+
+    const res = await post({ source: "api", fileName: "tally.xml" })
+
+    expect(res.status).toBe(400)
+    expect(m.db.operations.some((operation) => operation.action === "insert")).toBe(false)
+  })
+
+  it("will not start a live extraction after the cut-over has begun applying", async () => {
+    setup((operation) =>
+      operation.table === "pharmacy_tally_cutover_locks"
+        ? { data: { session_id: "active-session" }, error: null }
+        : { data: null, error: null },
+    )
+
+    const res = await post({ source: "bridge" })
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe("TALLY_CUTOVER_IN_PROGRESS")
+    expect(m.db.operations.some((operation) => operation.action === "insert")).toBe(false)
+  })
+
   it("accepts legacy .xls workbook uploads", async () => {
     setup(sessions())
 

@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { NextRequest, NextResponse } from "next/server"
 import type { TallyApplyProgress } from "@/lib/tally/apply"
+import {
+  MASTERS_CHUNK_ID,
+  createManifest,
+  recordChunkResult,
+  voucherChunkId,
+  type TallyMigrationManifest,
+} from "@/lib/tally/chunks"
 import { fakeSupabase, filtersOf, type FakeOperation, type FakeResult } from "@/lib/tally/test-db"
 
 const m = vi.hoisted(() => ({
@@ -11,6 +18,10 @@ const m = vi.hoisted(() => ({
   reconcile: vi.fn(),
   leaseStatus: "acquired",
   releaseFails: false,
+  lockOwner: "session-1" as string | null,
+  lockReadFails: false,
+  startUpdateError: false,
+  reRead: undefined as unknown,
   rpcCalls: [] as Array<{ name: string; args: Record<string, unknown> }>,
 }))
 
@@ -25,6 +36,15 @@ vi.mock("@/lib/supabase/admin", () => ({
 vi.mock("@/lib/tally/plan", () => ({ loadStagePlan: m.loadStagePlan }))
 vi.mock("@/lib/tally/reconcile", () => ({ reconcileTallyPlan: m.reconcile }))
 vi.mock("@/lib/tally/apply", () => ({
+  TALLY_STAGE_ORDER: [
+    "accounts",
+    "parties",
+    "products",
+    "opening-journal",
+    "opening-stock",
+    "journals",
+    "complete",
+  ],
   emptyProgress: () => progress(),
   applyTallyChunk: m.applyChunk,
 }))
@@ -64,17 +84,148 @@ function progress(overrides: Partial<TallyApplyProgress> = {}): TallyApplyProgre
   }
 }
 
+const PERIOD = { from: "2026-01-01", to: "2026-01-10" }
+const MANIFEST_AT = "2026-01-01T00:00:00.000Z"
+
+/** A complete plan whose chunks an independent count confirmed. */
+function manifest(complete = true, sessionId = "session-1"): TallyMigrationManifest {
+  let value = createManifest({
+    sessionId,
+    company: "Demo Pharma",
+    mode: "opening",
+    period: PERIOD,
+    updatedAt: MANIFEST_AT,
+  })
+  if (!complete) return value
+  value = recordChunkResult(
+    value,
+    MASTERS_CHUNK_ID,
+    { status: "complete", recordsRead: 0, expectedRecords: 0 },
+    MANIFEST_AT,
+  )
+  return recordChunkResult(
+    value,
+    voucherChunkId(PERIOD),
+    { status: "complete", recordsRead: 10, expectedRecords: 10 },
+    MANIFEST_AT,
+  )
+}
+
+/** Complete, but no independent count read it: Apply must ask first. */
+function unverifiedManifest(): TallyMigrationManifest {
+  let value = createManifest({
+    sessionId: "session-1",
+    company: "Demo Pharma",
+    mode: "opening",
+    period: PERIOD,
+    updatedAt: MANIFEST_AT,
+  })
+  value = recordChunkResult(value, MASTERS_CHUNK_ID, { status: "complete", recordsRead: 0 }, MANIFEST_AT)
+  return recordChunkResult(
+    value,
+    voucherChunkId(PERIOD),
+    { status: "complete", recordsRead: 10 },
+    MANIFEST_AT,
+  )
+}
+
+/** A saved plan that reconciles, so each test exercises only its own subject. */
+function planSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    company: "Demo Pharma",
+    companyKey: "demo-pharma",
+    currency: "UGX",
+    conversionDate: "2026-01-10",
+    mode: "opening",
+    format: "xml",
+    counts: {
+      ledgers: 4,
+      groups: 2,
+      stockItems: 1,
+      vouchers: 10,
+      postedVouchers: 10,
+      skippedVouchers: 0,
+      sales: 4,
+      purchases: 2,
+      openingLines: 4,
+    },
+    opening: { date: "2026-01-01", totalDebit: 100_000, totalCredit: 100_000, difference: 0 },
+    stock: {
+      openingValue: 50_000,
+      closingValue: 50_000,
+      itemsWithOpeningValue: 1,
+      itemsWithClosingValue: 1,
+      itemCount: 1,
+    },
+    reconciliation: {
+      inventoryOpening: 50_000,
+      customerOpening: 20_000,
+      supplierOpening: 30_000,
+      partyReceivable: 20_000,
+      partyPayable: 30_000,
+      duplicateVouchers: 0,
+    },
+    exceptions: [],
+    chunkCount: 1,
+    chunkSize: 250,
+    warnings: [],
+    preparedAt: MANIFEST_AT,
+    ...overrides,
+  }
+}
+
+// The shape the Tally upload route writes: source_system plus a format, which
+// is what marks a session as a cut-over rather than a generic mapped import.
 function row(
   status: string,
   mapping: Record<string, unknown> = {},
   extra: Record<string, unknown> = {},
 ) {
-  return { id: "session-1", status, ai_mapping: mapping, ...extra }
+  const saved = mapping.summary
+  const ai_mapping: Record<string, unknown> = {
+    format: "xml",
+    manifest: manifest(),
+    manifestProblems: [],
+    ...mapping,
+  }
+  // A test that saves a summary saves a whole one, as preview does; only the
+  // figures it is about are overridden.
+  if (saved !== undefined && saved !== null && typeof saved === "object") {
+    ai_mapping.summary = planSummary(saved as Record<string, unknown>)
+  }
+  return {
+    id: "session-1",
+    status,
+    source_system: "Tally",
+    ai_mapping,
+    ...extra,
+  }
 }
 
 function setup(session: unknown, auditWriteError?: string) {
+  // The route reads the session once before the lease and again under it. A
+  // test that supplies `reRead` models another request moving the row between
+  // those two reads.
+  let sessionReads = 0
   const fake = fakeSupabase((operation): FakeResult => {
-    if (operation.table === "pharmacy_import_sessions") return { data: session, error: null }
+    if (
+      operation.table === "pharmacy_import_sessions" &&
+      operation.action === "update" &&
+      m.startUpdateError
+    ) {
+      return { data: null, error: { message: "session update failed" } }
+    }
+    if (operation.table === "pharmacy_import_sessions") {
+      if (operation.action === "select") {
+        sessionReads += 1
+        if (sessionReads > 1 && m.reRead !== undefined) return { data: m.reRead, error: null }
+      }
+      return { data: session, error: null }
+    }
+    if (operation.table === "pharmacy_tally_cutover_locks") {
+      if (m.lockReadFails) return { data: null, error: { message: "lock read failed" } }
+      return { data: m.lockOwner ? { session_id: m.lockOwner } : null, error: null }
+    }
     if (operation.table === "pharmacy_audit_logs" && operation.action === "insert" && auditWriteError) {
       return { data: null, error: { message: auditWriteError } }
     }
@@ -88,6 +239,11 @@ function setup(session: unknown, auditWriteError?: string) {
       rpc: async (name: string, args: Record<string, unknown>) => {
         m.rpcCalls.push({ name, args })
         if (name === "claim_pharmacy_tally_cutover_apply") {
+          // The function's own rule: only a Tally import may join the cut-over.
+          const sourceSystem = (session as { source_system?: unknown } | null)?.source_system
+          if (m.leaseStatus === "acquired" && sourceSystem !== "Tally") {
+            return { data: "invalid_session", error: null }
+          }
           return { data: m.leaseStatus, error: null }
         }
         if (m.releaseFails) return { data: false, error: { message: "lease release failed" } }
@@ -98,8 +254,19 @@ function setup(session: unknown, auditWriteError?: string) {
 }
 
 const params = { params: Promise.resolve({ id: "session-1" }) }
-const post = () =>
-  POST(new NextRequest("http://localhost/api/admin/tally/session-1/apply", { method: "POST" }), params)
+const RAW_URL = "http://localhost/api/admin/tally/session-1/apply"
+const post = (body?: unknown) =>
+  POST(
+    new NextRequest(RAW_URL, {
+      method: "POST",
+      ...(body === undefined
+        ? {}
+        : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
+    }),
+    params,
+  )
+const postRaw = (body: string) =>
+  POST(new NextRequest(RAW_URL, { method: "POST", body }), params)
 
 describe("POST /api/admin/tally/[id]/apply", () => {
   beforeEach(() => {
@@ -109,6 +276,10 @@ describe("POST /api/admin/tally/[id]/apply", () => {
     m.reconcile.mockReset().mockReturnValue([])
     m.leaseStatus = "acquired"
     m.releaseFails = false
+    m.lockOwner = "session-1"
+    m.lockReadFails = false
+    m.startUpdateError = false
+    m.reRead = undefined
     setup(row("review", { summary: { chunkCount: 1 } }))
   })
 
@@ -198,6 +369,293 @@ describe("POST /api/admin/tally/[id]/apply", () => {
     expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
   })
 
+  it("refuses a plan whose opening journal does not balance", async () => {
+    setup(
+      row("review", {
+        summary: {
+          chunkCount: 1,
+          opening: { date: "2026-01-01", totalDebit: 100_000, totalCredit: 99_000, difference: 1_000 },
+        },
+      }),
+    )
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({
+      code: "TALLY_PREFLIGHT_BLOCKED",
+      state: "blocked",
+    })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+    expect(m.rpcCalls).toHaveLength(0)
+  })
+
+  it("refuses a plan whose customer balances its ledger lines do not carry", async () => {
+    setup(
+      row("review", {
+        summary: {
+          chunkCount: 1,
+          reconciliation: {
+            inventoryOpening: 50_000,
+            customerOpening: 20_000,
+            supplierOpening: 30_000,
+            partyReceivable: 25_000,
+            partyPayable: 30_000,
+            duplicateVouchers: 0,
+          },
+        },
+      }),
+    )
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body.code).toBe("TALLY_PREFLIGHT_BLOCKED")
+    expect(body.checks).toContainEqual(
+      expect.objectContaining({ id: "receivables", status: "fail", blocksApply: true }),
+    )
+    expect(m.applyChunk).not.toHaveBeenCalled()
+  })
+
+  it("does not re-judge the plan of an import already running", async () => {
+    setup(
+      row("importing", {
+        summary: {
+          chunkCount: 1,
+          opening: { date: "2026-01-01", totalDebit: 100_000, totalCredit: 99_000, difference: 1_000 },
+        },
+        progress: progress(),
+      }),
+    )
+    m.loadStagePlan.mockResolvedValue({
+      plan: { company: "Demo Pharma" },
+      summary: { chunkCount: 1 },
+      chunk: { rows: [] },
+      totalChunks: 1,
+    })
+    m.applyChunk.mockResolvedValue({
+      progress: progress({ offset: 0 }),
+      done: false,
+    })
+
+    const res = await post()
+
+    // Resume writes nothing new from the plan; the unreconciled figure is
+    // reported after apply, never used to strand a half-written import.
+    expect(res.status).toBe(200)
+  })
+
+  it("refuses a persisted truncated plan even when flagged_rows is zero", async () => {
+    // The summary exactly as the preview persists it into ai_mapping: one JSON
+    // round-trip, so nothing depends on an object that only exists in memory.
+    const summary = JSON.parse(
+      JSON.stringify({
+        chunkCount: 1,
+        exceptions: [
+          {
+            code: "SOURCE_TRUNCATED",
+            severity: "blocking",
+            message: "The import stopped after 250,000 records.",
+            detail: "reason=RECORD_LIMIT; recordsProcessed=250000; limit=250000",
+          },
+        ],
+      }),
+    )
+    setup(row("review", { summary }, { flagged_rows: 0 }))
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_SOURCE_TRUNCATED" })
+    // Refused before the plan is loaded, the cut-over lease is taken, or any
+    // pharmacy record is written: the only database work is reads.
+    expect(m.loadStagePlan).not.toHaveBeenCalled()
+    expect(m.applyChunk).not.toHaveBeenCalled()
+    expect(m.rpcCalls).toHaveLength(0)
+    expect(m.db.operations.every((operation) => operation.action === "select")).toBe(true)
+  })
+
+  it("refuses a migration whose chunks are not all complete", async () => {
+    setup(row("review", { summary: { chunkCount: 2 }, manifest: manifest(false) }))
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({ code: "TALLY_MANIFEST_INCOMPLETE" })
+    expect(body.problems).toEqual(
+      expect.arrayContaining([expect.stringContaining("masters")]),
+    )
+    expect(m.loadStagePlan).not.toHaveBeenCalled()
+    expect(m.applyChunk).not.toHaveBeenCalled()
+    expect(m.rpcCalls).toHaveLength(0)
+  })
+
+  it("refuses a migration whose vouchers contradicted its declared period", async () => {
+    setup(
+      row("review", {
+        summary: { chunkCount: 1 },
+        manifest: manifest(),
+        manifestProblems: ["TALLY_VOUCHER_OUTSIDE_PERIOD: 1 voucher date falls outside the export period in this file."],
+      }),
+    )
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({ code: "TALLY_MANIFEST_INCOMPLETE" })
+    expect(body.problems).toContain(
+      "TALLY_VOUCHER_OUTSIDE_PERIOD: 1 voucher date falls outside the export period in this file.",
+    )
+    expect(m.loadStagePlan).not.toHaveBeenCalled()
+  })
+
+  it("refuses a manifest it cannot read", async () => {
+    setup(row("review", { summary: { chunkCount: 1 }, manifest: { version: 1 } }))
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_MANIFEST_INVALID" })
+    expect(m.loadStagePlan).not.toHaveBeenCalled()
+  })
+
+  it("refuses a Tally session with no manifest and reports why it has none", async () => {
+    setup(
+      row("review", {
+        summary: { chunkCount: 1 },
+        manifest: undefined,
+        manifestReason: "TALLY_COMPANY_MISSING",
+        manifestProblems: ["TALLY_COMPANY_MISSING: this export does not name its company."],
+      }),
+    )
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({ code: "TALLY_COMPANY_MISSING" })
+    expect(body.error).toContain("does not name its company")
+    expect(m.loadStagePlan).not.toHaveBeenCalled()
+    expect(m.rpcCalls).toHaveLength(0)
+  })
+
+  it("refuses a Tally session with no manifest and no recorded reason", async () => {
+    setup(row("review", { summary: { chunkCount: 1 }, manifest: undefined }))
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({ code: "TALLY_MANIFEST_MISSING" })
+    expect(body.error).toContain("Preview the file again")
+    expect(m.applyChunk).not.toHaveBeenCalled()
+  })
+
+  it("refuses a chunk whose count disagrees with the source", async () => {
+    let counted = recordChunkResult(
+      createManifest({
+        sessionId: "session-1",
+        company: "Demo Pharma",
+        mode: "opening",
+        period: PERIOD,
+        updatedAt: MANIFEST_AT,
+      }),
+      MASTERS_CHUNK_ID,
+      { status: "complete" },
+      MANIFEST_AT,
+    )
+    counted = recordChunkResult(
+      counted,
+      voucherChunkId(PERIOD),
+      { status: "complete", recordsRead: 3, expectedRecords: 5 },
+      MANIFEST_AT,
+    )
+    setup(row("review", { summary: { chunkCount: 1 }, manifest: counted }))
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({ code: "TALLY_MANIFEST_INCOMPLETE" })
+    expect(body.problems).toEqual(
+      expect.arrayContaining([expect.stringContaining("TALLY_CHUNK_MISMATCH")]),
+    )
+    expect(m.applyChunk).not.toHaveBeenCalled()
+  })
+
+  it("never asks a generic mapped import for a Tally manifest", async () => {
+    // The generic multipart mapper records source_system "Tally" when the form
+    // omits one. That alone must not turn an ordinary upload into a cut-over.
+    setup(
+      row(
+        "review",
+        {},
+        {
+          source_system: "Tally",
+          ai_mapping: {
+            mapping: [],
+            sampleRows: [],
+            engine: "heuristic_mapper_v1",
+            summary: { chunkCount: 1 },
+          },
+        },
+      ),
+    )
+    m.loadStagePlan.mockResolvedValue({
+      plan: { company: "Demo Pharma" },
+      summary: { chunkCount: 1 },
+      chunk: { rows: [] },
+      totalChunks: 1,
+    })
+    m.applyChunk.mockResolvedValue({ progress: progress(), done: false })
+
+    const res = await post()
+
+    expect(res.status).toBe(200)
+    expect(m.loadStagePlan).toHaveBeenCalled()
+  })
+
+  it("never asks an import from another source for a Tally manifest", async () => {
+    // The lease function only admits a session whose source_system is "Tally",
+    // so a session from another source is refused before any plan is loaded.
+    setup(
+      row(
+        "review",
+        {},
+        {
+          source_system: "Sage",
+          ai_mapping: { mapping: [], sampleRows: [], summary: { chunkCount: 1 } },
+        },
+      ),
+    )
+
+    const res = await post()
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toMatchObject({ code: "TALLY_SESSION_NOT_FOUND" })
+    expect(m.loadStagePlan).not.toHaveBeenCalled()
+    expect(m.applyChunk).not.toHaveBeenCalled()
+  })
+
+  it("applies a session whose manifest is complete", async () => {
+    setup(row("review", { summary: { chunkCount: 1 }, manifest: manifest(), manifestProblems: [] }))
+    m.loadStagePlan.mockResolvedValue({
+      plan: { company: "Demo Pharma" },
+      summary: { chunkCount: 1 },
+      chunk: { rows: [] },
+      totalChunks: 1,
+    })
+    m.applyChunk.mockResolvedValue({ progress: progress(), done: false })
+
+    const res = await post()
+
+    expect(res.status).toBe(200)
+    expect(m.loadStagePlan).toHaveBeenCalled()
+  })
+
   it("serializes concurrent apply requests for the tenant", async () => {
     m.leaseStatus = "busy"
 
@@ -219,7 +677,61 @@ describe("POST /api/admin/tally/[id]/apply", () => {
     expect(m.applyChunk).not.toHaveBeenCalled()
   })
 
-  it("resumes from the persisted offset instead of restarting the stage", async () => {
+  it("does not re-run a cut-over that completed while the request waited for the lease", async () => {
+    const saved = progress({ stage: "complete" })
+    m.reRead = row("complete", { progress: saved, reconcile: [{ code: "opening", ok: true }] })
+
+    const res = await post()
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      done: true,
+      alreadyComplete: true,
+      progress: saved,
+      reconcile: [{ code: "opening", ok: true }],
+    })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+    expect(m.rpcCalls.map((call) => call.name)).toEqual([
+      "claim_pharmacy_tally_cutover_apply",
+      "release_pharmacy_tally_cutover_apply",
+    ])
+  })
+
+  it("refuses stale state rather than resetting an interrupted import's checkpoint", async () => {
+    setup(row("review", { summary: { chunkCount: 3 } }))
+    m.reRead = row("importing", {
+      summary: { chunkCount: 3 },
+      progress: progress({ stage: "journals", offset: 40 }),
+    })
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_STATE_CHANGED" })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+    expect(m.rpcCalls.map((call) => call.name)).toEqual([
+      "claim_pharmacy_tally_cutover_apply",
+      "release_pharmacy_tally_cutover_apply",
+    ])
+  })
+
+  it("refuses a plan that was replaced while the request waited for the lease", async () => {
+    setup(row("review", { summary: { chunkCount: 1 } }))
+    m.reRead = row("review", {
+      summary: { chunkCount: 1 },
+      manifest: { ...manifest(), updatedAt: "2026-02-01T00:00:00.000Z" },
+    })
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_STATE_CHANGED" })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+  })
+
+  it("resumes a valid interrupted import from its persisted offset", async () => {
     setup(
       row("importing", {
         summary: { chunkCount: 3 },
@@ -265,9 +777,269 @@ describe("POST /api/admin/tally/[id]/apply", () => {
       status: "importing",
       ai_mapping: { progress: { stage: "journals", offset: 80 } },
     })
-    expect(m.db.operations.filter((operation) => operation.action === "update")[0]?.payload).toEqual({
+    // The execution record is written before the first unit of work, so an
+    // interrupted step can always be recognised on the next call.
+    expect(m.db.operations.filter((operation) => operation.action === "update")[0]?.payload).toMatchObject({
       status: "importing",
+      ai_mapping: { progress: { stage: "journals", offset: 40 } },
     })
+  })
+
+  it("refuses to resume an importing session that has no manifest", async () => {
+    // The old exemption let this session through. A session that cannot show
+    // what company and period it covers must not be resumed, and it must not
+    // take the lease or write anything while it is refused.
+    setup(
+      row("importing", {
+        summary: { chunkCount: 1 },
+        progress: progress({ stage: "journals", offset: 5 }),
+        manifest: undefined,
+      }),
+    )
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({ code: "TALLY_MANIFEST_MISSING" })
+    expect(body.error).toContain("Contact support")
+    expect(m.loadStagePlan).not.toHaveBeenCalled()
+    expect(m.rpcCalls).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+  })
+
+  it("refuses to resume an importing session whose manifest is invalid", async () => {
+    setup(
+      row("importing", {
+        summary: { chunkCount: 1 },
+        progress: progress({ stage: "journals", offset: 5 }),
+        manifest: { version: 1 },
+      }),
+    )
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({ code: "TALLY_MANIFEST_INVALID" })
+    // An importing session cannot be previewed again, so the refusal points at
+    // support rather than at a step that would itself be refused.
+    expect(body.error).toContain("Contact support")
+    expect(m.rpcCalls).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+  })
+
+  it("refuses to resume when the stored plan names another session", async () => {
+    setup(
+      row("importing", {
+        summary: { chunkCount: 1 },
+        progress: progress({ stage: "journals", offset: 5 }),
+        manifest: manifest(true, "session-2"),
+      }),
+    )
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({ code: "TALLY_RESUME_SESSION_MISMATCH" })
+    expect(m.rpcCalls).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+  })
+
+  it("refuses to resume without a saved execution record", async () => {
+    setup(row("importing", { summary: { chunkCount: 1 } }))
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({ code: "TALLY_RESUME_PROGRESS_MISSING" })
+    expect(m.loadStagePlan).not.toHaveBeenCalled()
+    expect(m.rpcCalls).toHaveLength(0)
+  })
+
+  it("refuses to resume when the cut-over reservation belongs to another session", async () => {
+    m.lockOwner = "session-2"
+    setup(
+      row("importing", {
+        summary: { chunkCount: 1 },
+        progress: progress({ stage: "journals", offset: 5 }),
+      }),
+    )
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({ code: "TALLY_RESUME_OWNER_MISMATCH" })
+    expect(m.rpcCalls).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+  })
+
+  it("fails closed when the cut-over reservation cannot be read", async () => {
+    m.lockReadFails = true
+    setup(
+      row("importing", {
+        summary: { chunkCount: 1 },
+        progress: progress({ stage: "journals", offset: 5 }),
+      }),
+    )
+
+    const res = await post()
+
+    expect(res.status).toBe(503)
+    expect(await res.json()).toMatchObject({ code: "TALLY_CUTOVER_LOCK_UNAVAILABLE" })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+  })
+
+  it("refuses an unverified migration until the operator acknowledges it", async () => {
+    setup(
+      row("review", {
+        summary: { chunkCount: 1 },
+        manifest: unverifiedManifest(),
+        manifestEvidence: { recordsRead: 10, coverage: "unverified" },
+      }),
+    )
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({
+      code: "TALLY_UNVERIFIED_NOT_ACKNOWLEDGED",
+      coverage: "unverified",
+      evidence: { recordsRead: 10, coverage: "unverified" },
+    })
+    // Nothing reserved, planned or written while the decision is missing.
+    expect(m.loadStagePlan).not.toHaveBeenCalled()
+    expect(m.rpcCalls).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+  })
+
+  it("records the acknowledgement without relabelling the coverage", async () => {
+    setup(row("review", { summary: { chunkCount: 1 }, manifest: unverifiedManifest() }))
+    m.loadStagePlan.mockResolvedValue({
+      plan: { company: "Demo Pharma" },
+      summary: { chunkCount: 1 },
+      chunk: { rows: [] },
+      totalChunks: 1,
+    })
+    m.applyChunk.mockResolvedValue({ progress: progress(), done: false })
+
+    const res = await post({ acknowledgeUnverified: true })
+
+    expect(res.status).toBe(200)
+    const start = m.db.operations.filter((operation) => operation.action === "update")[0]
+    const mapping = (start?.payload as { ai_mapping?: Record<string, unknown> }).ai_mapping ?? {}
+    const chunks =
+      (mapping.manifest as { chunks?: Array<{ reconciliation?: string }> } | undefined)?.chunks ?? []
+
+    expect(mapping.unverifiedAcknowledgement).toMatchObject({
+      coverage: "unverified",
+      acknowledgedBy: "user-1",
+      manifestUpdatedAt: MANIFEST_AT,
+    })
+    // The chunks are still disclosed as unverified; only the operator's
+    // decision was added.
+    expect(chunks).not.toHaveLength(0)
+    expect(chunks.every((chunk) => chunk.reconciliation === "unverified")).toBe(true)
+  })
+
+  it("accepts the acknowledgement saved by an earlier call", async () => {
+    setup(
+      row("review", {
+        summary: { chunkCount: 1 },
+        manifest: unverifiedManifest(),
+        unverifiedAcknowledgement: {
+          coverage: "unverified",
+          acknowledgedAt: "2026-01-01T00:00:00.000Z",
+          acknowledgedBy: "user-1",
+          manifestUpdatedAt: MANIFEST_AT,
+        },
+      }),
+    )
+    m.loadStagePlan.mockResolvedValue({
+      plan: { company: "Demo Pharma" },
+      summary: { chunkCount: 1 },
+      chunk: { rows: [] },
+      totalChunks: 1,
+    })
+    m.applyChunk.mockResolvedValue({ progress: progress(), done: false })
+
+    const res = await post()
+
+    expect(res.status).toBe(200)
+  })
+
+  it("asks again when the acknowledgement was given for another preview", async () => {
+    setup(
+      row("review", {
+        summary: { chunkCount: 1 },
+        manifest: unverifiedManifest(),
+        unverifiedAcknowledgement: {
+          coverage: "unverified",
+          acknowledgedAt: "2025-01-01T00:00:00.000Z",
+          acknowledgedBy: "user-1",
+          manifestUpdatedAt: "2025-01-01T00:00:00.000Z",
+        },
+      }),
+    )
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_UNVERIFIED_NOT_ACKNOWLEDGED" })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+  })
+
+  it("does not let an acknowledgement carry an incomplete manifest", async () => {
+    // Complete masters, voucher range never read: unverified and unfinished.
+    const partial = recordChunkResult(
+      createManifest({
+        sessionId: "session-1",
+        company: "Demo Pharma",
+        mode: "opening",
+        period: PERIOD,
+        updatedAt: MANIFEST_AT,
+      }),
+      MASTERS_CHUNK_ID,
+      { status: "complete", recordsRead: 0 },
+      MANIFEST_AT,
+    )
+    setup(row("review", { summary: { chunkCount: 2 }, manifest: partial }))
+
+    const res = await post({ acknowledgeUnverified: true })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_MANIFEST_INCOMPLETE" })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+  })
+
+  it("needs no acknowledgement when an independent count verified the plan", async () => {
+    setup(row("review", { summary: { chunkCount: 1 }, manifest: manifest() }))
+    m.loadStagePlan.mockResolvedValue({
+      plan: { company: "Demo Pharma" },
+      summary: { chunkCount: 1 },
+      chunk: { rows: [] },
+      totalChunks: 1,
+    })
+    m.applyChunk.mockResolvedValue({ progress: progress(), done: false })
+
+    const res = await post()
+
+    expect(res.status).toBe(200)
+    const start = m.db.operations.filter((operation) => operation.action === "update")[0]
+    const mapping = (start?.payload as { ai_mapping?: Record<string, unknown> }).ai_mapping ?? {}
+    expect(mapping).not.toHaveProperty("unverifiedAcknowledgement")
+  })
+
+  it("refuses a malformed apply body before reading the session", async () => {
+    const res = await postRaw("{")
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ code: "TALLY_APPLY_BODY_INVALID" })
+    expect(m.db.operations).toHaveLength(0)
   })
 
   it("runs the three master-data stages in one request and stops before the ledger", async () => {
@@ -348,6 +1120,11 @@ describe("POST /api/admin/tally/[id]/apply", () => {
       entity_id: "session-1",
     })
     expect((audit?.payload as { details: string }).details).toContain("6 vouchers")
+    // Provenance: which company, which edition, which session — not only counts.
+    expect((audit?.payload as { details: string }).details).toContain(
+      'source company "Demo Pharma"',
+    )
+    expect((audit?.payload as { details: string }).details).toContain("session session-1")
     expect(m.rpcCalls.map((call) => call.name)).toEqual([
       "claim_pharmacy_tally_cutover_apply",
       "release_pharmacy_tally_cutover_apply",
@@ -396,6 +1173,30 @@ describe("POST /api/admin/tally/[id]/apply", () => {
 
     expect(res.status).toBe(500)
     expect(await res.json()).toMatchObject({ code: "TALLY_CUTOVER_LOCK_RELEASE_FAILED" })
+  })
+
+  it("releases the lease when the session cannot be reserved for apply", async () => {
+    m.startUpdateError = true
+
+    const res = await post()
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toMatchObject({ code: "TALLY_CHECKPOINT_SAVE_FAILED" })
+    expect(m.applyChunk).not.toHaveBeenCalled()
+    expect(m.rpcCalls.map((call) => call.name)).toEqual([
+      "claim_pharmacy_tally_cutover_apply",
+      "release_pharmacy_tally_cutover_apply",
+    ])
+  })
+
+  it("does not treat the string \"true\" as the operator's acknowledgement", async () => {
+    setup(row("review", { summary: { chunkCount: 1 }, manifest: unverifiedManifest() }))
+
+    const res = await post({ acknowledgeUnverified: "true" })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_UNVERIFIED_NOT_ACKNOWLEDGED" })
+    expect(m.applyChunk).not.toHaveBeenCalled()
   })
 
   it("keeps the checkpoint when a step stops so the next call can resume", async () => {
