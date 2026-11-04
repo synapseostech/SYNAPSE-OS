@@ -110,6 +110,30 @@ describe("buildConnectorInstallCommand", () => {
     expect(command).not.toContain("-Company")
   })
 
+  it("carries a host, port and executable that differ from the defaults", () => {
+    const command = buildConnectorInstallCommand({
+      origin: "https://pharm.synapseos.tech",
+      host: "192.168.1.20",
+      port: "9001",
+      executable: "C:\\Program Files\\TallyPrime\\tally.exe",
+    })
+
+    expect(command).toContain("-TallyHost 192.168.1.20")
+    expect(command).toContain("-TallyPort 9001")
+    expect(command).toContain("-TallyExecutable 'C:\\Program Files\\TallyPrime\\tally.exe'")
+  })
+
+  it("leaves the default host and port out", () => {
+    const command = buildConnectorInstallCommand({
+      origin: "https://pharm.synapseos.tech",
+      host: "127.0.0.1",
+      port: "9000",
+    })
+
+    expect(command).not.toContain("-TallyHost")
+    expect(command).not.toContain("-TallyPort")
+  })
+
   it("doubles an apostrophe so the literal cannot end early", () => {
     const command = buildConnectorInstallCommand({
       origin: "https://pharm.synapseos.tech",

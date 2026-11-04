@@ -5,7 +5,9 @@ import {
   canApplyManifest,
   canRetryChunk,
   createManifest,
+  createOpenManifest,
   dateSpan,
+  ensureChunk,
   halveRange,
   isManifestLike,
   manifestProblems,
@@ -13,11 +15,13 @@ import {
   parseTallyIsoDate,
   reconcileCounts,
   recordChunkResult,
+  replaceChunkResult,
   splitChunk,
   splitPeriod,
   summariseExtraction,
   voucherChunkId,
   voucherDatesOutsidePeriod,
+  widenPeriod,
   type TallyDateRange,
   type TallyMigrationManifest,
 } from "./chunks"
@@ -50,6 +54,109 @@ function codes(manifest: TallyMigrationManifest): string[] {
 function voucherIds(manifest: TallyMigrationManifest): string[] {
   return manifest.chunks.filter((chunk) => chunk.kind === "vouchers").map((chunk) => chunk.id)
 }
+
+describe("createOpenManifest", () => {
+  it("starts with the masters chunk alone, so no range pretends to be covered", () => {
+    const open = createOpenManifest({
+      sessionId: "session-1",
+      company: "Demo Pharma",
+      mode: "opening",
+      period: TEN_DAYS,
+      updatedAt: AT,
+    })
+
+    expect(open.chunks).toHaveLength(1)
+    expect(open.chunks[0]).toMatchObject({ id: MASTERS_CHUNK_ID, kind: "masters", status: "pending" })
+    expect(codes(open)).toEqual(
+      expect.arrayContaining(["TALLY_CHUNK_MISSING", "TALLY_CHUNK_INCOMPLETE"]),
+    )
+  })
+})
+
+describe("ensureChunk", () => {
+  it("appends a chunk the manifest does not have yet", () => {
+    const open = createOpenManifest({
+      sessionId: "session-1",
+      company: "Demo Pharma",
+      mode: "opening",
+      period: TEN_DAYS,
+      updatedAt: AT,
+    })
+
+    const next = ensureChunk(open, { kind: "vouchers", id: "vouchers:a:b", range: TEN_DAYS }, AT)
+
+    expect(next.chunks.map((chunk) => chunk.id)).toEqual([MASTERS_CHUNK_ID, "vouchers:a:b"])
+  })
+
+  it("leaves an existing chunk untouched, so a retry cannot duplicate a range", () => {
+    const manifest = build(1)
+
+    expect(ensureChunk(manifest, {
+      kind: "vouchers",
+      id: voucherIds(manifest)[0]!,
+      range: TEN_DAYS,
+    }, AT)).toBe(manifest)
+  })
+
+  it("refuses a range that is not two real days", () => {
+    const open = createOpenManifest({
+      sessionId: "session-1",
+      company: "Demo Pharma",
+      mode: "opening",
+      period: TEN_DAYS,
+      updatedAt: AT,
+    })
+
+    expect(() =>
+      ensureChunk(open, { kind: "vouchers", id: "vouchers:x", range: { from: "2026-02-30", to: "2026-03-01" } }, AT),
+    ).toThrow()
+  })
+})
+
+describe("widenPeriod", () => {
+  it("grows to the union of the ranges staged so far", () => {
+    const open = createOpenManifest({
+      sessionId: "session-1",
+      company: "Demo Pharma",
+      mode: "opening",
+      period: TEN_DAYS,
+      updatedAt: AT,
+    })
+
+    const next = widenPeriod(open, { from: "2025-12-20", to: TEN_DAYS.to }, AT)
+
+    expect(next.period).toEqual({ from: "2025-12-20", to: "2026-01-10" })
+    expect(next.chunks[0]?.range).toEqual(next.period)
+  })
+
+  it("never narrows the period for a later, smaller range", () => {
+    const manifest = build(1)
+    const wide = widenPeriod(manifest, { from: "2025-12-01", to: "2026-02-01" }, AT)
+
+    expect(widenPeriod(wide, TEN_DAYS, AT)).toBe(wide)
+  })
+})
+
+describe("replaceChunkResult", () => {
+  it("replaces a finished chunk while keeping how many attempts it took", () => {
+    let manifest = build(1)
+    const id = voucherIds(manifest)[0]!
+    manifest = recordChunkResult(manifest, id, { status: "complete", recordsRead: 4 }, AT)
+    manifest = recordChunkResult(manifest, id, { status: "complete", recordsRead: 9 }, AT)
+    // `complete` is final: a second result for the same chunk changes nothing.
+    expect(manifest.chunks.find((chunk) => chunk.id === id)?.recordsRead).toBe(4)
+
+    const replaced = replaceChunkResult(manifest, id, { status: "complete", recordsRead: 9 }, AT)
+
+    // The replacement counts as another attempt, but the first start is kept.
+    expect(replaced.chunks.find((chunk) => chunk.id === id)).toMatchObject({
+      status: "complete",
+      recordsRead: 9,
+      attempts: 2,
+      startedAt: AT,
+    })
+  })
+})
 
 describe("parseTallyIsoDate", () => {
   it("accepts real calendar days", () => {

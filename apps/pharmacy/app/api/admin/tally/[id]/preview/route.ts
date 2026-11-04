@@ -4,11 +4,24 @@ import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cuto
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { normaliseTallyDocument } from "@synapse/db/tally-normalise"
 import type { TallyAccountOverrides } from "@synapse/db/tally-map"
+import type { TallyXmlDocument } from "@synapse/db/tally-xml-rows"
 import { readTallySource, type TallyStorageClient } from "@/lib/tally/storage"
 import { readTallyDocument } from "@/lib/tally/source"
 import { writeTallyPlan } from "@/lib/tally/plan"
-import { buildManifestEvidence, buildSourceManifest } from "@/lib/tally/manifest"
-import { parseTallyIsoDate, type TallyDateRange } from "@/lib/tally/chunks"
+import {
+  buildManifestEvidence,
+  buildSourceManifest,
+  isMultiFileSession,
+  type TallyManifestBuild,
+} from "@/lib/tally/manifest"
+import { consolidateStoredChunks } from "@/lib/tally/consolidate-session"
+import {
+  canApplyManifest,
+  isManifestLike,
+  parseTallyIsoDate,
+  type TallyDateRange,
+  type TallyMigrationManifest,
+} from "@/lib/tally/chunks"
 import { buildTallyPreview } from "@/lib/tally/preview"
 import { editionDisclosure, editionProblems, normaliseTallyEdition } from "@/lib/tally/editions"
 import { tallyErrorResponse } from "@/lib/tally/http"
@@ -25,6 +38,8 @@ type MappingState = {
   accountOverrides?: TallyAccountOverrides
   productSkuOverrides?: Record<string, string>
   edition?: unknown
+  manifest?: unknown
+  sources?: unknown
 }
 
 /**
@@ -125,30 +140,88 @@ export async function POST(
   }
 
   try {
-    const bytes = await readTallySource(storage(), path)
-    const { format, document } = readTallyDocument(bytes, session.file_name ?? undefined)
+    // A session whose files were staged one by one is previewed once, over
+    // every stored chunk at the end. Its manifest is what the sources route
+    // accumulated, not one rebuilt from a single document.
+    const staged = isMultiFileSession(mapping)
+    let document: TallyXmlDocument | undefined
+    let format: "xml" | "xlsx" | "xls" | "csv"
+    let plan
+    let stagedManifest: TallyMigrationManifest | undefined
 
-    const plan = normaliseTallyDocument(document, {
-      conversionDate: body.conversionDate ?? mapping.conversionDate,
-      mode: body.mode ?? mapping.mode,
-      currency: document.currency,
-      accountOverrides: mapping.accountOverrides,
-      productSkuOverrides: mapping.productSkuOverrides,
-    })
+    if (staged) {
+      const stored = isManifestLike(mapping.manifest) ? mapping.manifest : undefined
+      if (!stored) {
+        return NextResponse.json(
+          { error: "Add at least one file before previewing.", code: "TALLY_SOURCES_EMPTY" },
+          { status: 409 },
+        )
+      }
+      const prepared: TallyMigrationManifest = { ...stored, mode: body.mode ?? stored.mode }
+      const gate = canApplyManifest(prepared)
+      if (gate.problems.length > 0) {
+        return NextResponse.json(
+          {
+            error:
+              "The files staged so far do not cover the migration period exactly once, end to end.",
+            code: "TALLY_SOURCES_INCOMPLETE",
+            problems: gate.problems.map((entry) => `${entry.code}: ${entry.message}`),
+          },
+          { status: 422 },
+        )
+      }
+      const consolidated = await consolidateStoredChunks(storage(), {
+        tenantId,
+        sessionId: id,
+        manifest: prepared,
+        conversionDate: body.conversionDate ?? mapping.conversionDate,
+        accountOverrides: mapping.accountOverrides,
+        productSkuOverrides: mapping.productSkuOverrides,
+      })
+      plan = consolidated.plan
+      format = "xml"
+      stagedManifest = prepared
+      mapping.manifest = prepared
+    } else {
+      const bytes = await readTallySource(storage(), path)
+      const read = readTallyDocument(bytes, session.file_name ?? undefined)
+      document = read.document
+      format = read.format
+      plan = normaliseTallyDocument(document, {
+        conversionDate: body.conversionDate ?? mapping.conversionDate,
+        mode: body.mode ?? mapping.mode,
+        currency: document.currency,
+        accountOverrides: mapping.accountOverrides,
+        productSkuOverrides: mapping.productSkuOverrides,
+      })
+    }
 
     const summary = await writeTallyPlan(storage(), tenantId, id, plan, format)
-    const manifest = buildSourceManifest(document, {
-      sessionId: id,
-      mode: plan.mode ?? body.mode ?? mapping.mode ?? "opening",
-      now: summary.preparedAt,
-      requestedPeriod,
-    })
+
+    let manifest: TallyManifestBuild
+    if (document) {
+      manifest = buildSourceManifest(document, {
+        sessionId: id,
+        mode: plan.mode ?? body.mode ?? mapping.mode ?? "opening",
+        now: summary.preparedAt,
+        requestedPeriod,
+      })
+    } else if (stagedManifest) {
+      const gate = canApplyManifest(stagedManifest)
+      manifest = {
+        manifest: stagedManifest,
+        problems: [],
+        coverage: gate.unverified.length > 0 ? "unverified" : "verified",
+      }
+    } else {
+      throw new Error("TALLY_PREVIEW_UNSTAGED")
+    }
 
     // What the review has to show before Apply. `coverage` is derived from the
     // manifest's own chunk evidence, never from the period the file stated.
     const evidence = manifest.manifest
       ? buildManifestEvidence(manifest.manifest, {
-          requestedPeriod,
+          requestedPeriod: staged ? manifest.manifest.period : requestedPeriod,
           staged: {
             accounts: plan.accounts.length,
             parties: plan.parties.length,

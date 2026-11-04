@@ -7,7 +7,12 @@ const m = vi.hoisted(() => ({
   auth: null as unknown,
   db: null as unknown as { client: unknown; operations: FakeOperation[] },
   uploadFails: false,
-  targets: [] as Array<{ tenantId: string; sessionId: string; extension: string }>,
+  targets: [] as Array<{
+    tenantId: string
+    sessionId: string
+    uploadId: string
+    extension: string
+  }>,
 }))
 
 vi.mock("@/lib/api-auth", () => ({
@@ -22,15 +27,21 @@ vi.mock("@/lib/tally/storage", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/tally/storage")>()
   return {
     ...actual,
-    createTallyUploadTarget: vi.fn(async (_storage: unknown, args: { tenantId: string; sessionId: string; extension: string }) => {
-      if (m.uploadFails) throw new Error("Bucket unavailable")
-      m.targets.push(args)
-      return {
-        bucket: "pharmacy-imports",
-        path: `tenants/${args.tenantId}/imports/${args.sessionId}/source.${args.extension}`,
-        token: "signed-token",
-      }
-    }),
+    createTallyStagedUploadTarget: vi.fn(
+      async (
+        _storage: unknown,
+        args: { tenantId: string; sessionId: string; uploadId: string; extension: string },
+      ) => {
+        if (m.uploadFails) throw new Error("Bucket unavailable")
+        m.targets.push(args)
+        return {
+          bucket: "pharmacy-imports",
+          path: `tenants/${args.tenantId}/imports/${args.sessionId}/uploads/${args.uploadId}.${args.extension}`,
+          signedUrl: "https://storage.test/signed",
+          token: "signed-token",
+        }
+      },
+    ),
   }
 })
 
@@ -56,6 +67,24 @@ function sessions(overrides: { insert?: FakeResult } = {}) {
   return (operation: FakeOperation): FakeResult => {
     if (operation.action === "insert") {
       return overrides.insert ?? { data: { id: "session-1" }, error: null }
+    }
+    return { data: null, error: null }
+  }
+}
+
+/**
+ * Answers the session-scoped lookup by id, and leaves the cut-over status
+ * queries empty so the request reaches it.
+ */
+function sessionLookup(session: { id: string; status: string }) {
+  return (operation: FakeOperation): FakeResult => {
+    const filters = filtersOf(operation)
+    if (
+      operation.action === "select" &&
+      operation.table === "pharmacy_import_sessions" &&
+      filters.status === undefined
+    ) {
+      return { data: session, error: null }
     }
     return { data: null, error: null }
   }
@@ -143,9 +172,12 @@ describe("POST /api/admin/tally/upload-url", () => {
     expect(body).toMatchObject({
       sessionId: "session-1",
       bucket: "pharmacy-imports",
-      path: "tenants/tenant-1/imports/session-1/source.xml",
       token: "signed-token",
     })
+    // Each upload waits on a path of its own until the file is parsed.
+    expect(body.path).toBe(
+      `tenants/tenant-1/imports/session-1/uploads/${body.uploadId}.xml`,
+    )
 
     const insert = m.db.operations.find((operation) => operation.action === "insert")
     expect(insert?.payload).toMatchObject({
@@ -155,12 +187,17 @@ describe("POST /api/admin/tally/upload-url", () => {
       status: "pending",
       created_by: "user-1",
     })
-    expect(m.targets).toEqual([{ tenantId: "tenant-1", sessionId: "session-1", extension: "xml" }])
+    expect(m.targets).toEqual([
+      {
+        tenantId: "tenant-1",
+        sessionId: "session-1",
+        uploadId: body.uploadId,
+        extension: "xml",
+      },
+    ])
 
     const update = m.db.operations.find((operation) => operation.action === "update")
-    expect(update?.payload).toMatchObject({
-      file_url: "tenants/tenant-1/imports/session-1/source.xml",
-    })
+    expect(update?.payload).toMatchObject({ file_url: body.path })
     expect(filtersOf(update!)).toEqual({ id: "session-1", tenant_id: "tenant-1" })
   })
 
@@ -217,8 +254,51 @@ describe("POST /api/admin/tally/upload-url", () => {
     const body = await res.json()
 
     expect(res.status).toBe(200)
-    expect(body.path).toBe("tenants/tenant-1/imports/session-1/source.xls")
-    expect(m.targets).toEqual([{ tenantId: "tenant-1", sessionId: "session-1", extension: "xls" }])
+    expect(body.path).toBe(
+      `tenants/tenant-1/imports/session-1/uploads/${body.uploadId}.xls`,
+    )
+    expect(m.targets).toEqual([
+      {
+        tenantId: "tenant-1",
+        sessionId: "session-1",
+        uploadId: body.uploadId,
+        extension: "xls",
+      },
+    ])
+  })
+
+  it("signs a staged target for a later file without creating a session", async () => {
+    setup(sessionLookup({ id: "session-1", status: "pending" }))
+
+    const res = await post({ fileName: "day-book.xml", fileSize: 1_024, sessionId: "session-1" })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.sessionId).toBe("session-1")
+    expect(body.path).toBe(`tenants/tenant-1/imports/session-1/uploads/${body.uploadId}.xml`)
+    // The extra uploads join the session the first file created; nothing is inserted.
+    expect(m.db.operations.some((operation) => operation.action === "insert")).toBe(false)
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+  })
+
+  it("refuses to add a file to a session that has already been applied", async () => {
+    setup(sessionLookup({ id: "session-1", status: "complete" }))
+
+    const res = await post({ fileName: "day-book.xml", sessionId: "session-1" })
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toMatch(/already been applied/)
+    expect(m.targets).toEqual([])
+    expect(m.db.operations.some((operation) => operation.action === "insert")).toBe(false)
+  })
+
+  it("refuses a session that does not belong to this pharmacy", async () => {
+    setup()
+
+    const res = await post({ fileName: "day-book.xml", sessionId: "someone-else" })
+
+    expect(res.status).toBe(404)
+    expect(m.targets).toEqual([])
   })
 
   it("fails the request when the upload path cannot be stored", async () => {

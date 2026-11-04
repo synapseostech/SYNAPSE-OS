@@ -164,6 +164,37 @@ describe("GET /api/admin/tally/[id]", () => {
     expect(body.failures).toHaveLength(200)
   })
 
+  it("lists the files staged so far, so a reload rebuilds the list", async () => {
+    setup(
+      sessionRow("pending", {
+        sources: [
+          {
+            uploadId: "u1",
+            fileName: "all-masters.xml",
+            kind: "masters",
+            chunkId: "masters",
+            range: { from: "2026-01-01", to: "2026-01-10" },
+            recordsRead: 3,
+            bytes: 100,
+            stagedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      }),
+    )
+
+    const body = await (await get()).json()
+
+    expect(body.sources).toEqual([
+      expect.objectContaining({ uploadId: "u1", chunkId: "masters" }),
+    ])
+  })
+
+  it("returns no staged list for a session with none", async () => {
+    const body = await (await get()).json()
+
+    expect(body.sources).toEqual([])
+  })
+
   it("returns an empty progress payload before the first apply", async () => {
     setup(sessionRow("review", { summary: { company: "Test Pharmacy Ltd" } }))
 

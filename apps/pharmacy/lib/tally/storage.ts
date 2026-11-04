@@ -77,15 +77,6 @@ export async function ensureTallyBucket(db: TallyStorageClient): Promise<void> {
   }
 }
 
-export function tallySourcePath(
-  tenantId: string,
-  sessionId: string,
-  extension: TallySourceExtension,
-): string {
-  if (!EXTENSIONS.includes(extension)) throw new Error("TALLY_FILE_TYPE_UNSUPPORTED")
-  return `tenants/${segment(tenantId, "tenant")}/imports/${segment(sessionId, "session")}/source.${extension}`
-}
-
 export function tallyChunkPath(
   tenantId: string,
   sessionId: string,
@@ -108,12 +99,11 @@ export function tallyChunkSourcePath(tenantId: string, sessionId: string, chunkI
   return `tenants/${segment(tenantId, "tenant")}/imports/${segment(sessionId, "session")}/chunks/${name}.xml`
 }
 
-export async function writeTallySourceText(
+export async function writeTallySourceBytes(
   db: TallyStorageClient,
   path: string,
-  xml: string,
+  bytes: Uint8Array,
 ): Promise<number> {
-  const bytes = new TextEncoder().encode(xml)
   if (bytes.byteLength > TALLY_SOURCE_LIMIT) throw new Error("TALLY_CHUNK_TOO_LARGE")
   const { error } = await db.storage.from(TALLY_BUCKET).upload(path, bytes, {
     contentType: "application/xml",
@@ -123,6 +113,14 @@ export async function writeTallySourceText(
   return bytes.byteLength
 }
 
+export async function writeTallySourceText(
+  db: TallyStorageClient,
+  path: string,
+  xml: string,
+): Promise<number> {
+  return writeTallySourceBytes(db, path, new TextEncoder().encode(xml))
+}
+
 export type TallyUploadTarget = {
   bucket: string
   path: string
@@ -130,24 +128,44 @@ export type TallyUploadTarget = {
   signedUrl: string
 }
 
-export async function createTallyUploadTarget(
+/**
+ * Where an uploaded file waits before its chunk id is known. The id is derived
+ * from the file's own company and period, which only parsing can reveal, so the
+ * bytes land here first and are copied to `tallyChunkSourcePath` afterwards.
+ */
+export function tallyStagedSourcePath(
+  tenantId: string,
+  sessionId: string,
+  uploadId: string,
+  extension: TallySourceExtension,
+): string {
+  if (!EXTENSIONS.includes(extension)) throw new Error("TALLY_FILE_TYPE_UNSUPPORTED")
+  return `tenants/${segment(tenantId, "tenant")}/imports/${segment(sessionId, "session")}/uploads/${segment(uploadId, "upload")}.${extension}`
+}
+
+export async function createTallyStagedUploadTarget(
   db: TallyStorageClient,
-  input: { tenantId: string; sessionId: string; extension: TallySourceExtension },
+  input: {
+    tenantId: string
+    sessionId: string
+    uploadId: string
+    extension: TallySourceExtension
+  },
 ): Promise<TallyUploadTarget> {
   await ensureTallyBucket(db)
-  const path = tallySourcePath(input.tenantId, input.sessionId, input.extension)
+  const path = tallyStagedSourcePath(
+    input.tenantId,
+    input.sessionId,
+    input.uploadId,
+    input.extension,
+  )
   const { data, error } = await db.storage.from(TALLY_BUCKET).createSignedUploadUrl(path, {
     upsert: true,
   })
   if (error || !data?.signedUrl) {
     throw new Error(`TALLY_UPLOAD_URL_FAILED: ${error?.message ?? "no signed url"}`)
   }
-  return {
-    bucket: TALLY_BUCKET,
-    path,
-    token: data.token ?? "",
-    signedUrl: data.signedUrl,
-  }
+  return { bucket: TALLY_BUCKET, path, token: data.token ?? "", signedUrl: data.signedUrl }
 }
 
 /**

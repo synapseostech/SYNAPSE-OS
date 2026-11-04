@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin } from "@/lib/tally/auth"
 import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
-import { normaliseTallyDocument } from "@synapse/db/tally-normalise"
 import type { TallyAccountOverrides } from "@synapse/db/tally-map"
 import {
   createTallyChunkUploadTarget,
@@ -26,7 +25,8 @@ import {
   type TallyDateRange,
   type TallyMigrationManifest,
 } from "@/lib/tally/chunks"
-import { consolidateTallyParts, TallyConsolidationError } from "@/lib/tally/consolidate"
+import { TallyConsolidationError } from "@/lib/tally/consolidate"
+import { consolidateStoredChunks } from "@/lib/tally/consolidate-session"
 import {
   editionDisclosure,
   editionProblems,
@@ -347,21 +347,11 @@ export async function POST(
         )
       }
 
-      const parts = []
-      for (const entry of manifest.chunks) {
-        const bytes = await readTallySource(
-          storage(),
-          tallyChunkSourcePath(tenantId, id, entry.id),
-          CHUNK_LIMIT,
-        )
-        parts.push(readTallyDocument(bytes, `${entry.id}.xml`).document)
-      }
-      const consolidation = consolidateTallyParts(parts, { period: manifest.period })
-
-      const plan = normaliseTallyDocument(consolidation.document, {
+      const { plan, consolidation } = await consolidateStoredChunks(storage(), {
+        tenantId,
+        sessionId: id,
+        manifest,
         conversionDate: mapping.conversionDate,
-        mode: manifest.mode,
-        currency: consolidation.document.currency,
         accountOverrides: mapping.accountOverrides,
         productSkuOverrides: mapping.productSkuOverrides,
       })

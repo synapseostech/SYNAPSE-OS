@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin } from "@/lib/tally/auth"
 import {
@@ -7,7 +8,7 @@ import {
 } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import {
-  createTallyUploadTarget,
+  createTallyStagedUploadTarget,
   TALLY_SOURCE_LIMIT,
   type TallySourceExtension,
 } from "@/lib/tally/storage"
@@ -50,9 +51,14 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  let body: { fileName?: string; fileSize?: number; source?: unknown }
+  let body: { fileName?: string; fileSize?: number; source?: unknown; sessionId?: unknown }
   try {
-    body = (await request.json()) as { fileName?: string; fileSize?: number; source?: unknown }
+    body = (await request.json()) as {
+      fileName?: string
+      fileSize?: number
+      source?: unknown
+      sessionId?: unknown
+    }
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
@@ -105,6 +111,44 @@ export async function POST(request: NextRequest) {
     fileName.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 200) ||
     `tally-export.${extension}`
 
+  // Every file lands on a staging path of its own: a file's chunk id depends on
+  // what it says about its company and period, which only parsing can reveal.
+  const uploadId = randomUUID()
+  const stagedTarget = (sessionId: string) =>
+    createTallyStagedUploadTarget(
+      { storage: db().storage },
+      { tenantId, sessionId, uploadId, extension },
+    )
+
+  // A later file joins the session the first one created. Nothing is inserted:
+  // the extra uploads are adopted by the sources route once parsed.
+  const requestedSession = typeof body.sessionId === "string" ? body.sessionId.trim() : ""
+  if (requestedSession) {
+    const { data: session, error: sessionError } = await db()
+      .from("pharmacy_import_sessions")
+      .select("id, status")
+      .eq("id", requestedSession)
+      .eq("tenant_id", tenantId)
+      .maybeSingle()
+    if (sessionError || !session) {
+      return NextResponse.json({ error: "Import session not found" }, { status: 404 })
+    }
+    if (session.status === "importing" || session.status === "complete") {
+      return NextResponse.json(
+        { error: "This import has already been applied and cannot take more files." },
+        { status: 409 },
+      )
+    }
+    try {
+      const target = await stagedTarget(requestedSession)
+      return NextResponse.json({ sessionId: requestedSession, uploadId, ...target })
+    } catch (uploadError) {
+      const message =
+        uploadError instanceof Error ? uploadError.message : "Upload could not be prepared."
+      return NextResponse.json({ error: message, sessionId: requestedSession }, { status: 500 })
+    }
+  }
+
   const { data: created, error } = await db()
     .from("pharmacy_import_sessions")
     .insert({
@@ -127,11 +171,7 @@ export async function POST(request: NextRequest) {
   const sessionId = (created as { id: string }).id
 
   try {
-    const target = await createTallyUploadTarget({ storage: db().storage }, {
-      tenantId,
-      sessionId,
-      extension,
-    })
+    const target = await stagedTarget(sessionId)
 
     const { error: attachError } = await db()
       .from("pharmacy_import_sessions")
@@ -146,7 +186,7 @@ export async function POST(request: NextRequest) {
     // so fail honestly instead of handing back an unusable target.
     if (attachError) throw new Error(attachError.message)
 
-    return NextResponse.json({ sessionId, ...target })
+    return NextResponse.json({ sessionId, uploadId, ...target })
   } catch (uploadError) {
     const message = uploadError instanceof Error ? uploadError.message : "Upload could not be prepared."
     await db()

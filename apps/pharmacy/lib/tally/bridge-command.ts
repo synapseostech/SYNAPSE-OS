@@ -79,13 +79,32 @@ function cleanOrigin(value: string): string {
     : ""
 }
 
-/** The installer command shown on the setup assistant's Install step. */
-export function buildConnectorInstallCommand(input: { origin: string; company?: string }): string {
+/**
+ * The installer command shown on the setup assistant's Install step and on the
+ * cut-over page. It is the command an operator runs on the pharmacy computer;
+ * buildBridgeCommand below assumes a repository checkout and does not.
+ *
+ * Host, port and executable are only emitted when they differ from the
+ * installer's own defaults, so the common case stays short.
+ */
+export function buildConnectorInstallCommand(input: {
+  origin: string
+  company?: string
+  host?: string
+  port?: string
+  executable?: string
+}): string {
   const parts = ["powershell -ExecutionPolicy Bypass -File .\\synapse-tally-connector.ps1"]
   const origin = cleanOrigin(input.origin)
   parts.push(origin ? `-PortalOrigin ${origin}` : "-PortalOrigin <this page's origin>")
   const company = cleanCommandText(input.company ?? "")
   if (company) parts.push(`-Company ${quotePowerShellLiteral(company)}`)
+  const host = cleanHost(input.host ?? "")
+  if (host !== DEFAULT_BRIDGE_HOST) parts.push(`-TallyHost ${host}`)
+  const port = cleanPort(input.port ?? "")
+  if (port !== DEFAULT_BRIDGE_PORT) parts.push(`-TallyPort ${port}`)
+  const executable = cleanExecutable(input.executable ?? "")
+  if (executable) parts.push(`-TallyExecutable ${quotePowerShellLiteral(executable)}`)
   return parts.join(" ")
 }
 
