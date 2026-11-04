@@ -26,7 +26,7 @@ file that does not exist or does not name that date and edition label.
 
 | Concern | TallyPrime | Tally.ERP 9 |
 |---|---|---|
-| Protocol used | Tally XML/HTTP on port 9000, `All Masters` + `Day Book` | same |
+| Protocol used | Tally XML/HTTP on port 9000, `Voucher Register` + per-type TDL master collections | same requests; the ERP 9 quirks below are the ones seen so far |
 | Parser | shared (`packages/db/src/tally-*`) | shared |
 | Detected from | install path (`\TallyPrime\tally.exe`) | install path (`\Tally.ERP9\tally.exe`) |
 | Recorded as | `edition: "prime"` on manifest and session | `edition: "erp9"` |
@@ -45,8 +45,10 @@ Both profiles require the same extraction behaviour (stated once in
 
 - masters carry `<TALLYMESSAGE>` records for ledgers and stock items, with each
   ledger's `CLOSINGBALANCE` when the period ends on the cut-over date;
-- the `Day Book` export returns one `<VOUCHER>` per voucher inside the requested
-  `SVFROMDATE`–`SVTODATE` window and nothing outside it;
+- the voucher export returns one `<VOUCHER>` per voucher inside the requested
+  range and nothing outside it. The bridge may read past a mid-month end
+  because the register only honours month ends, but it cuts the reply back
+  before packaging, so the chunk the portal receives obeys its own range;
 - the export names the company the portal pinned — a file for another company is
   refused, not imported;
 - anything unreadable is a blocking exception, never a guess.
@@ -136,11 +138,15 @@ result; a number, a code, a count or a hash is.
 - [ ] Every ledger the cut-over maps has a closing balance at the cut-over date.
       A ledger Tally shows with a balance but the export lacks is a **fail**.
 
-### C. Day Book
+### C. Voucher export
 
-- [ ] Run one `Day Book` export for a short window and confirm one `<VOUCHER>`
-      per voucher, each with a date inside `SVFROMDATE`–`SVTODATE`. A voucher
-      outside the window is a **fail** and the manifest must refuse the chunk.
+- [ ] Run one voucher export for a short window and confirm one `<VOUCHER>`
+      per voucher, each with a date inside the range that was asked for. A
+      voucher outside the window is a **fail**: the bridge must have cut it
+      back, and the manifest refuses the chunk if one gets through.
+- [ ] Ask for a range ending mid-month and confirm the window is still obeyed —
+      the register is read to the month end, so this is the case the cut-back
+      exists for.
 - [ ] Record Tally's voucher count for the window and the portal's
       `postedVouchers + skippedVouchers`. They must add up; a gap is a blocking
       exception, not a rounding difference.
@@ -175,7 +181,7 @@ result; a number, a code, a count or a hash is.
 
 ### F. Near-limit behaviour
 
-- [ ] With a company whose Day Book export approaches 25 MiB, the extraction
+- [ ] With a company whose voucher export approaches 25 MiB, the extraction
       splits rather than truncating, and the reconciliation still matches
       Tally's counts.
 
@@ -219,9 +225,10 @@ These are the questions the code cannot answer about either product until a run
 happens. They are listed so a tester records them rather than assuming an
 answer:
 
-- exact field set of `All Masters` on the tested release (batch details, godown
-  detail, unit formatting);
+- exact field set of the master collections on the tested release (batch
+  details, godown detail, unit formatting, the `<OPENINGRATE>` unit suffix);
 - whether `CLOSINGBALANCE` appears at the precision the schema stores;
-- how each release reports cancelled and optional vouchers in `Day Book`;
+- how each release reports cancelled and optional vouchers in the `Voucher
+  Register`;
 - whether the gateway setting survives a Tally restart on that release;
 - ERP 9 release-specific differences in the F1 configuration layout.

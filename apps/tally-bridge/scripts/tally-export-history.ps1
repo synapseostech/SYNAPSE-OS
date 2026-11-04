@@ -7,6 +7,11 @@
     masters file. A slice Tally answers with more than 25 MB is split and
     fetched again, so every file in the folder can be imported.
 
+    The vouchers come from the Voucher Register, not the Day Book report: on
+    Tally.ERP 9 the Day Book ignores the dates it is given and answers with
+    today's vouchers. The register honours them, but only when the end date is
+    a month end, so slices are whole months.
+
     Every file names the dates it covers (3-daybook-20250101-20251231.xml), and
     the portal reads that range from the name. Add all of them to one cut-over.
 
@@ -41,7 +46,9 @@ param(
     [string]$To = "",
     # 0 means "find it": Tally's listening ports first, then the usual ones.
     [int]$Port = 0,
-    [int]$MonthsPerFile = 12,
+    # One calendar month per file: a busy pharmacy month stays under the 25 MB
+    # the importer accepts, so the run needs no splitting.
+    [int]$MonthsPerFile = 1,
     [string]$OutDir = "$env:USERPROFILE\Desktop\SynapseTallyExport",
     [switch]$NoExplorer
 )
@@ -264,9 +271,51 @@ function Invoke-Tally([string]$body, [string]$outFile, [int]$targetPort = 0) {
     $seconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 1)
     $bytes = (Get-Item -LiteralPath $outFile).Length
     # Tally answers an error with HTTP 200 and <STATUS>0</STATUS>, so the
-    # envelope is the only trustworthy signal.
-    $answered = (Read-HeadText $outFile 4096) -match "<STATUS>\s*1\s*</STATUS>"
+    # envelope is the only trustworthy signal. A successful data export on
+    # Tally.ERP 9 carries no STATUS at all and opens with ENVELOPE, which is
+    # what a large reply is accepted on; an error page is short and says so.
+    $head = Read-HeadText $outFile 4096
+    $refused = $head -match "<STATUS>\s*0\s*</STATUS>" -or
+        $head -match "<LINEERROR>" -or
+        $head -match "Unknown Request" -or
+        $head -match "<RESPONSE>[^<]*cannot be processed"
+    $answered = (-not $refused) -and (
+        ($head -match "<STATUS>\s*1\s*</STATUS>") -or
+        (($head -match "<ENVELOPE") -and $bytes -gt 2048)
+    )
     return [pscustomobject]@{ Ok = $answered; Error = $null; Seconds = $seconds; Bytes = $bytes }
+}
+
+# The master records are read in memory, not into a file: each type is asked
+# for on its own and the records are joined into the one masters file the
+# portal takes.
+function Invoke-TallyText([string]$body, [int]$targetPort = 0) {
+    if ($targetPort -le 0) { $targetPort = $script:Port }
+    $response = Invoke-WebRequest -Uri "http://127.0.0.1:$targetPort" -Method Post -Body $body `
+        -TimeoutSec 1800 -UseBasicParsing -DisableKeepAlive
+    if ($response.Content -is [byte[]]) {
+        return [System.Text.Encoding]::UTF8.GetString($response.Content)
+    }
+    return [string]$response.Content
+}
+
+# "All Masters" is the obvious request and the one this build answers with an
+# empty envelope, so each master type is asked for as a collection instead.
+# Collection attributes are single-quoted: that is valid XML and keeps the whole
+# request inside one PowerShell single-quoted string, with no escapes.
+function Get-MasterRecords([string]$type, [string[]]$methods) {
+    $id = "Synapse $type"
+    $methodXml = (@($methods) | ForEach-Object { "<NATIVEMETHOD>$_</NATIVEMETHOD>" }) -join ""
+    $body = '<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>' + $id +
+        '</ID></HEADER><BODY><DESC><STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT><SVCURRENTCOMPANY>' +
+        (Escape-Xml $script:Company) +
+        '</SVCURRENTCOMPANY></STATICVARIABLES><TDL><TDLMESSAGE><COLLECTION NAME=''' + $id +
+        ''' ISMODIFY=''No'' ISFIXED=''No'' ISINITIALIZE=''No'' ISOPTION=''No'' ISINTERNAL=''No''><TYPE>' + $type +
+        '</TYPE>' + $methodXml + '</COLLECTION></TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>'
+
+    $text = Invoke-TallyText $body
+    $tag = $type.ToUpperInvariant()
+    return @([regex]::Matches($text, '<' + $tag + '\b[^>]*>[\s\S]*?</' + $tag + '>') | ForEach-Object { $_.Value })
 }
 
 function Format-Size([long]$bytes) {
@@ -402,55 +451,116 @@ Say "  Folder  : $OutDir"
 Say ""
 
 # ----------------------------------------------------------------- masters
-# One export, taken last, so its balances are as at the cut-over date. It
-# carries the same range as the Day Book files in its name: the portal reads
-# each file's own dates from the name, so every file in the folder agrees on
-# the period the cut-over covers.
-Say "  Writing masters (one file, balances as at $To) ..."
-$mastersBody = '<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>DATA</TYPE><ID>All Masters</ID></HEADER><BODY><DESC><STATICVARIABLES><SVCURRENTCOMPANY>' +
-    (Escape-Xml $Company) +
-    '</SVCURRENTCOMPANY><SVFROMDATE>' + $From + '</SVFROMDATE><SVTODATE>' + $To + '</SVTODATE><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT></STATICVARIABLES></DESC></BODY></ENVELOPE>'
-$mastersFile = Join-Path $OutDir "2-masters-$From-$To.xml"
-$mastersResult = Invoke-Tally $mastersBody $mastersFile
-
+# One file, taken first, holding what the import builds parties and products
+# from. It carries the same range as the voucher files in its name: the portal
+# reads each file's own dates from the name, so every file in the folder
+# agrees on the period the cut-over covers.
 $written = New-Object System.Collections.Generic.List[object]
 $problems = New-Object System.Collections.Generic.List[string]
 $emptySlices = New-Object System.Collections.Generic.List[string]
 
-if ($mastersResult.Ok) {
-    Say ("    OK - {0} in {1}s" -f (Format-Size $mastersResult.Bytes), $mastersResult.Seconds)
-    $written.Add([pscustomobject]@{ File = $mastersFile; Bytes = $mastersResult.Bytes; From = ""; To = $To })
+Say "  Writing masters (one file, balances as at $To) ..."
+$mastersFile = Join-Path $OutDir "2-masters-$From-$To.xml"
+$masterPlan = @(
+    @{ Type = "Ledger"; Methods = @("Name", "Parent", "OpeningBalance", "ClosingBalance") },
+    @{ Type = "Group"; Methods = @("Name", "Parent") },
+    @{ Type = "StockItem"; Methods = @("Name", "Parent", "BaseUnits", "OpeningBalance", "OpeningRate", "OpeningValue", "ClosingBalance", "ClosingValue") },
+    @{ Type = "StockGroup"; Methods = @("Name", "Parent") },
+    @{ Type = "Unit"; Methods = @("Name", "Symbol") },
+    @{ Type = "Godown"; Methods = @("Name", "Parent") }
+)
+
+$masterRecords = New-Object System.Collections.Generic.List[string]
+$stockItemCount = 0
+foreach ($entry in $masterPlan) {
+    try {
+        $records = @(Get-MasterRecords $entry.Type $entry.Methods)
+    } catch {
+        Say ("    FAILED - Tally refused the {0} list: {1}" -f $entry.Type, ($_.Exception.Message)) -ForegroundColor Red
+        $problems.Add("masters/$($entry.Type): " + $_.Exception.Message)
+        continue
+    }
+    foreach ($record in $records) { $masterRecords.Add($record) }
+    if ($entry.Type -eq "StockItem") { $stockItemCount = $records.Count }
+    Say ("    {0,6} {1}" -f $records.Count, ($entry.Type.ToLowerInvariant()))
+}
+
+# Tally writes a stock item's rate as `2500.00/ea`. The importer reads that one
+# field as a plain amount and rejects the suffix, which would price every
+# product from the value Tally stores signed the other way.
+$masterXml = [regex]::Replace(
+    ($masterRecords -join ""),
+    '(<OPENINGRATE\b[^>]*>\s*[+-]?[\d.,]+)\s*/\s*[^<]*(</OPENINGRATE>)',
+    '$1$2')
+
+if ($masterRecords.Count -eq 0) {
+    Say "    FAILED - Tally returned no master records" -ForegroundColor Red
+    $problems.Add("masters: Tally returned no master records")
+    # A file left by an earlier run must not be mistaken for this one.
+    Remove-Item -LiteralPath $mastersFile -Force -ErrorAction SilentlyContinue
 } else {
-    $message = if ($mastersResult.Error) { $mastersResult.Error } else { "Tally reported an error; see the file" }
-    Say ("    FAILED - " + $message) -ForegroundColor Red
-    $problems.Add("masters: $message")
+    $document = '<ENVELOPE><BODY><DATA>' + $masterXml + '</DATA></BODY></ENVELOPE>'
+    [System.IO.File]::WriteAllText($mastersFile, $document, (New-Object System.Text.UTF8Encoding $false))
+    $mastersBytes = (Get-Item -LiteralPath $mastersFile).Length
+    Say ("    OK - {0}" -f (Format-Size $mastersBytes))
+    $written.Add([pscustomobject]@{ File = $mastersFile; Bytes = $mastersBytes; From = ""; To = $To })
+    if ($stockItemCount -eq 0) {
+        # Products are created from stock items; vouchers alone import no stock.
+        $problems.Add("masters: Tally returned no stock items, so no products will be created")
+    }
 }
 Say ""
 
-# ---------------------------------------------------------------- day book
+# ----------------------------------------------------------- voucher register
+# The Day Book report ignores SVFROMDATE/SVTODATE on Tally.ERP 9 and answers
+# with today's vouchers whatever range is asked for. The Voucher Register
+# honours both, but only when SVTODATE lands on a month end, so slices are
+# whole months and the files are named by those months.
 $slices = New-Object System.Collections.Generic.List[object]
 $cursor = $startDate
 while ($cursor -le $endDate) {
-    $sliceEnd = $cursor.AddMonths($MonthsPerFile).AddDays(-1)
+    $monthStart = $cursor.AddDays(1 - $cursor.Day)
+    $sliceEnd = $monthStart.AddMonths($MonthsPerFile).AddDays(-1)
     if ($sliceEnd -gt $endDate) { $sliceEnd = $endDate }
     $slices.Add([pscustomobject]@{ From = $cursor; To = $sliceEnd })
     $cursor = $sliceEnd.AddDays(1)
 }
 
-Say ("  Writing Day Book in {0} file(s) ..." -f $slices.Count)
+Say ("  Writing the voucher register in {0} file(s) ..." -f $slices.Count)
 
-# A slice Tally answers with more than the importer accepts is split in half
-# and fetched again, so the folder ends up holding only files that can be
-# imported without a second run by hand. Each half keeps its own dates in its
-# name, which is what the portal reads to place the slice.
-function Export-DayBook([datetime]$sliceFrom, [datetime]$sliceTo, [int]$depth) {
+# Every calendar month inside a range, used when a slice is too big to import.
+function Get-MonthRanges([datetime]$from, [datetime]$to) {
+    $ranges = New-Object System.Collections.Generic.List[object]
+    $cursor = $from
+    while ($cursor -le $to) {
+        $end = $cursor.AddDays([datetime]::DaysInMonth($cursor.Year, $cursor.Month) - $cursor.Day)
+        if ($end -gt $to) { $end = $to }
+        $ranges.Add([pscustomobject]@{ From = $cursor; To = $end })
+        $cursor = $end.AddDays(1)
+    }
+    return $ranges
+}
+
+# A slice Tally answers with more than the importer accepts is cut down and
+# fetched again, so the folder ends up holding only files that can be imported
+# without a second run by hand. Whole months are tried first, because a day
+# range the register does not honour would silently export the wrong dates.
+function Export-Vouchers([datetime]$sliceFrom, [datetime]$sliceTo, [int]$depth) {
     $from = $sliceFrom.ToString("yyyyMMdd")
     $to = $sliceTo.ToString("yyyyMMdd")
     $label = "$from to $to"
 
-    $voucherBody = '<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>DATA</TYPE><ID>Day Book</ID></HEADER><BODY><DESC><STATICVARIABLES><SVCURRENTCOMPANY>' +
+    # The run ends today, which is rarely a month end. Tally has no vouchers
+    # after today, so the request reaches to the month's last day and the file
+    # keeps the real end in its name.
+    $requestTo = $sliceTo
+    if ($sliceTo -eq $script:endDate -and $sliceTo.Day -ne [datetime]::DaysInMonth($sliceTo.Year, $sliceTo.Month)) {
+        $requestTo = $sliceTo.AddDays([datetime]::DaysInMonth($sliceTo.Year, $sliceTo.Month) - $sliceTo.Day)
+    }
+
+    $voucherBody = '<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>DATA</TYPE><ID>Voucher Register</ID></HEADER><BODY><DESC><STATICVARIABLES><SVCURRENTCOMPANY>' +
         (Escape-Xml $script:Company) +
-        '</SVCURRENTCOMPANY><SVFROMDATE>' + $from + '</SVFROMDATE><SVTODATE>' + $to + '</SVTODATE><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT></STATICVARIABLES></DESC></BODY></ENVELOPE>'
+        '</SVCURRENTCOMPANY><SVFROMDATE>' + $from + '</SVFROMDATE><SVTODATE>' + $requestTo.ToString("yyyyMMdd") + '</SVTODATE><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT></STATICVARIABLES></DESC></BODY></ENVELOPE>'
 
     $file = Join-Path $script:OutDir "3-daybook-$from-$to.xml"
     $result = Invoke-Tally $voucherBody $file
@@ -470,14 +580,23 @@ function Export-DayBook([datetime]$sliceFrom, [datetime]$sliceTo, [int]$depth) {
     }
 
     if ($result.Bytes -gt $script:LimitBytes) {
-        if ($sliceFrom -lt $sliceTo -and $depth -lt 20) {
-            $days = [int]($sliceTo.Date - $sliceFrom.Date).TotalDays
-            $mid = $sliceFrom.Date.AddDays([math]::Floor($days / 2))
-            Say ("    {0}  {1} - over the limit, splitting in half" -f $label, (Format-Size $result.Bytes)) -ForegroundColor Yellow
-            Remove-Item -LiteralPath $file -Force
-            Export-DayBook $sliceFrom $mid ($depth + 1)
-            Export-DayBook $mid.AddDays(1) $sliceTo ($depth + 1)
-            return
+        if ($depth -lt 20) {
+            $months = @(Get-MonthRanges $sliceFrom $sliceTo)
+            if ($months.Count -gt 1) {
+                Say ("    {0}  {1} - over the limit, splitting by month" -f $label, (Format-Size $result.Bytes)) -ForegroundColor Yellow
+                Remove-Item -LiteralPath $file -Force
+                foreach ($month in $months) { Export-Vouchers $month.From $month.To ($depth + 1) }
+                return
+            }
+            if ($sliceFrom -lt $sliceTo) {
+                $days = [int]($sliceTo.Date - $sliceFrom.Date).TotalDays
+                $mid = $sliceFrom.Date.AddDays([math]::Floor($days / 2))
+                Say ("    {0}  {1} - over the limit, splitting in half" -f $label, (Format-Size $result.Bytes)) -ForegroundColor Yellow
+                Remove-Item -LiteralPath $file -Force
+                Export-Vouchers $sliceFrom $mid ($depth + 1)
+                Export-Vouchers $mid.AddDays(1) $sliceTo ($depth + 1)
+                return
+            }
         }
         Say ("    {0}  {1}  TOO BIG" -f $label, (Format-Size $result.Bytes)) -ForegroundColor Red
         $script:problems.Add("$label is " + (Format-Size $result.Bytes) + ", over the 25 MB limit, even for a single day")
@@ -495,7 +614,7 @@ function Export-DayBook([datetime]$sliceFrom, [datetime]$sliceTo, [int]$depth) {
     }
 }
 
-foreach ($slice in $slices) { Export-DayBook $slice.From $slice.To 0 }
+foreach ($slice in $slices) { Export-Vouchers $slice.From $slice.To 0 }
 
 # ---------------------------------------------------------------- coverage
 # The import needs the slices to cover the period end to end. A file that
@@ -508,13 +627,13 @@ if ($daybook.Count -gt 0) {
         $entryFrom = Parse-Day $entry.From "slice"
         $entryTo = Parse-Day $entry.To "slice"
         if ($entryFrom -gt $expected) {
-            $problems.Add(("the Day Book files leave {0} to {1} uncovered" -f $expected.ToString("yyyyMMdd"), $entryFrom.AddDays(-1).ToString("yyyyMMdd")))
+            $problems.Add(("the voucher files leave {0} to {1} uncovered" -f $expected.ToString("yyyyMMdd"), $entryFrom.AddDays(-1).ToString("yyyyMMdd")))
             break
         }
         if ($entryTo -ge $expected) { $expected = $entryTo.AddDays(1) }
     }
     if ($expected -le $endDate) {
-        $problems.Add(("the Day Book files stop at {0}, before {1}" -f $expected.AddDays(-1).ToString("yyyyMMdd"), $To))
+        $problems.Add(("the voucher files stop at {0}, before {1}" -f $expected.AddDays(-1).ToString("yyyyMMdd"), $To))
     }
 }
 

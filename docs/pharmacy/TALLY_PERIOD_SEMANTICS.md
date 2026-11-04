@@ -81,6 +81,21 @@ Every export request then carries the resolved period in its envelope
 </STATICVARIABLES>
 ```
 
+The end sent is not always the end requested. On the ERP 9 build the pharmacy
+runs, the `Voucher Register` honours `SVFROMDATE` / `SVTODATE` only when
+`SVTODATE` lands on the last day of a month; any other end makes it answer for
+a wider range. `buildTallyExportRequest` therefore clamps `SVTODATE` to the
+last day of the requested end's month (`monthEndTallyDate`), while `SVFROMDATE`
+is sent as asked. The echo headers still report the range the chunk was charged
+with, not the clamped one, because the manifest records what was asked for and
+the clamp is a property of the source, not of the request.
+
+The masters are not requested by report name. `All Masters` answers with an
+empty envelope on this build, so `buildMasterCollectionRequest` asks for each
+type through a TDL collection (`Synapse Ledger`, `Synapse StockItem`, …) and
+the bridge joins the records into one `<ENVELOPE>`. Those collection requests
+carry no date tags: master data is not period-scoped.
+
 ### The echo gate
 
 The bridge answers every export with what it actually served, so the portal does
@@ -109,6 +124,20 @@ portal splits the requested period into parts (`splitPeriod`), each charged to
 (`vouchers:<from>:<to>`). A range too large to return is halved and re-read; a
 one-day range that is still too large fails rather than being truncated. The
 manifest — not the page — is the state the loop resumes from.
+
+Because the end is clamped, a chunk whose `to` falls mid-month reads on to the
+end of that month. The bridge then cuts the reply back to the chunk's own
+range (`keepVouchersWithinRange`) before packaging it, so the file it hands
+over holds only the days that chunk accounts for — which is what the portal
+requires: `POST /api/admin/tally/[id]/extract` fails a chunk carrying a voucher
+outside its range (`TALLY_CHUNK_DATES_OUTSIDE`). A voucher whose date cannot be
+read is kept rather than guessed out of range.
+
+Chunks are still merged on Tally's own identifiers — guid, else remote id, else
+voucher number with its date (`tallyVoucherKey` in
+`apps/pharmacy/lib/tally/consolidate.ts`) — because a retried range can arrive
+twice. `scripts/tally-rehearse.mjs` asserts that every chunk stays inside its
+range and that the merged set of chunk vouchers equals the whole-period read.
 
 ## 3. Period echoed by Tally — response to packaged file
 
@@ -190,25 +219,43 @@ When coverage is `unverified`, the same distinction is preserved everywhere:
 A new preview clears both the notice and the saved acknowledgement, so an
 acknowledgement can never outlive the evidence it applied to.
 
-## Where Windows/Tally validation is required
+## What the pharmacy's ERP 9 build settled
+
+One build was exercised end to end with `tally-export-history.ps1` — 26,395
+vouchers across 14 monthly files and 2,025 stock items:
+
+- `Day Book` ignores `SVFROMDATE` / `SVTODATE` and answers with a fixed period.
+  The `Voucher Register` honours both bounds **only when `SVTODATE` is a month
+  end**; that is why the bridge clamps it.
+- `All Masters` answers with an empty envelope. Per-type collections do return
+  the records.
+- A successful export carries **no `<STATUS>` element**. Errors arrive as
+  `<STATUS>0</STATUS>`, `<LINEERROR>`, "Unknown Request", or a
+  "cannot be processed" response. The bridge accepts the first shape and refuses
+  the rest with a real error code.
+- `<OPENINGRATE>` carries a unit suffix (`2500.00/ea`). The row parser rejects
+  the suffix and would price the product from its opening value, so the bridge
+  strips it (`stripOpeningRateUnits`).
+
+## Where Windows/Tally validation is still required
 
 None of the following can be established from this codebase. Each needs a real
-Tally Prime installation on Windows, and none may be claimed as verified before
-that run:
+Tally installation on Windows, and none may be claimed as verified before that
+run:
 
-1. Whether `SVFROMDATE` / `SVTODATE` actually constrain **All Masters** and
-   **Day Book**, and which of the two respects each bound.
+1. Whether the `Voucher Register` can silently omit vouchers inside a range it
+   reports on. The clamp widens what it reads, but nothing here proves the
+   report is complete.
 2. Whether Tally states the company inside `<DATA>`, in the envelope as
-   `<SVCURRENTCOMPANY>`, or both — and whether that differs between Tally Prime
-   releases. (The bridge currently refuses the envelope-only shape.)
+   `<SVCURRENTCOMPANY>`, or both, and whether that differs between releases.
+   The bridge checks the reply first and, when the reply names no company,
+   confirms the pin against the open company list before reading anything.
 3. Whether Tally echoes the export dates at all, in which element, and in which
    format.
-4. Whether a Day Book answer can include vouchers outside the requested range,
-   and whether it can silently omit vouchers inside it.
-5. Whether a changed request period takes effect without relaunching Tally — the
-   bridge sends the new dates in each request, but Tally Prime may hold its
+4. Whether a changed request period takes effect without relaunching Tally — the
+   bridge sends the new dates in each request, but Tally may hold its
    company/period state between calls.
-6. Whether the packaged file's synthetic company element is accepted by the rest
+5. Whether the packaged file's synthetic company element is accepted by the rest
    of the import path on a real export.
 
 ## The rule

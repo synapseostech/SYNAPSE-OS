@@ -191,8 +191,13 @@ and user and answers `429` with `Retry-After`.
 | `tally.extract.finished` | `log` | every chunk was read | `sessionId`, `tenantId`, `chunks`, `documents`, `gaps`, `coverage` |
 
 `code` is the bridge's own refusal code, so it names the cause rather than the
-symptom: `TALLY_BRIDGE_ALL_MASTERS_REJECTED` (Tally answered `STATUS 0`),
-`TALLY_BRIDGE_ALL_MASTERS_UNSAFE_XML` (the answer carried a DOCTYPE),
+symptom. The master reads carry the collection they came from, so the code
+names the type that failed: `TALLY_BRIDGE_MASTERS_LEDGER_REJECTED` (Tally
+answered `STATUS 0` to the `Synapse Ledger` collection),
+`TALLY_BRIDGE_MASTERS_LEDGER_UNSAFE_XML` (that answer carried a DOCTYPE),
+`TALLY_BRIDGE_MASTERS_EMPTY` (no collection returned a row),
+`TALLY_BRIDGE_MASTERS_STATUS_MISSING` (a reply that was neither an export nor a
+refusal the bridge recognises),
 `TALLY_BRIDGE_COMPANY_UNVERIFIED` (the answer named no company, so it could be
 another business's books), `TALLY_BRIDGE_TALLY_UNAVAILABLE` (nothing is listening
 on the Tally port) and `TALLY_BRIDGE_TALLY_TIMEOUT` (Tally accepted the request

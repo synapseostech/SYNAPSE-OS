@@ -6,6 +6,7 @@ import { request as httpRequest } from "node:http"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import {
+  buildMasterCollectionRequest,
   buildMasterOnlyExport,
   buildTallyCompanyListRequest,
   buildTallyExportRequest,
@@ -14,9 +15,13 @@ import {
   detectTallyInstallations,
   ensureTallyHttpServer,
   exportTallyCompany,
+  keepVouchersWithinRange,
+  monthEndTallyDate,
   parseTallyCompanyNames,
   readBridgeConfig,
+  stripOpeningRateUnits,
   tallyEditionFromExecutable,
+  TALLY_MASTER_COLLECTIONS,
 } from "./bridge.mjs"
 import { TALLY_BRIDGE_CONTRACT_VERSION, TALLY_CONNECTOR_VERSION } from "./preflight.mjs"
 
@@ -24,9 +29,63 @@ const TOKEN = "0123456789abcdef".repeat(4)
 const ORIGIN = "https://pharm.synapseos.tech"
 const masterReply = `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA><TALLYMESSAGE><COMPANY><COMPANYNAME>Test Pharmacy</COMPANYNAME></COMPANY><LEDGER NAME="Cash"/></TALLYMESSAGE></DATA></BODY></ENVELOPE>`
 const voucherReply = `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA><TALLYMESSAGE><VOUCHER><DATE>20261001</DATE></VOUCHER></TALLYMESSAGE></DATA></BODY></ENVELOPE>`
-// A pinned export also requires the Day Book to name its company. This fixture
-// encodes that contract; tally-probe.ps1 confirms real Tally emits it.
 const pinnedVoucherReply = voucherReply.replace("<VOUCHER>", "<COMPANY><COMPANYNAME>Test Pharmacy</COMPANYNAME></COMPANY><VOUCHER>")
+
+// Tally.ERP 9 answers a successful export with no STATUS element at all, and
+// its master collections name no company. These fixtures are that shape: the
+// STATUS-shaped replies above are kept for the Tally Prime echo tests.
+const erp9Reply = (inner) =>
+  `<ENVELOPE><HEADER><VERSION>1</VERSION></HEADER><BODY><DATA>${inner}</DATA></BODY></ENVELOPE>`
+const ledgerCollectionReply = erp9Reply(
+  `<LEDGER NAME="Cash"><PARENT>Cash-in-Hand</PARENT><OPENINGBALANCE>500000.00</OPENINGBALANCE><CLOSINGBALANCE>512000.00</CLOSINGBALANCE></LEDGER>`,
+)
+const stockItemCollectionReply = erp9Reply(
+  `<STOCKITEM NAME="Paracetamol 500mg"><PARENT>Analgesics</PARENT><BASEUNITS>Nos</BASEUNITS><OPENINGBALANCE>1000 Nos</OPENINGBALANCE><OPENINGRATE>200/Nos</OPENINGRATE><OPENINGVALUE>200000.00</OPENINGVALUE><CLOSINGBALANCE>850 Nos</CLOSINGBALANCE><CLOSINGVALUE>170000.00</CLOSINGVALUE></STOCKITEM>`,
+)
+const emptyCollectionReply = erp9Reply(" ")
+
+const COLLECTION_TYPES = ["Ledger", "Group", "StockItem", "StockGroup", "Unit", "Godown"]
+
+function companiesReply(names = ["Test Pharmacy"]) {
+  return `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA><COLLECTION>${names
+    .map((name) => `<COMPANY NAME="${name}"/>`)
+    .join("")}</COLLECTION></DATA></BODY></ENVELOPE>`
+}
+
+function collectionReply(type) {
+  if (type === "Ledger") return ledgerCollectionReply
+  if (type === "StockItem") return stockItemCollectionReply
+  return emptyCollectionReply
+}
+
+/** The reply this bridge expects for a request body it built itself. */
+function replyForRequest(body) {
+  if (body.includes("<ID>List of Companies</ID>")) return companiesReply()
+  const type = /<ID>Synapse (\w+)<\/ID>/.exec(body)?.[1]
+  if (type) return collectionReply(type)
+  if (body.includes("<ID>Voucher Register</ID>")) return voucherReply
+  throw new Error(`unexpected Tally request: ${body.slice(0, 120)}`)
+}
+
+/**
+ * A Tally stand-in that answers by request and records what it was asked.
+ * `overrides` are tested first, in order, as [pattern, reply] pairs.
+ */
+function tallyStandIn(overrides = []) {
+  const requests = []
+  const handler = async (_url, options) => {
+    const body = String(options?.body ?? "")
+    requests.push(body)
+    handler.calls.push({ body, redirect: options?.redirect })
+    for (const [pattern, reply] of overrides) {
+      if (pattern.test(body)) return new Response(reply, { status: 200 })
+    }
+    return new Response(replyForRequest(body), { status: 200 })
+  }
+  handler.requests = requests
+  handler.calls = []
+  return handler
+}
 const servers = []
 const BRIDGE_URL = new URL("./bridge.mjs", import.meta.url).href
 const run = promisify(execFile)
@@ -80,44 +139,172 @@ describe("Tally bridge configuration", () => {
     assert.equal(config({ SYNAPSE_TALLY_TO_DATE: "20260331" }).toDate, "20260331")
   })
 
-  it("builds fixed XML export requests and escapes a configured company name", () => {
-    const request = buildTallyExportRequest("Day Book", {
+  it("builds a Voucher Register request whose end is the month's last day", () => {
+    const request = buildTallyExportRequest("Voucher Register", {
       company: `Pharmacy & <Co>`,
       fromDate: "19000101",
       toDate: "20261030",
     })
     assert.match(request, /<TALLYREQUEST>Export<\/TALLYREQUEST>/)
-    assert.match(request, /<ID>Day Book<\/ID>/)
+    assert.match(request, /<ID>Voucher Register<\/ID>/)
     assert.match(request, /Pharmacy &amp; &lt;Co&gt;/)
     assert.match(request, /<SVFROMDATE>19000101<\/SVFROMDATE>/)
+    // The register honours the range only when SVTODATE is a month end; any
+    // other end is answered with today's vouchers.
+    assert.match(request, /<SVTODATE>20261031<\/SVTODATE>/)
 
-    const masters = buildTallyExportRequest("All Masters", {
-      company: "",
-      fromDate: "19000101",
-      toDate: "20261030",
-    })
-    assert.match(masters, /<SVFROMDATE>19000101<\/SVFROMDATE>/)
-    assert.match(masters, /<SVTODATE>20261030<\/SVTODATE>/)
+    assert.equal(monthEndTallyDate("20260215"), "20260228")
+    assert.equal(monthEndTallyDate("20280201"), "20280229")
+    assert.equal(monthEndTallyDate("20261231"), "20261231")
 
     assert.throws(
-      () => buildTallyExportRequest("All Ledgers", { company: "", fromDate: "19000101", toDate: "20261030" }),
+      () => buildTallyExportRequest("All Masters", { company: "", fromDate: "19000101", toDate: "20261030" }),
       /REPORT_UNSUPPORTED/,
     )
+  })
+
+  it("asks for each master type as its own undated collection", () => {
+    assert.deepEqual(
+      TALLY_MASTER_COLLECTIONS.map((collection) => collection.type),
+      ["Ledger", "Group", "StockItem", "StockGroup", "Unit", "Godown"],
+    )
+
+    const request = buildMasterCollectionRequest("StockItem", [
+      "Name",
+      "OpeningRate",
+    ], { company: "Pharmacy & <Co>" })
+
+    assert.match(request, /<TYPE>Collection<\/TYPE>/)
+    assert.match(request, /<ID>Synapse StockItem<\/ID>/)
+    assert.match(request, /<COLLECTION NAME="Synapse StockItem"/)
+    assert.match(request, /<TYPE>StockItem<\/TYPE>/)
+    assert.match(request, /<NATIVEMETHOD>Name<\/NATIVEMETHOD>/)
+    assert.match(request, /<NATIVEMETHOD>OpeningRate<\/NATIVEMETHOD>/)
+    assert.match(request, /Pharmacy &amp; &lt;Co&gt;/)
+    assert.doesNotMatch(request, /SVFROMDATE|SVTODATE/)
+    assert.doesNotMatch(request, /Import/)
+  })
+
+  it("strips the unit Tally appends to an opening rate", () => {
+    assert.equal(
+      stripOpeningRateUnits("<OPENINGRATE>2500.00/ea</OPENINGRATE>"),
+      "<OPENINGRATE>2500.00</OPENINGRATE>",
+    )
+    assert.equal(
+      stripOpeningRateUnits("<OPENINGRATE> 200/Nos </OPENINGRATE>"),
+      "<OPENINGRATE> 200</OPENINGRATE>",
+    )
+    // A plain rate is left exactly as it was.
+    assert.equal(
+      stripOpeningRateUnits("<OPENINGRATE>300.00</OPENINGRATE>"),
+      "<OPENINGRATE>300.00</OPENINGRATE>",
+    )
+  })
+
+  it("keeps only the vouchers dated inside the range that was asked for", () => {
+    const document = `<ENVELOPE><BODY><DATA>
+      <VOUCHER><DATE>20260131</DATE><VOUCHERNUMBER>BEFORE</VOUCHERNUMBER></VOUCHER>
+      <VOUCHER><DATE>20260201</DATE><VOUCHERNUMBER>FIRST</VOUCHERNUMBER></VOUCHER>
+      <VOUCHER><DATE>2026-02-20</DATE><VOUCHERNUMBER>LAST</VOUCHERNUMBER></VOUCHER>
+      <VOUCHER><DATE>1-Mar-2026</DATE><VOUCHERNUMBER>AFTER</VOUCHERNUMBER></VOUCHER>
+      <VOUCHER><VOUCHERNUMBER>UNDATED</VOUCHERNUMBER></VOUCHER>
+    </DATA></BODY></ENVELOPE>`
+
+    const kept = keepVouchersWithinRange(document, {
+      fromDate: "20260201",
+      toDate: "20260228",
+    })
+
+    assert.match(kept, /FIRST/)
+    assert.match(kept, /LAST/)
+    assert.doesNotMatch(kept, /BEFORE/)
+    // A voucher only dated by month name is still read, not dropped by default.
+    assert.doesNotMatch(kept, /AFTER/)
+    // A voucher with no readable date is kept: it cannot be judged out of range.
+    assert.match(kept, /UNDATED/)
   })
 
   it("rejects unsuccessful, unsafe, or empty Tally responses", () => {
     assert.throws(
       () => combineTallyExports(masterReply.replace("<STATUS>1</STATUS>", "<STATUS>0</STATUS>"), voucherReply),
-      /ALL_MASTERS_REJECTED/,
+      /MASTERS_REJECTED/,
     )
     assert.throws(
       () => combineTallyExports(masterReply.replace("<DATA>", "<!DOCTYPE x><DATA>"), voucherReply),
-      /UNSAFE_XML/,
+      /MASTERS_UNSAFE_XML/,
     )
     assert.throws(
       () => combineTallyExports(masterReply.replace("<DATA>", "<DATA></DATA><DATA>"), voucherReply),
-      /ALL_MASTERS_EMPTY/,
+      /MASTERS_EMPTY/,
     )
+    // ERP 9 states errors as a line error or a plain refusal, not as a STATUS.
+    for (const refused of [
+      `<ENVELOPE><HEADER><LINEERROR>Could not set SVTODATE</LINEERROR></HEADER></ENVELOPE>`,
+      `<ENVELOPE><HEADER><RESPONSE>The request cannot be processed.</RESPONSE></HEADER></ENVELOPE>`,
+      `<ENVELOPE><HEADER><STATUS>0</STATUS></HEADER><BODY><DATA>Unknown Request</DATA></BODY></ENVELOPE>`,
+    ]) {
+      assert.throws(() => combineTallyExports(refused, voucherReply), /MASTERS_REJECTED/)
+    }
+  })
+
+  it("accepts a successful ERP 9 export that carries no STATUS element", () => {
+    // The exact shape that made every real export fail: an envelope, the data,
+    // and no STATUS anywhere.
+    const xml = combineTallyExports(stockItemCollectionReply, erp9Reply("<VOUCHER><DATE>20261001</DATE></VOUCHER>"), {
+      company: "Test Pharmacy",
+    })
+    assert.match(xml, /<STOCKITEM NAME="Paracetamol 500mg">/)
+    assert.match(xml, /<OPENINGRATE>200\/Nos<\/OPENINGRATE>/)
+    assert.match(xml, /<VOUCHER>/)
+
+    // A short, silent envelope is not a successful export.
+    assert.throws(
+      () => combineTallyExports(`<ENVELOPE><HEADER></HEADER><BODY></BODY></ENVELOPE>`, voucherReply),
+      /MASTERS_STATUS_MISSING/,
+    )
+    // A large one is: some reports answer with records and no DATA wrapper.
+    const large = `<ENVELOPE><HEADER><VERSION>1</VERSION></HEADER><BODY><LEDGER NAME="Cash">${"<PARENT>Cash-in-Hand</PARENT>".repeat(100)}</LEDGER></BODY></ENVELOPE>`
+    assert.ok(Buffer.byteLength(large) > 2048)
+    assert.match(combineTallyExports(large, voucherReply, { company: "Test Pharmacy" }), /<LEDGER NAME="Cash">/)
+  })
+
+  it("cuts a register read that ran past a mid-month end back to the requested range", async () => {
+    // Tally is asked for February 1–28 because only a month end is honoured,
+    // but this chunk was charged with February 1–15 only, and the portal
+    // refuses a chunk holding a voucher outside its own range.
+    const registerReply = `<ENVELOPE><HEADER><VERSION>1</VERSION></HEADER><BODY><DATA><TALLYMESSAGE>
+      <VOUCHER><DATE>20260210</DATE><VOUCHERNUMBER>IN-RANGE</VOUCHERNUMBER></VOUCHER>
+      <VOUCHER><DATE>20260220</DATE><VOUCHERNUMBER>PAST-THE-END</VOUCHERNUMBER></VOUCHER>
+    </TALLYMESSAGE></DATA></BODY></ENVELOPE>`
+    const tally = tallyStandIn([[/Voucher Register/, registerReply]])
+
+    const xml = await exportTallyCompany(
+      config(),
+      tally,
+      new Date("2026-02-20T00:00:00Z"),
+      { probe: async () => true },
+      { scope: "vouchers", fromDate: "20260201", toDate: "20260215" },
+    )
+
+    assert.match(tally.requests[0], /<SVTODATE>20260228<\/SVTODATE>/)
+    assert.match(xml, /IN-RANGE/)
+    assert.doesNotMatch(xml, /PAST-THE-END/)
+  })
+
+  it("strips the unit from opening rates on the assembled export", async () => {
+    // The collection fixture writes <OPENINGRATE>200/Nos</OPENINGRATE>, the way
+    // this Tally build does. The row parser rejects that suffix, so the export
+    // the bridge hands over must carry the bare number.
+    const xml = await exportTallyCompany(
+      config(),
+      tallyStandIn(),
+      new Date("2026-10-30T00:00:00Z"),
+      { probe: async () => true },
+      { closingOnly: true },
+    )
+
+    assert.match(xml, /<OPENINGRATE>200<\/OPENINGRATE>/)
+    assert.doesNotMatch(xml, /200\/Nos/)
   })
 
   it("identifies the Tally edition from the configured executable", () => {
@@ -296,15 +483,12 @@ describe("Tally export", () => {
     )
   })
 
-  it("requests masters and dated Day Book sequentially and returns a combined XML file", async () => {
-    const requests = []
+  it("requests every master type, then the dated Voucher Register", async () => {
     const now = new Date("2026-10-30T23:30:00.000Z")
+    const tally = tallyStandIn()
     const xml = await exportTallyCompany(
       config({ SYNAPSE_TALLY_COMPANY: "Test Pharmacy" }),
-      async (_url, options) => {
-        requests.push({ body: options.body, redirect: options.redirect })
-        return new Response(requests.length === 1 ? masterReply : pinnedVoucherReply, { status: 200 })
-      },
+      tally,
       now,
       { probe: async () => true },
     )
@@ -313,33 +497,43 @@ describe("Tally export", () => {
       String(now.getMonth() + 1).padStart(2, "0"),
       String(now.getDate()).padStart(2, "0"),
     ].join("")
+    // No month-end clamping needed here: October has 31 days.
+    assert.equal(expectedLocalDate.slice(6), "31")
 
-    assert.equal(requests.length, 2)
-    assert.equal(typeof requests[0].body, "string")
-    assert.match(requests[0].body, /<ID>All Masters<\/ID>/)
-    assert.match(requests[1].body, /<ID>Day Book<\/ID>/)
-    assert.match(requests[0].body, new RegExp(`<SVTODATE>${expectedLocalDate}</SVTODATE>`))
-    assert.match(requests[1].body, new RegExp(`<SVTODATE>${expectedLocalDate}</SVTODATE>`))
-    assert.equal(requests[0].redirect, "error")
+    // Six collections, one company confirmation for the STATUS-less replies,
+    // then one register read — in that order, one request at a time.
+    assert.equal(tally.requests.length, 8)
+    assert.deepEqual(
+      tally.requests.slice(0, 6).map((body) => /<ID>([^<]+)<\/ID>/.exec(body)?.[1]),
+      COLLECTION_TYPES.map((type) => `Synapse ${type}`),
+    )
+    assert.match(tally.requests[6], /<ID>List of Companies<\/ID>/)
+    assert.match(tally.requests[7], /<ID>Voucher Register<\/ID>/)
+    assert.match(tally.requests[7], new RegExp(`<SVTODATE>${expectedLocalDate}</SVTODATE>`))
+    for (const body of tally.requests.slice(0, 6)) {
+      assert.doesNotMatch(body, /SVFROMDATE|SVTODATE/)
+    }
+    assert.equal(tally.calls[0].redirect, "error")
     assert.match(xml, /<COMPANYNAME>Test Pharmacy<\/COMPANYNAME>/)
+    assert.match(xml, /<LEDGER NAME="Cash">/)
     assert.match(xml, /<VOUCHER>/)
   })
 
-  it("does not fetch the Day Book at all for a balances-only cut-over", async () => {
-    const requests = []
+  it("does not fetch the voucher register at all for a balances-only cut-over", async () => {
+    const tally = tallyStandIn()
     const xml = await exportTallyCompany(
       config(),
-      async (_url, options) => {
-        requests.push(options.body)
-        return new Response(masterReply, { status: 200 })
-      },
+      tally,
       new Date("2026-10-30T00:00:00Z"),
       { probe: async () => true },
       { closingOnly: true },
     )
 
-    assert.equal(requests.length, 1)
-    assert.match(requests[0], /<ID>All Masters<\/ID>/)
+    assert.equal(tally.requests.length, 7)
+    for (const body of tally.requests) {
+      assert.doesNotMatch(body, /Voucher Register/)
+    }
+    assert.match(tally.requests[0], /<ID>Synapse Ledger<\/ID>/)
     assert.doesNotMatch(xml, /<VOUCHER>/)
     assert.match(xml, /<LEDGER/)
   })
@@ -358,21 +552,33 @@ describe("Tally export", () => {
     )
   })
 
-  it("refuses a masters response that does not identify its company", async () => {
-    const anonymous = masterReply.replace(
-      "<COMPANY><COMPANYNAME>Test Pharmacy</COMPANYNAME></COMPANY>",
-      "",
-    )
+  it("confirms a company only Tally's open list can identify", async () => {
+    // ERP 9's collections name no company at all, so the pin is confirmed
+    // against the companies Tally has open — and refused when it is not there.
+    const tally = tallyStandIn([
+      [/List of Companies/, companiesReply(["Another Pharmacy"])],
+    ])
     await assert.rejects(
       exportTallyCompany(
         config({ SYNAPSE_TALLY_COMPANY: "Test Pharmacy" }),
-        async () => new Response(anonymous),
+        tally,
         new Date("2026-10-30T00:00:00Z"),
         { probe: async () => true },
         { closingOnly: true },
       ),
       /TALLY_BRIDGE_COMPANY_UNVERIFIED/,
     )
+
+    const open = tallyStandIn()
+    const xml = await exportTallyCompany(
+      config({ SYNAPSE_TALLY_COMPANY: "Test Pharmacy" }),
+      open,
+      new Date("2026-10-30T00:00:00Z"),
+      { probe: async () => true },
+      { closingOnly: true },
+    )
+    assert.equal(open.requests.filter((body) => body.includes("List of Companies")).length, 1)
+    assert.match(xml, /<COMPANYNAME>Test Pharmacy<\/COMPANYNAME>/)
   })
 
   // A refused answer names no company either. Checking the company first would
@@ -380,12 +586,12 @@ describe("Tally export", () => {
   it("reports what Tally refused, not that the company was unverified", async () => {
     const refused = `<ENVELOPE><HEADER><STATUS>0</STATUS></HEADER><BODY></BODY></ENVELOPE>`
     const unsafed = `<!DOCTYPE ENVELOPE SYSTEM "tally.dtd">${refused}`
-    const noStatus = `<ENVELOPE><HEADER></HEADER><BODY><DATA><LEDGER NAME="Cash"/></DATA></BODY></ENVELOPE>`
+    const noStatus = `<ENVELOPE><HEADER></HEADER><BODY></BODY></ENVELOPE>`
 
     for (const [body, expected] of [
-      [refused, /ALL_MASTERS_REJECTED/],
-      [unsafed, /ALL_MASTERS_UNSAFE_XML/],
-      [noStatus, /ALL_MASTERS_STATUS_MISSING/],
+      [refused, /MASTERS_LEDGER_REJECTED/],
+      [unsafed, /MASTERS_LEDGER_UNSAFE_XML/],
+      [noStatus, /MASTERS_LEDGER_STATUS_MISSING/],
     ]) {
       await assert.rejects(
         exportTallyCompany(
@@ -400,12 +606,19 @@ describe("Tally export", () => {
     }
   })
 
-  it("refuses a Day Book that does not identify its company", async () => {
-    let calls = 0
+  it("refuses a voucher reply whose company cannot be confirmed", async () => {
+    // The masters name the company themselves, so the open company list is only
+    // consulted when the register answers without one — and it does not list
+    // the pinned company, so the vouchers cannot be attributed to these books.
+    const tally = tallyStandIn([
+      [/List of Companies/, companiesReply(["Another Pharmacy"])],
+      [/Voucher Register/, voucherReply],
+      [/Synapse /, masterReply],
+    ])
     await assert.rejects(
       exportTallyCompany(
         config({ SYNAPSE_TALLY_COMPANY: "Test Pharmacy" }),
-        async () => new Response(++calls === 1 ? masterReply : voucherReply),
+        tally,
         new Date("2026-10-30T00:00:00Z"),
         { probe: async () => true },
       ),
@@ -437,21 +650,20 @@ describe("Tally export", () => {
     assert.match(xml, /<COMPANYNAME>Test Pharmacy<\/COMPANYNAME>/)
   })
 
-  it("pins both reports to SYNAPSE_TALLY_TO_DATE when it is set", async () => {
-    const requests = []
+  it("pins the voucher register to SYNAPSE_TALLY_TO_DATE when it is set", async () => {
+    const tally = tallyStandIn()
     await exportTallyCompany(
       config({ SYNAPSE_TALLY_TO_DATE: "20260331" }),
-      async (_url, options) => {
-        requests.push({ body: options.body })
-        return new Response(requests.length === 1 ? masterReply : pinnedVoucherReply, { status: 200 })
-      },
+      tally,
       new Date("2026-10-30T12:00:00.000Z"),
       { probe: async () => true },
     )
 
-    assert.equal(requests.length, 2)
-    for (const request of requests) {
-      assert.match(request.body, /<SVTODATE>20260331<\/SVTODATE>/)
+    const registers = tally.requests.filter((body) => body.includes("Voucher Register"))
+    assert.equal(registers.length, 1)
+    assert.match(registers[0], /<SVTODATE>20260331<\/SVTODATE>/)
+    for (const body of tally.requests.filter((entry) => entry.includes("Synapse "))) {
+      assert.doesNotMatch(body, /SVTODATE/)
     }
   })
 
@@ -512,14 +724,8 @@ describe("Tally export", () => {
     const before = timers()
     const now = new Date("2026-10-30T12:00:00.000Z")
     const lifecycle = { probe: async () => true }
-    let call = 0
 
-    await exportTallyCompany(
-      config(),
-      async () => new Response(call++ === 0 ? masterReply : pinnedVoucherReply, { status: 200 }),
-      now,
-      lifecycle,
-    )
+    await exportTallyCompany(config(), tallyStandIn(), now, lifecycle)
     await assert.rejects(
       () => exportTallyCompany(config(), async () => new Response("no", { status: 503 }), now, lifecycle),
       /TALLY_BRIDGE_TALLY_HTTP_503/,
@@ -555,12 +761,17 @@ describe("Tally export", () => {
         SYNAPSE_TALLY_TARGET_HOST: "127.0.0.1",
         SYNAPSE_TALLY_COMPANY: "Test Pharmacy",
       })
-      const masterReply = ${JSON.stringify(masterReply)}
-      const voucherReply = ${JSON.stringify(pinnedVoucherReply)}
-      let call = 0
+      const masterReply = ${JSON.stringify(ledgerCollectionReply)}
+      const voucherReply = ${JSON.stringify(voucherReply)}
+      const companiesReply = ${JSON.stringify(companiesReply())}
+      const replyFor = (body) => body.includes("List of Companies")
+        ? companiesReply
+        : body.includes("Voucher Register")
+          ? voucherReply
+          : masterReply
       await exportTallyCompany(
         config,
-        async () => new Response(call++ === 0 ? masterReply : voucherReply, { status: 200 }),
+        async (_url, options) => new Response(replyFor(options.body), { status: 200 }),
         new Date("2026-10-30T12:00:00.000Z"),
         { probe: async () => true },
       )
@@ -653,15 +864,22 @@ describe("packaged export metadata", () => {
     const masters = `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA><TALLYMESSAGE><COMPANY><COMPANYNAME>${escaped}</COMPANYNAME></COMPANY><LEDGER NAME="Cash"/></TALLYMESSAGE></DATA></BODY></ENVELOPE>`
     const vouchers = `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA><TALLYMESSAGE><COMPANY><COMPANYNAME>${escaped}</COMPANYNAME></COMPANY><VOUCHER><DATE>20261001</DATE></VOUCHER></TALLYMESSAGE></DATA></BODY></ENVELOPE>`
 
-    let call = 0
+    // One of the collection replies names the company — some builds do — and
+    // the voucher reply names it too. Nothing may ask Tally a second question
+    // to confirm what the replies already stated.
+    const tally = tallyStandIn([
+      [/Synapse Ledger/, masters],
+      [/Voucher Register/, vouchers],
+    ])
     const xml = await exportTallyCompany(
       config({ SYNAPSE_TALLY_COMPANY: "Nakawa & Sons" }),
-      async () => new Response(call++ === 0 ? masters : vouchers, { status: 200 }),
+      tally,
       new Date("2026-10-30T00:00:00Z"),
       { probe: async () => true },
     )
 
-    assert.equal(call, 2)
+    assert.equal(tally.requests.length, 7)
+    assert.equal(tally.requests.filter((body) => body.includes("List of Companies")).length, 0)
     // Each report names the company once and no synthetic company is added.
     assert.equal(
       packagedBody(xml).match(/<COMPANYNAME>Nakawa &amp; Sons<\/COMPANYNAME>/g)?.length,
@@ -684,7 +902,7 @@ describe("packaged export metadata", () => {
     // The bridge asks for 1 Apr – 31 Oct 2026 but Tally answers for 2025. The
     // packaged file must carry the source's own dates: a requested period is
     // not evidence of what the source returned.
-    const request = buildTallyExportRequest("All Masters", {
+    const request = buildTallyExportRequest("Voucher Register", {
       company: "Test Pharmacy",
       fromDate: "20260401",
       toDate: "20261031",
@@ -725,25 +943,22 @@ describe("packaged export metadata", () => {
       SYNAPSE_TALLY_FROM_DATE: "20260401",
       SYNAPSE_TALLY_TO_DATE: "20261031",
     })
-    const requests = []
+    const tally = tallyStandIn()
 
     const xml = await exportTallyCompany(
       requested,
-      async (_url, options) => {
-        requests.push(options.body)
-        return new Response(
-          /<ID>All Masters<\/ID>/.test(options.body) ? masterReply : pinnedVoucherReply,
-          { status: 200 },
-        )
-      },
+      tally,
       new Date("2026-10-30T00:00:00Z"),
       { probe: async () => true },
     )
 
-    assert.equal(requests.length, 2)
-    for (const body of requests) {
-      assert.match(body, /<SVFROMDATE>20260401<\/SVFROMDATE>/)
-      assert.match(body, /<SVTODATE>20261031<\/SVTODATE>/)
+    const registers = tally.requests.filter((body) => body.includes("Voucher Register"))
+    assert.equal(registers.length, 1)
+    assert.match(registers[0], /<SVFROMDATE>20260401<\/SVFROMDATE>/)
+    assert.match(registers[0], /<SVTODATE>20261031<\/SVTODATE>/)
+    // The master collections are undated, so nothing in them could be carried.
+    for (const body of tally.requests.filter((entry) => entry.includes("Synapse "))) {
+      assert.doesNotMatch(body, /SVFROMDATE|SVTODATE/)
     }
     assert.doesNotMatch(packagedBody(xml), /SVFROMDATE|SVTODATE/)
   })
@@ -772,17 +987,19 @@ describe("packaged export metadata", () => {
     assert.doesNotMatch(packagedBody(xml), /<VOUCHER>/)
   })
 
-  it("still refuses a response that names no company at all", async () => {
+  it("still refuses a response whose company cannot be confirmed", async () => {
     // The wrapper only re-emits what it is told to pin; it must not paper over
     // a response that failed the company check.
     const unverified = envelopeOnlyMasterReply.replace(
       "<SVCURRENTCOMPANY>Test Pharmacy</SVCURRENTCOMPANY>",
       "",
     )
+    const tally = tallyStandIn([
+      [/List of Companies/, companiesReply(["Another Pharmacy"])],
+      [/.*/, unverified],
+    ])
     await assert.rejects(
-      exportTallyCompany(config(), async () => new Response(unverified, { status: 200 }), new Date(), {
-        probe: async () => true,
-      }),
+      exportTallyCompany(config(), tally, new Date(), { probe: async () => true }),
       /TALLY_BRIDGE_COMPANY_UNVERIFIED/,
     )
   })
@@ -790,11 +1007,9 @@ describe("packaged export metadata", () => {
 
 describe("local HTTP bridge", () => {
   it("only serves the exact portal origin and a valid token", async () => {
-    const calls = []
-    const base = await startServer(async (_url, options) => {
-      calls.push(options.body)
-      return new Response(calls.length === 1 ? masterReply : pinnedVoucherReply, { status: 200 })
-    })
+    const tally = tallyStandIn()
+    const calls = tally.requests
+    const base = await startServer(tally)
 
     const wrongOrigin = await fetch(`${base}/api/tally/export`, {
       method: "POST",
@@ -815,18 +1030,12 @@ describe("local HTTP bridge", () => {
     assert.equal(accepted.status, 200)
     assert.equal(accepted.headers.get("access-control-allow-origin"), ORIGIN)
     assert.match(await accepted.text(), /<VOUCHER>/)
-    assert.equal(calls.length, 2)
+    assert.equal(calls.length, 8)
   })
 
   it("sends the period each request states and echoes it back", async () => {
-    const requests = []
-    const base = await startServer(async (_url, options) => {
-      requests.push(options.body)
-      return new Response(
-        /<ID>All Masters<\/ID>/.test(options.body) ? masterReply : pinnedVoucherReply,
-        { status: 200 },
-      )
-    })
+    const tally = tallyStandIn()
+    const base = await startServer(tally)
 
     const response = await fetch(`${base}/api/tally/export?from=2026-01-01&to=2026-01-31`, {
       method: "POST",
@@ -834,11 +1043,10 @@ describe("local HTTP bridge", () => {
     })
 
     assert.equal(response.status, 200)
-    assert.equal(requests.length, 2)
-    for (const body of requests) {
-      assert.match(body, /<SVFROMDATE>20260101<\/SVFROMDATE>/)
-      assert.match(body, /<SVTODATE>20260131<\/SVTODATE>/)
-    }
+    const registers = tally.requests.filter((body) => body.includes("Voucher Register"))
+    assert.equal(registers.length, 1)
+    assert.match(registers[0], /<SVFROMDATE>20260101<\/SVFROMDATE>/)
+    assert.match(registers[0], /<SVTODATE>20260131<\/SVTODATE>/)
     // The portal compares these against what it asked for before accepting
     // the payload; an export with no echo cannot be tied to the request.
     assert.equal(response.headers.get("x-synapse-tally-from"), "20260101")
@@ -848,14 +1056,8 @@ describe("local HTTP bridge", () => {
   })
 
   it("uses the request's start date even when the process was launched with another", async () => {
-    const requests = []
-    const base = await startServer(async (_url, options) => {
-      requests.push(options.body)
-      return new Response(
-        /<ID>All Masters<\/ID>/.test(options.body) ? masterReply : pinnedVoucherReply,
-        { status: 200 },
-      )
-    })
+    const tally = tallyStandIn()
+    const base = await startServer(tally)
 
     const response = await fetch(`${base}/api/tally/export?from=20260401&to=20261031`, {
       method: "POST",
@@ -863,19 +1065,14 @@ describe("local HTTP bridge", () => {
     })
 
     assert.equal(response.status, 200)
-    assert.match(requests[0], /<SVFROMDATE>20260401<\/SVFROMDATE>/)
-    assert.doesNotMatch(requests[0], /<SVFROMDATE>19000101<\/SVFROMDATE>/)
+    const register = tally.requests.find((body) => body.includes("Voucher Register"))
+    assert.match(register, /<SVFROMDATE>20260401<\/SVFROMDATE>/)
+    assert.doesNotMatch(register, /<SVFROMDATE>19000101<\/SVFROMDATE>/)
   })
 
   it("uses the request's end date even when the process was launched with another", async () => {
-    const requests = []
-    const base = await startServer(async (_url, options) => {
-      requests.push(options.body)
-      return new Response(
-        /<ID>All Masters<\/ID>/.test(options.body) ? masterReply : pinnedVoucherReply,
-        { status: 200 },
-      )
-    })
+    const tally = tallyStandIn()
+    const base = await startServer(tally)
 
     const response = await fetch(`${base}/api/tally/export?from=20260401&to=20261231`, {
       method: "POST",
@@ -883,21 +1080,16 @@ describe("local HTTP bridge", () => {
     })
 
     assert.equal(response.status, 200)
-    assert.match(requests[1], /<SVTODATE>20261231<\/SVTODATE>/)
+    const register = tally.requests.find((body) => body.includes("Voucher Register"))
+    assert.match(register, /<SVTODATE>20261231<\/SVTODATE>/)
     assert.equal(response.headers.get("x-synapse-tally-to"), "20261231")
   })
 
   it("does not silently inherit the launch period when a request states none", async () => {
     // A request with no period still exports the launch default, but the echo
     // makes that visible so the portal can refuse a range nobody asked for.
-    const requests = []
-    const base = await startServer(async (_url, options) => {
-      requests.push(options.body)
-      return new Response(
-        /<ID>All Masters<\/ID>/.test(options.body) ? masterReply : pinnedVoucherReply,
-        { status: 200 },
-      )
-    })
+    const tally = tallyStandIn()
+    const base = await startServer(tally)
 
     const response = await fetch(`${base}/api/tally/export`, {
       method: "POST",
@@ -905,7 +1097,8 @@ describe("local HTTP bridge", () => {
     })
 
     assert.equal(response.status, 200)
-    assert.match(requests[0], /<SVFROMDATE>19000101<\/SVFROMDATE>/)
+    const register = tally.requests.find((body) => body.includes("Voucher Register"))
+    assert.match(register, /<SVFROMDATE>19000101<\/SVFROMDATE>/)
     assert.equal(response.headers.get("x-synapse-tally-from"), "19000101")
   })
 
@@ -950,14 +1143,9 @@ describe("local HTTP bridge", () => {
   })
 
   it("keeps the company pinned when a request names it", async () => {
-    const calls = []
-    const base = await startServer(async (_url, options) => {
-      calls.push(options.body)
-      return new Response(
-        /<ID>All Masters<\/ID>/.test(options.body) ? masterReply : pinnedVoucherReply,
-        { status: 200 },
-      )
-    })
+    const tally = tallyStandIn()
+    const base = await startServer(tally)
+    const calls = tally.requests
 
     const accepted = await fetch(
       `${base}/api/tally/export?from=20260401&to=20261031&company=test%20pharmacy`,
@@ -972,19 +1160,14 @@ describe("local HTTP bridge", () => {
     )
     assert.equal(refused.status, 422)
     assert.deepEqual(await refused.json(), { error: "TALLY_BRIDGE_COMPANY_MISMATCH" })
-    // Two calls from the accepted export; the refused one reached Tally zero times.
-    assert.equal(calls.length, 2)
+    // Eight calls from the accepted export; the refused one reached Tally zero times.
+    assert.equal(calls.length, 8)
   })
 
   it("reads masters once and one voucher range per request when asked", async () => {
-    const calls = []
-    const base = await startServer(async (_url, options) => {
-      calls.push(options.body)
-      return new Response(
-        /<ID>All Masters<\/ID>/.test(options.body) ? masterReply : pinnedVoucherReply,
-        { status: 200 },
-      )
-    })
+    const tally = tallyStandIn()
+    const base = await startServer(tally)
+    const calls = tally.requests
 
     const masters = await fetch(
       `${base}/api/tally/export?scope=masters&from=20260101&to=20260131`,
@@ -992,7 +1175,9 @@ describe("local HTTP bridge", () => {
     )
     assert.equal(masters.status, 200)
     assert.equal(masters.headers.get("x-synapse-tally-scope"), "masters")
-    assert.equal(calls.length, 1)
+    // Six master collections and one company confirmation; no voucher read.
+    assert.equal(calls.length, 7)
+    assert.equal(calls.filter((body) => body.includes("Voucher Register")).length, 0)
     assert.doesNotMatch(await masters.text(), /<VOUCHER>/)
 
     const vouchers = await fetch(
@@ -1002,9 +1187,12 @@ describe("local HTTP bridge", () => {
     assert.equal(vouchers.status, 200)
     assert.equal(vouchers.headers.get("x-synapse-tally-scope"), "vouchers")
     assert.equal(vouchers.headers.get("x-synapse-tally-from"), "20260201")
-    assert.equal(calls.length, 2)
-    assert.match(calls[1], /<ID>Day Book<\/ID>/)
-    assert.doesNotMatch(calls[1], /<ID>All Masters<\/ID>/)
+    // One register read and one company confirmation; the masters were not
+    // fetched again.
+    assert.equal(calls.length, 9)
+    assert.match(calls[7], /<ID>Voucher Register<\/ID>/)
+    assert.equal(calls[8].includes("List of Companies"), true)
+    assert.doesNotMatch(calls[7], /Synapse /)
     assert.match(await vouchers.text(), /<VOUCHER>/)
   })
 
@@ -1153,11 +1341,8 @@ describe("local HTTP bridge", () => {
   })
 
   it("reads only the masters when the page asks for closing balances", async () => {
-    let calls = 0
-    const base = await startServer(async () => {
-      calls += 1
-      return new Response(calls === 1 ? masterReply : pinnedVoucherReply, { status: 200 })
-    })
+    const tally = tallyStandIn()
+    const base = await startServer(tally)
 
     const response = await fetch(`${base}/api/tally/export?mode=closing`, {
       method: "POST",
@@ -1165,7 +1350,8 @@ describe("local HTTP bridge", () => {
     })
 
     assert.equal(response.status, 200)
-    assert.equal(calls, 1)
+    assert.equal(tally.requests.length, 7)
+    assert.equal(tally.requests.filter((body) => body.includes("Voucher Register")).length, 0)
     assert.doesNotMatch(await response.text(), /<VOUCHER>/)
   })
 
@@ -1339,9 +1525,9 @@ describe("connector security — Tally stays read-only", () => {
   it("issues only read-only Tally requests through every interface", async () => {
     const requests = []
     const base = await startServer(async (url, init) => {
-      requests.push({ url: String(url), body: String(init?.body ?? "") })
-      if (/List of Companies/.test(String(init?.body ?? ""))) return new Response(companyReply)
-      return new Response(/Day Book/.test(String(init?.body ?? "")) ? pinnedVoucherReply : masterReply)
+      const body = String(init?.body ?? "")
+      requests.push({ url: String(url), body })
+      return new Response(replyForRequest(body), { status: 200 })
     })
 
     const calls = [
@@ -1360,29 +1546,36 @@ describe("connector security — Tally stays read-only", () => {
       assert.ok(response.status < 400, `${method} ${path} -> ${response.status}: ${response.body}`)
     }
 
-    // Only the three documented read requests may ever be sent to Tally.
+    // Only the documented read requests may ever be sent to Tally: the voucher
+    // register, the company list, and one collection per master type.
+    const allowedIds = [
+      ...COLLECTION_TYPES.map((type) => `Synapse ${type}`),
+      "Voucher Register",
+      "List of Companies",
+    ]
     const reports = new Set()
     for (const request of requests) {
       if (!request.body) continue
       assert.match(request.body, /<TALLYREQUEST>Export<\/TALLYREQUEST>/, request.body)
       assert.match(request.body, /<TYPE>(DATA|Collection)<\/TYPE>/, request.body)
       const id = /<ID>([^<]+)<\/ID>/.exec(request.body)?.[1]
-      assert.ok(["All Masters", "Day Book", "List of Companies"].includes(id), `report: ${id}`)
+      assert.ok(allowedIds.includes(id), `report: ${id}`)
       reports.add(id)
       for (const [pattern, label] of writeMarkers) {
         assert.equal(pattern.test(request.body), false, `${label}: ${request.body}`)
       }
     }
     // Every interface was actually exercised, so the assertions above covered
-    // all three request builders rather than a subset of them.
-    assert.deepEqual([...reports].sort(), ["All Masters", "Day Book", "List of Companies"])
+    // every request builder rather than a subset of them.
+    assert.deepEqual([...reports].sort(), allowedIds.sort())
   })
 
   it("cannot be steered to another report or a write action by the query string", async () => {
     const bodies = []
     const base = await startServer(async (_url, init) => {
-      bodies.push(String(init?.body ?? ""))
-      return new Response(/Day Book/.test(String(init?.body ?? "")) ? pinnedVoucherReply : masterReply)
+      const body = String(init?.body ?? "")
+      bodies.push(body)
+      return new Response(replyForRequest(body), { status: 200 })
     })
 
     const response = await rawFetch(
@@ -1395,18 +1588,23 @@ describe("connector security — Tally stays read-only", () => {
     )
 
     assert.equal(response.status, 200)
-    assert.equal(bodies.length, 1)
-    assert.match(bodies[0], /<ID>All Masters<\/ID>/)
-    for (const [pattern, label] of writeMarkers) {
-      assert.equal(pattern.test(bodies[0]), false, label)
+    // Six collections and one company confirmation; nothing read twice.
+    assert.equal(bodies.length, 7)
+    assert.match(bodies[0], /<ID>Synapse Ledger<\/ID>/)
+    for (const body of bodies) {
+      assert.doesNotMatch(body, /Import|All Masters|Day Book/)
+      for (const [pattern, label] of writeMarkers) {
+        assert.equal(pattern.test(body), false, label)
+      }
     }
   })
 
   it("never posts anywhere except the configured Tally origin", async () => {
     const requests = []
     const base = await startServer(async (url, init) => {
-      requests.push({ url: String(url), body: String(init?.body ?? "") })
-      return new Response(/List of Companies/.test(String(init?.body ?? "")) ? companyReply : masterReply)
+      const body = String(init?.body ?? "")
+      requests.push({ url: String(url), body })
+      return new Response(replyForRequest(body), { status: 200 })
     })
 
     for (const [method, path] of [

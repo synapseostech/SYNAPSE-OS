@@ -291,7 +291,7 @@ A `404` here means the running connector predates this endpoint — an older
 ### One guarded export, by hand, before using the page
 
 This is the single most informative step of the whole run: it proves whether
-Tally answers a dated Day Book request at all, and what it says about the range.
+Tally answers a dated voucher request at all, and what it says about the range.
 It writes nothing.
 
 ```powershell
@@ -396,7 +396,8 @@ first thing to compare, character for character.
 
 Use the smallest thing that proves the path: **one company**, **one calendar
 month**, opening mode. A range of 31 days splits into one voucher chunk, so the
-whole run is exactly two requests to Tally — `masters`, then one dated Day Book.
+whole run is exactly two Tally reads — one `masters`, then one dated voucher
+export — behind the six collection requests that make up the masters document.
 
 1. On the page, choose **Opening balances and history**.
 2. Set the period to `2026-10-01` – `2026-10-31` (or any month you can verify
@@ -419,7 +420,7 @@ What happens, exactly, from
 | 4 | `POST http://127.0.0.1:17890/api/tally/export?mode=opening&scope=masters` | Tally's masters |
 | 5 | `PUT <signed url>` with the XML | the chunk reaches storage |
 | 6 | `POST …/extract` `{action:"chunk", chunkId, path}` | the **server** parses it and records the result |
-| 7–9 | steps 3–6 again for `vouchers:2026-10-01:2026-10-31` | Tally's Day Book for that month |
+| 7–9 | steps 3–6 again for `vouchers:2026-10-01:2026-10-31` | Tally's voucher register for that month |
 | 10 | `POST …/extract` `{action:"finish"}` | merges the chunks, stages the plan, session moves to `review` |
 
 A range Tally returns as too large is halved and read again; a failed range is
@@ -603,8 +604,8 @@ A run that completes §7 proves:
 - the bridge starts on Windows under Node 22 with the declared configuration;
 - the browser can reach it on loopback, through the private-network preflight,
   with the origin and token gates satisfied;
-- Tally accepts a dated `All Masters` and `Day Book` request and answers in XML
-  the bridge can parse;
+- Tally accepts the master collections and a dated voucher request, and answers
+  in XML the bridge can parse;
 - the server parses every chunk, records it against the range it was asked for,
   and merges them into a staged plan;
 - the portal's copy-command → check → connect → review path works end to end;

@@ -321,7 +321,6 @@ async function checkPlanner(planner) {
 async function rehearseHappyPath() {
   const exportCall = (port, token, params) =>
     call({ port, method: "POST", path: exportPath(params), token })
-  let total = 0
   await withBridge({ mode: "ok" }, async ({ port, token }) => {
     const status = await call({ port, path: "/api/tally/status", token })
     await check("status reports the bridge and Tally reachable", async () => {
@@ -375,8 +374,15 @@ async function rehearseHappyPath() {
       return `${(masters.body.match(/<LEDGER\b/g) ?? []).length} ledgers, ${(masters.body.match(/<STOCKITEM\b/g) ?? []).length} stock items`
     })
 
+    const parser = await loadRowParser()
+    if (!parser) {
+      record("row parser", false, "could not load packages/db/src/tally-xml-rows.ts")
+      return
+    }
+
     const whole = await exportCall(port, token, { scope: "vouchers" })
-    const wholeCount = voucherCount(whole.body)
+    const wholeDocument = parser.parseTallyXmlRows(whole.body, "rehearsal-vouchers.xml")
+    const wholeCount = wholeDocument.vouchers.length
     await check("the whole-period voucher export reads every voucher", async () => {
       expectEqual(whole.status, 200, "status code")
       expectEqual(whole.headers["x-synapse-tally-scope"], "vouchers", "scope echo")
@@ -395,26 +401,61 @@ async function rehearseHappyPath() {
       if (response.status !== 200) fail(`chunk ${index + 1} (${range.from}..${range.to}) returned ${response.status}: ${refusalCode(response)}`)
       expectEqual(response.headers["x-synapse-tally-from"], range.from.replaceAll("-", ""), `chunk ${index + 1} from echo`)
       expectEqual(response.headers["x-synapse-tally-to"], range.to.replaceAll("-", ""), `chunk ${index + 1} to echo`)
-      walked.push({ range, xml: response.body, count: voucherCount(response.body) })
+      const document = parser.parseTallyXmlRows(response.body, `rehearsal-chunk-${index + 1}.xml`)
+      // The portal refuses a chunk holding a voucher outside the range it was
+      // charged with (`TALLY_CHUNK_DATES_OUTSIDE`), so the bridge must have cut
+      // back whatever the widened read brought in.
+      const outside = document.vouchers.filter(
+        (voucher) =>
+          voucher.date && (voucher.date < range.from || voucher.date > range.to),
+      )
+      if (outside.length > 0) {
+        fail(`chunk ${index + 1} (${range.from}..${range.to}) carried ${outside.length} voucher(s) outside its range: ${outside.map((voucher) => voucher.date).join(", ")}`)
+      }
+      walked.push({ range, vouchers: document.vouchers })
     }
-    total = walked.reduce((sum, chunk) => sum + chunk.count, 0)
-    await check("walking the chunks reads the whole period exactly once", async () => {
-      expectEqual(total, wholeCount, `vouchers across chunks vs one read (${walked.map((chunk) => chunk.count).join(" + ")})`)
-      return `${walked.map((chunk) => chunk.count).join(" + ")} = ${total}`
+
+    // Coverage is proven on Tally's own identifiers: the merged set of chunk
+    // vouchers must equal the whole-period read. Adding the chunk counts up
+    // would not prove it, because a retried or re-read range may repeat one.
+    await check("merging the chunk reads covers the period exactly once", async () => {
+      const key = (voucher) => {
+        const guid = voucher.guid?.trim()
+        if (guid) return `guid:${guid.toLowerCase()}`
+        const remote = voucher.remoteId?.trim()
+        if (remote) return `remote:${remote.toLowerCase()}`
+        const number = voucher.number?.trim()
+        const date = voucher.date?.trim()
+        return number && date ? `number:${number.toLowerCase()}:${date}` : undefined
+      }
+      const wholeKeys = new Set(wholeDocument.vouchers.map(key).filter(Boolean))
+      const merged = new Map()
+      let keyless = 0
+      for (const chunk of walked) {
+        for (const voucher of chunk.vouchers) {
+          const voucherKey = key(voucher)
+          if (!voucherKey) {
+            keyless += 1
+            continue
+          }
+          merged.set(voucherKey, (merged.get(voucherKey) ?? 0) + 1)
+        }
+      }
+      if (keyless > 0) fail(`${keyless} chunk voucher(s) carry no identifier, so a repeat cannot be told from a new record`)
+      const missing = [...wholeKeys].filter((voucherKey) => !merged.has(voucherKey))
+      if (missing.length > 0) fail(`${missing.length} voucher(s) from the whole-period read were in no chunk: ${missing.join(", ")}`)
+      const extra = [...merged.keys()].filter((voucherKey) => !wholeKeys.has(voucherKey))
+      if (extra.length > 0) fail(`${extra.length} voucher(s) outside the whole-period read arrived from a chunk: ${extra.join(", ")}`)
+      const repeats = [...merged.values()].reduce((sum, count) => sum + count - 1, 0)
+      return `${merged.size} unique from ${walked.map((chunk) => chunk.vouchers.length).join(" + ")}, ${repeats} repeat(s)`
     })
 
-    const parser = await loadRowParser()
-    if (!parser) {
-      record("row parser", false, "could not load packages/db/src/tally-xml-rows.ts")
-      return
-    }
     await check("the row parser reads the same records the bridge returned", async () => {
-      const document = parser.parseTallyXmlRows(whole.body, "rehearsal-vouchers.xml")
-      expectEqual(document.vouchers.length, wholeCount, "parsed vouchers")
-      expectEqual(document.company, COMPANY, "parsed company")
-      const ledgerLines = document.vouchers.reduce((sum, voucher) => sum + voucher.ledgerLines.length, 0)
-      if (ledgerLines < document.vouchers.length) fail("a voucher parsed with no ledger lines")
-      return `${document.vouchers.length} vouchers, ${ledgerLines} ledger lines, ${document.warnings.length} warnings`
+      expectEqual(voucherCount(whole.body), wholeDocument.vouchers.length, "vouchers in the XML vs parsed")
+      expectEqual(wholeDocument.company, COMPANY, "parsed company")
+      const ledgerLines = wholeDocument.vouchers.reduce((sum, voucher) => sum + voucher.ledgerLines.length, 0)
+      if (ledgerLines < wholeDocument.vouchers.length) fail("a voucher parsed with no ledger lines")
+      return `${wholeDocument.vouchers.length} vouchers, ${ledgerLines} ledger lines, ${wholeDocument.warnings.length} warnings`
     })
 
     await check("the parser reads the masters export", async () => {
@@ -422,8 +463,13 @@ async function rehearseHappyPath() {
       expectEqual(document.company, COMPANY, "parsed company")
       expectEqual(document.ledgers.length, 7, "parsed ledgers")
       expectEqual(document.stockItems.length, 3, "parsed stock items")
-      expectEqual(document.currency, "UGX", "parsed currency")
-      return `${document.ledgers.length} ledgers, ${document.stockItems.length} stock items`
+      // ERP 9 writes the rate as `200/Nos`; left as-is the parser rejects it and
+      // the product is priced from its opening value instead.
+      const priced = document.stockItems.filter(
+        (item) => typeof item.openingRate === "number" && item.openingRate > 0,
+      )
+      expectEqual(priced.length, document.stockItems.length, "stock items with a positive opening rate")
+      return `${document.ledgers.length} ledgers, ${document.stockItems.length} stock items priced from their rate`
     })
   })
 }
@@ -431,27 +477,27 @@ async function rehearseHappyPath() {
 const FAULTS = [
   {
     mode: "reject",
-    expect: "TALLY_BRIDGE_ALL_MASTERS_REJECTED",
+    expect: "TALLY_BRIDGE_MASTERS_LEDGER_REJECTED",
     why: "Tally answered STATUS 0",
   },
   {
     mode: "status-missing",
-    expect: "TALLY_BRIDGE_ALL_MASTERS_STATUS_MISSING",
-    why: "the answer carried no STATUS element",
+    expect: "TALLY_BRIDGE_MASTERS_LEDGER_STATUS_MISSING",
+    why: "the answer carried no STATUS element and said nothing",
   },
   {
     mode: "empty",
-    expect: "TALLY_BRIDGE_ALL_MASTERS_EMPTY",
-    why: "the answer named its company but carried no rows",
+    expect: "TALLY_BRIDGE_MASTERS_EMPTY",
+    why: "the answer carried no rows for any master type",
   },
   {
     mode: "no-company",
     expect: "TALLY_BRIDGE_COMPANY_UNVERIFIED",
-    why: "the answer named no company, so it could be another business's books",
+    why: "the answer named no company and the pinned company was not open",
   },
   {
     mode: "unsafe",
-    expect: "TALLY_BRIDGE_ALL_MASTERS_UNSAFE_XML",
+    expect: "TALLY_BRIDGE_MASTERS_LEDGER_UNSAFE_XML",
     why: "the answer carried a DOCTYPE",
   },
   {

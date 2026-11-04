@@ -13,7 +13,9 @@ until an authorised operator commits it.
 
 The pharmacy portal imports a Tally XML export, or the provided XLSX/legacy XLS/CSV templates,
 through a reviewed and resumable cut-over flow. A local Windows bridge now reads
-Tally's `All Masters` and `Day Book` XML reports over HTTP and sends their
+Tally's masters — through per-type TDL collections rather than the `All Masters`
+report, which answers with an empty envelope on the build the pharmacy runs —
+and its vouchers through the `Voucher Register`, over HTTP, and sends their
 combined response through the same staged upload and preview. It never writes
 to Tally or directly to Synapse domain tables.
 
@@ -33,8 +35,9 @@ absolute balance.
 
 The browser cannot read a user's local Tally data directory. Tally's company
 files are application-managed, so the supported full-history route is to ask
-Tally itself for `All Masters` and `Day Book` through its local XML/HTTP
-interface, or to prepare the supplied templates. Do not copy or parse Tally's
+Tally itself for its masters and its vouchers — collections and the
+`Voucher Register` — through its local XML/HTTP interface, or to prepare the
+supplied templates. Do not copy or parse Tally's
 raw company files directly. The migration covers the data represented by the
 supported reports and Synapse templates, not every possible Tally module.
 
@@ -166,8 +169,9 @@ once, in
    retry behavior. Do not use a live tenant for this test.
 4. Confirm the cut-over lock migration is present in the target database and
    verify that a second session and concurrent apply request are rejected.
-5. Expand extraction beyond the standard `All Masters` and `Day Book` reports
-   where the pharmacy needs additional fields or historical stock detail. Tally
+5. Expand extraction beyond the standard master collections and the `Voucher
+   Register` where the pharmacy needs additional fields or historical stock
+   detail. Tally
    editions and configurations can return different fields. Carrying Tally's
    non-posting documents — orders, delivery and receipt notes, rejections,
    stock journals, physical stock — is designed, not built, in

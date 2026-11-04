@@ -382,7 +382,7 @@ compatibility check (see §13).
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/api/tally/export` | `POST` | read `All Masters` and/or `Day Book` |
+| `/api/tally/export` | `POST` | read the master collections and/or the `Voucher Register` |
 | `/api/tally/status` | `GET` | reachability and configured target only |
 | `/api/tally/companies` | `GET` | list open Tally companies |
 | `/api/tally/preflight` | `GET` | run the prerequisite checks |
@@ -393,7 +393,8 @@ and the body is never forwarded, so the bridge is not a general-purpose local
 proxy. Query parameters other than the documented ones (`from`, `to`,
 `company`, `scope`, `mode`) have no effect: a request carrying
 `report=Import Data&id=Import Data&action=create` still produces
-`<ID>All Masters</ID>`.
+`<ID>Synapse Ledger</ID>` (the first master collection), never an import
+document.
 
 **Static.** The connector identifies itself with
 `TALLY_CONNECTOR_VERSION` and `TALLY_BRIDGE_CONTRACT_VERSION`; the portal
@@ -405,13 +406,14 @@ fails closed. **Automated test** (portal-side contract tests).
 
 ## 14. Tally read-only guarantees
 
-**Static — the actual requests.** The connector can issue exactly three Tally
-documents:
+**Static — the actual requests.** The connector can issue exactly three kinds of
+Tally document: the voucher report, a named set of master collections, and the
+company list.
 
-| Report | Envelope |
+| Document | Envelope |
 |---|---|
-| `All Masters` | `<TALLYREQUEST>Export</TALLYREQUEST><TYPE>DATA</TYPE>` |
-| `Day Book` | `<TALLYREQUEST>Export</TALLYREQUEST><TYPE>DATA</TYPE>` |
+| `Voucher Register` | `<TALLYREQUEST>Export</TALLYREQUEST><TYPE>DATA</TYPE>` |
+| `Synapse Ledger`, `Synapse Group`, `Synapse StockItem`, `Synapse StockGroup`, `Synapse Unit`, `Synapse Godown` | `<TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE>` |
 | `List of Companies` | `<TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE>` |
 
 There is no code path that builds an `Import`, sets `ISMODIFY` to `Yes`, sends
