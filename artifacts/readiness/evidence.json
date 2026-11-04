@@ -1,11 +1,11 @@
 {
-  "timestamp": "2026-11-03T07:50:01.277Z",
+  "timestamp": "2026-11-04T17:15:52.603Z",
   "git": {
-    "branch": "feat/tally-bridge-command",
-    "head": "ad50d7a0392abaf637375ba9e311ad641a1e4e26"
+    "branch": "main",
+    "head": "03d5cfb1c55d7089401e8c9f10fb11937f35d45a"
   },
   "migrationCount": {
-    "count": 211,
+    "count": 212,
     "exitCode": 0
   },
   "suites": {
@@ -19,7 +19,7 @@
       "tests": 41,
       "pass": 41,
       "fail": 0,
-      "banner": "SECURITY GATES PASS cutoff=20261003160000 migrations=24 failures=0",
+      "banner": "SECURITY GATES PASS cutoff=20261003160000 migrations=25 failures=0",
       "exitCode": 0
     },
     "hardening": {
@@ -50,7 +50,7 @@
     }
   },
   "dbAcl": {
-    "definerFunctions": 86,
+    "definerFunctions": 87,
     "publicGrants": 0,
     "possibleImplicitPublic": 28,
     "liveCheck": "SKIPPED_NO_DATABASE_ACL_URL",

@@ -198,18 +198,18 @@ This section records what happened after §10 was written, because §5, §6, B4,
 
 <!-- evidence:begin -->
 source: artifacts/readiness/evidence.json
-timestamp: 2026-11-03T07:50:01.277Z
-git.branch: feat/tally-bridge-command
-git.head: ad50d7a0392abaf637375ba9e311ad641a1e4e26
-migrationCount: 211
+timestamp: 2026-11-04T17:15:52.603Z
+git.branch: main
+git.head: 03d5cfb1c55d7089401e8c9f10fb11937f35d45a
+migrationCount: 212
 suites.rls-tenant-isolation.tests: 21
-suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=24 failures=0
+suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=25 failures=0
 suites.security-gates.exitCode: 0
 suites.hardening.tests: 74
 suites.tenancy.tests: 59
 suites.workflow-safety.tests: 89
 suites.rls-matrix.tests: 10
-dbAcl.definerFunctions: 86
+dbAcl.definerFunctions: 87
 dbAcl.publicGrants: 0
 dbAcl.possibleImplicitPublic: 28
 dbAcl.liveCheck: SKIPPED_NO_DATABASE_ACL_URL
