@@ -10,7 +10,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/hooks/use-toast"
-import { Loader2, Upload, X, Printer } from "lucide-react"
+import { usePharmacySession } from "@/hooks/use-pharmacy-session"
+import { AlertTriangle, Loader2, Upload, X, Printer } from "lucide-react"
 import Image from "next/image"
 import { escapeHtml, safeImageSrc } from "@/lib/html"
 
@@ -52,7 +53,12 @@ export default function SettingsPage() {
   const [isSaving, setIsSaving] = useState(false)
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [logoPreview, setLogoPreview] = useState<string>("")
+  const [resetName, setResetName] = useState("")
+  const [resetPreview, setResetPreview] = useState<Record<string, number> | null>(null)
+  const [isPreviewing, setIsPreviewing] = useState(false)
+  const [isResetting, setIsResetting] = useState(false)
   const { toast } = useToast()
+  const { user } = usePharmacySession()
 
   useEffect(() => {
     fetchSettings()
@@ -162,6 +168,78 @@ export default function SettingsPage() {
       })
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  const pharmacyName = settings.pharmacyName.trim()
+  const isResetConfirmed = pharmacyName !== "" && resetName.trim() === pharmacyName
+  // The route is admin-only (requirePharmacyAdmin); staff who can manage settings
+  // should not be shown a control that would answer 403.
+  const canReset =
+    Boolean(user?.isAdmin) ||
+    user?.pharmacyRole === "pharmacy_admin" ||
+    user?.pharmacyRole === "pharmacy_ceo"
+
+  const requestReset = async (dryRun: boolean) => {
+    const response = await fetch("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmName: dryRun ? "" : resetName.trim(), dryRun }),
+    })
+    const body = await response.json().catch(() => null)
+    if (!response.ok) {
+      throw new Error(
+        typeof body?.error === "string" ? body.error : "The reset request failed",
+      )
+    }
+    return body as { totalRows?: number; counts?: Record<string, number> }
+  }
+
+  const handlePreviewReset = async () => {
+    setIsPreviewing(true)
+    try {
+      const body = await requestReset(true)
+      setResetPreview(body.counts ?? {})
+      toast({
+        title: "Nothing was deleted",
+        description: `${Number(body.totalRows ?? 0).toLocaleString()} records would be erased.`,
+      })
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Preview failed",
+        description: error instanceof Error ? error.message : "An error occurred",
+      })
+    } finally {
+      setIsPreviewing(false)
+    }
+  }
+
+  const handleReset = async () => {
+    if (!isResetConfirmed) return
+    const confirmed = window.confirm(
+      `Erase every product, sale, purchase, customer and imported record in ${pharmacyName}?\n\nThis cannot be undone. Staff logins and the pharmacy account are kept.`,
+    )
+    if (!confirmed) return
+
+    setIsResetting(true)
+    try {
+      const body = await requestReset(false)
+      setResetPreview(null)
+      setResetName("")
+      toast({
+        title: "Pharmacy data erased",
+        description: `${Number(body.totalRows ?? 0).toLocaleString()} records removed. Reloading the portal.`,
+      })
+      window.setTimeout(() => window.location.reload(), 1200)
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Reset failed",
+        description: error instanceof Error ? error.message : "An error occurred",
+      })
+    } finally {
+      setIsResetting(false)
     }
   }
 
@@ -498,6 +576,92 @@ export default function SettingsPage() {
           </Button>
         </div>
       </form>
+
+      {canReset && (
+        <Card className="mt-6 border-destructive/40">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5" />
+              Reset pharmacy data
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Erases every product, batch, stock record, sale, purchase, customer, supplier,
+              accounting entry, setting and Tally import in this pharmacy, so an import can be
+              run again from the start. Staff logins and the pharmacy account are kept.
+              <strong className="block mt-1 text-destructive">This cannot be undone.</strong>
+            </p>
+
+            <div className="space-y-2">
+              <Label htmlFor="resetName">
+                Type the pharmacy name to confirm: <strong>{pharmacyName || "—"}</strong>
+              </Label>
+              <Input
+                id="resetName"
+                value={resetName}
+                onChange={(e) => setResetName(e.target.value)}
+                placeholder={pharmacyName}
+                autoComplete="off"
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handlePreviewReset}
+                disabled={isPreviewing || isResetting}
+              >
+                {isPreviewing ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Counting...
+                  </>
+                ) : (
+                  "Preview what will be deleted"
+                )}
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={handleReset}
+                disabled={!isResetConfirmed || isResetting || isPreviewing}
+              >
+                {isResetting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Erasing...
+                  </>
+                ) : (
+                  "Erase all pharmacy data"
+                )}
+              </Button>
+            </div>
+
+            {resetPreview && (
+              <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
+                {Object.entries(resetPreview)
+                  .filter(([, count]) => count > 0)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([table, count]) => (
+                    <div key={table} className="flex justify-between gap-4">
+                      <span className="capitalize text-muted-foreground">
+                        {table.replace(/^pharmacy_/, "").replace(/_/g, " ")}
+                      </span>
+                      <span className="tabular-nums text-foreground">
+                        {count.toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                {Object.values(resetPreview).every((count) => count === 0) && (
+                  <p className="text-muted-foreground">There is nothing to delete.</p>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

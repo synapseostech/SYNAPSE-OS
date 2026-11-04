@@ -7,7 +7,9 @@
  * read the object server-side with the service role.
  */
 
-export const TALLY_BUCKET = "pharmacy-imports"
+import { PHARMACY_IMPORT_BUCKET } from "@/lib/pharmacy-storage"
+
+export const TALLY_BUCKET = PHARMACY_IMPORT_BUCKET
 export const TALLY_SOURCE_LIMIT = 25 * 1024 * 1024
 export const TALLY_JSON_LIMIT = 20 * 1024 * 1024
 
