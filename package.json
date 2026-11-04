@@ -44,7 +44,7 @@
     "db:prod:ledger": "npx supabase migration list --linked",
     "opd:dispense:live": "node scripts/opd-dispense-live-journey.mjs --project-ref qfqakzmjatszisuqjwon",
     "test:opd-dispense-golden": "tsx --test packages/db/src/prescription-bridge.test.ts packages/db/src/opd-dispense-golden.test.ts",
-    "test:migration-integrity": "node --test scripts/check-migration-history.test.mjs scripts/pharmacy-rpc-coverage.test.mjs scripts/pharmacy-refund-rpc-definitions.test.mjs scripts/pharmacy-policy-tenant-scope.test.mjs scripts/db-tests/supabase-preflight.test.mjs scripts/pharmacy-net-amount-writers.test.mjs",
+    "test:migration-integrity": "node --test scripts/check-migration-history.test.mjs scripts/pharmacy-rpc-coverage.test.mjs scripts/pharmacy-refund-rpc-definitions.test.mjs scripts/pharmacy-policy-tenant-scope.test.mjs scripts/pharmacy-tally-document-archive.test.mjs scripts/db-tests/supabase-preflight.test.mjs scripts/pharmacy-net-amount-writers.test.mjs",
     "test:reconciliation-evidence": "node --test scripts/check-reconciliation-evidence.test.mjs",
     "test:tenancy": "vitest run apps/web/src/lib/profiles-privileged-columns.test.ts apps/web/src/app/api/hospital/admin/payroll/route.test.ts apps/web/src/lib/tenant-routing.test.ts apps/web/src/lib/control-plane-security.test.ts apps/web/src/lib/hospital-bff-tenant-isolation.test.ts apps/web/src/app/api/hospital/billing/encounter/**/route.test.ts",
     "test:hardening": "vitest run apps/web/src/lib/import/csv.test.ts apps/web/src/lib/import/map-row.test.ts apps/web/src/lib/import/import-routes.test.ts apps/web/src/app/api/tele/intake/route.test.ts apps/web/src/lib/insurance/copilot.test.ts apps/web/src/app/api/lab/notify/route.test.ts",

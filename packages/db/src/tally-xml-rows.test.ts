@@ -181,6 +181,50 @@ describe("parseTallyXmlRows", () => {
     )
   })
 
+  it("records the linkage tags a voucher carries, in vocabulary order", () => {
+    const document = parseTallyXmlRows(
+      tallyExport(`
+        <VOUCHER VCHTYPE="Sales">
+          <VOUCHERNUMBER>S-002</VOUCHERNUMBER>
+          <REFERENCE>PO-7</REFERENCE>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>Test Customer A</LEDGERNAME>
+            <AMOUNT>500</AMOUNT>
+            <BILLALLOCATIONS.LIST>
+              <NAME>S-002</NAME>
+              <AMOUNT>500</AMOUNT>
+            </BILLALLOCATIONS.LIST>
+          </ALLLEDGERENTRIES.LIST>
+        </VOUCHER>
+        <VOUCHER VCHTYPE="Sales"><VOUCHERNUMBER>S-003</VOUCHERNUMBER></VOUCHER>
+      `),
+    )
+
+    // BILLALLOCATIONS.LIST sits under a ledger line, not on the voucher itself,
+    // which is why the probe walks the whole subtree.
+    assert.deepEqual(document.vouchers[0].linkage, ["REFERENCE", "BILLALLOCATIONS.LIST"])
+    // A voucher that carried none reports an empty list — not undefined — so the
+    // probe can count absence rather than infer it.
+    assert.deepEqual(document.vouchers[1].linkage, [])
+  })
+
+  it("finds a reference nested inside an inventory entry", () => {
+    const document = parseTallyXmlRows(
+      tallyExport(`
+        <VOUCHER VCHTYPE="Delivery Note">
+          <VOUCHERNUMBER>DN-1</VOUCHERNUMBER>
+          <ALLINVENTORYENTRIES.LIST>
+            <STOCKITEMNAME>Test Item A</STOCKITEMNAME>
+            <ACTUALQTY>1 Strip</ACTUALQTY>
+            <BASICORDERDATE>20260201</BASICORDERDATE>
+          </ALLINVENTORYENTRIES.LIST>
+        </VOUCHER>
+      `),
+    )
+
+    assert.deepEqual(document.vouchers[0].linkage, ["BASICORDERDATE"])
+  })
+
   it("derives the ledger side from the amount sign when ISDEEMEDPOSITIVE is absent", () => {
     const document = parseTallyXmlRows(
       tallyExport(`

@@ -15,6 +15,7 @@ import {
   Terminal,
   Upload,
 } from "lucide-react"
+import { TallyDocumentProbe } from "@/components/tally/tally-document-probe"
 import { TallySetupAssistant, type SetupConnection } from "@/components/tally/tally-setup-assistant"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -1182,7 +1183,7 @@ export default function TallyImportPage() {
           <div>
             <p className="font-medium">Connect to the local Tally Bridge or upload an XML export.</p>
             <p className="mt-1 opacity-90">
-              The bridge requests All Masters and the Day Book over Tally&apos;s local XML/HTTP interface, then
+              The bridge reads Tally&apos;s masters and vouchers over its local XML/HTTP interface, then
               sends the result through this same preview. Excel and CSV work only through the multi-sheet
               templates below; an ordinary Tally Excel report is not a complete company export. Use the stock
               import assistant for a single-sheet stock list. This is a one-time cut-over, not continuous
@@ -1200,6 +1201,8 @@ export default function TallyImportPage() {
           </Button>
         </div>
       </div>
+
+      <TallyDocumentProbe enabled={cutoverAccess === "ready" || cutoverAccess === "complete"} />
 
       <Card>
         <CardHeader>
