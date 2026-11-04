@@ -1216,9 +1216,76 @@ describe("POST /api/admin/tally/[id]/apply", () => {
 
     const update = m.db.operations.filter((operation) => operation.action === "update").at(-1)
     expect(update?.payload).toMatchObject({
-      error_message: "Apply stopped before the step finished.",
+      error_message: 'Apply stopped in the "accounts" step: TALLY_PLAN_MISSING: chunk file missing',
       ai_mapping: { progress: expect.objectContaining({ stage: "accounts" }) },
     })
     expect(filtersOf(update!)).toEqual({ id: "session-1", tenant_id: "tenant-1" })
+  })
+
+  it("logs the step before running it so a killed request still names it", async () => {
+    const logged = vi.spyOn(console, "log").mockImplementation(() => {})
+    setup(row("review", { summary: { chunkCount: 1 }, progress: progress({ stage: "journals", offset: 3 }) }))
+    m.loadStagePlan.mockResolvedValue({
+      plan: { company: "Test Pharmacy Ltd" },
+      summary: { chunkCount: 5 },
+      chunk: { rows: [] },
+      totalChunks: 5,
+    })
+    m.applyChunk.mockResolvedValue({ progress: progress({ stage: "journals", offset: 4 }), done: false })
+
+    await post()
+
+    const line = logged.mock.calls
+      .map((call) => String(call[0]))
+      .find((entry) => entry.includes("tally.apply.step"))
+    expect(line).toBeDefined()
+    expect(JSON.parse(line!.replace("[pharmacy][tally] ", ""))).toMatchObject({
+      event: "tally.apply.step",
+      sessionId: "session-1",
+      tenantId: "tenant-1",
+      stage: "journals",
+      offset: 3,
+      counts: { journals: 0 },
+      failures: 0,
+    })
+    logged.mockRestore()
+  })
+
+  it("logs the stage, the item and the SQLSTATE a step failed on", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+    setup(row("review", { summary: { chunkCount: 1 }, progress: progress() }))
+    m.loadStagePlan.mockResolvedValue({
+      plan: { company: "Test Pharmacy Ltd" },
+      summary: { chunkCount: 1 },
+      chunk: { rows: [] },
+      totalChunks: 1,
+    })
+    const refused = Object.assign(new Error("permission denied for table pharmacy_accounting_accounts"), {
+      name: "TallyApplyStepError",
+      stage: "accounts",
+      item: "T-1",
+      detail: { message: "permission denied for table pharmacy_accounting_accounts", code: "42501" },
+    })
+    m.applyChunk.mockRejectedValue(refused)
+
+    const res = await post()
+
+    expect(res.status).toBe(500)
+    const line = logged.mock.calls
+      .map((call) => String(call[0]))
+      .find((entry) => entry.includes("tally.apply.failed"))
+    expect(line).toBeDefined()
+    expect(JSON.parse(line!.replace("[pharmacy][tally] ", ""))).toMatchObject({
+      event: "tally.apply.failed",
+      sessionId: "session-1",
+      tenantId: "tenant-1",
+      phase: "apply",
+      stage: "accounts",
+      failedStage: "accounts",
+      failedItem: "T-1",
+      dbError: { code: "42501" },
+      failureCount: 0,
+    })
+    logged.mockRestore()
   })
 })

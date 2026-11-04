@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-03T07:50:00.912Z",
-  "security_definer_count": 86,
+  "generated_at": "2026-11-04T17:15:52.051Z",
+  "security_definer_count": 87,
   "public_or_anon_execute_grants": [],
   "unexpected_public_execute": [],
   "possible_implicit_public_exec": [
@@ -464,6 +464,10 @@
     {
       "file": "20261102130300_tally_mirror_read_only_guard.sql",
       "fn": "public.tally_mirror_rows_are_read_only"
+    },
+    {
+      "file": "20261103103000_tally_ledger_accounts_rpc.sql",
+      "fn": "public.add_pharmacy_accounting_accounts"
     }
   ]
 }

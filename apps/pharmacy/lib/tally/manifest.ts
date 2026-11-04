@@ -24,6 +24,7 @@ import {
   sameRange,
   voucherChunkId,
   voucherDatesOutsidePeriod,
+  type TallyChunkKind,
   type TallyDateRange,
   type TallyMigrationManifest,
 } from "./chunks"
@@ -122,6 +123,204 @@ function parseRange(range: TallyDateRange | undefined): TallyDateRange | undefin
   const end = parseTallyIsoDate(range.to)
   if (end < start) throw new Error("TALLY_PERIOD_INVALID")
   return { from: range.from, to: range.to }
+}
+
+/** One file staged into a session, as the page lists it back to the operator. */
+export type TallyStagedSource = {
+  uploadId: string
+  fileName: string
+  kind: TallyChunkKind
+  chunkId: string
+  range: TallyDateRange
+  recordsRead: number
+  bytes: number
+  stagedAt: string
+}
+
+/**
+ * Whether the session's files were staged one by one through the sources
+ * endpoint. Preview consolidates the stored chunks in that case, and reads the
+ * single `path` only for sessions predating it.
+ */
+export function isMultiFileSession(mapping: unknown): boolean {
+  if (typeof mapping !== "object" || mapping === null) return false
+  const sources = (mapping as Record<string, unknown>).sources
+  return Array.isArray(sources) && sources.length > 0
+}
+
+/** The staged files a session recorded, dropping anything malformed. */
+export function readStagedSources(value: unknown): TallyStagedSource[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(
+    (entry): entry is TallyStagedSource =>
+      typeof entry === "object" &&
+      entry !== null &&
+      typeof (entry as TallyStagedSource).chunkId === "string" &&
+      typeof (entry as TallyStagedSource).uploadId === "string",
+  )
+}
+
+export type TallyStagedDescription =
+  | {
+      ok: true
+      kind: TallyChunkKind
+      chunkId: string
+      range: TallyDateRange
+      company: string
+      recordsRead: number
+      periodSource: "source" | "requested"
+      declaredPeriod?: TallyDateRange
+      firstDate?: string
+      lastDate?: string
+    }
+  | { ok: false; code: string; message: string }
+
+/**
+ * Which chunk an uploaded file stands for, derived from what the file says
+ * about itself.
+ *
+ * The range comes from the period the file states, then the span of the
+ * vouchers inside it, then the period the operator asked for. A vouchers file
+ * holding a voucher outside the range it ended up with is refused: staging it
+ * would record dates the chunk does not cover, and the manifest would reject
+ * that later, after the bytes were already stored.
+ */
+export function describeStagedDocument(
+  document: TallyXmlDocument,
+  input: { requestedPeriod?: TallyDateRange; kind?: "masters" | "vouchers" },
+): TallyStagedDescription {
+  const company = (document.company ?? "").trim()
+  if (!company) {
+    return {
+      ok: false,
+      code: "TALLY_COMPANY_MISSING",
+      message: "This file does not name the Tally company it came from.",
+    }
+  }
+  if (document.truncated) {
+    return {
+      ok: false,
+      code: "SOURCE_TRUNCATED",
+      message: "This file was cut short while it was read. Export it again.",
+    }
+  }
+
+  const masterRecords =
+    document.ledgers.length +
+    document.groups.length +
+    document.stockItems.length +
+    document.stockGroups.length +
+    document.units.length +
+    document.godowns.length
+
+  const kind: TallyChunkKind | undefined =
+    input.kind ??
+    (document.vouchers.length > 0
+      ? "vouchers"
+      : masterRecords > 0 || document.companyGuid
+        ? "masters"
+        : undefined)
+  if (!kind) {
+    return {
+      ok: false,
+      code: "TALLY_FILE_EMPTY",
+      message: "This file holds no masters and no vouchers, so there is nothing to import from it.",
+    }
+  }
+
+  // Staging stores one file per chunk, so a file holding both would have to
+  // claim two chunks with bytes neither chunk describes. Refuse it by default
+  // rather than silently dropping the half that did not win the guess.
+  if (!input.kind && masterRecords > 0 && document.vouchers.length > 0) {
+    return {
+      ok: false,
+      code: "TALLY_FILE_COMBINED",
+      message:
+        "This file holds both masters and vouchers. Export All Masters and the Day Book separately, then add them as two files.",
+    }
+  }
+
+  let stated: TallyDateRange | undefined
+  if (document.financialPeriod?.from && document.financialPeriod?.to) {
+    try {
+      stated = parseRange({
+        from: document.financialPeriod.from,
+        to: document.financialPeriod.to,
+      })
+    } catch {
+      return {
+        ok: false,
+        code: "TALLY_PERIOD_INVALID",
+        message: "The period this file states is not a valid date range.",
+      }
+    }
+  }
+
+  let requested: TallyDateRange | undefined
+  if (input.requestedPeriod) {
+    try {
+      requested = parseRange(input.requestedPeriod)
+    } catch {
+      return {
+        ok: false,
+        code: "TALLY_PERIOD_INVALID",
+        message: "The period given with this file is not a valid date range.",
+      }
+    }
+  }
+
+  if (kind === "masters" && masterRecords === 0) {
+    return {
+      ok: false,
+      code: "TALLY_MASTERS_EMPTY",
+      message: "This file holds no accounts, groups or stock items, so it cannot serve as the masters.",
+    }
+  }
+
+  const span = dateSpan(document.vouchers.map((voucher) => voucher.date))
+  const spanned =
+    span.firstDate && span.lastDate ? { from: span.firstDate, to: span.lastDate } : undefined
+
+  // The period the operator asked for names the slice. A stated financial year
+  // is the company's books, not a slice's bounds: using it for a Day Book range
+  // would make every slice claim the whole year and overlap the others.
+  const range = requested ?? stated ?? (kind === "vouchers" ? spanned : undefined)
+  if (!range) {
+    return {
+      ok: false,
+      code: "TALLY_PERIOD_MISSING",
+      message:
+        kind === "vouchers"
+          ? "This file states no period and holds no dated voucher, so the dates it covers cannot be known."
+          : "This file states no period. Set the period the export was taken for, then add it again.",
+    }
+  }
+
+  if (kind === "vouchers") {
+    const outside = voucherDatesOutsidePeriod(
+      document.vouchers.map((voucher) => voucher.date),
+      range,
+    )
+    if (outside.length > 0) {
+      return {
+        ok: false,
+        code: "TALLY_VOUCHERS_OUTSIDE_RANGE",
+        message: `This file holds ${outside.length} voucher date${outside.length === 1 ? "" : "s"} outside the ${range.from} to ${range.to} range it covers.`,
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    kind,
+    chunkId: kind === "masters" ? MASTERS_CHUNK_ID : voucherChunkId(range),
+    range,
+    company,
+    recordsRead: kind === "masters" ? masterRecords : document.vouchers.length,
+    periodSource: requested ? "requested" : "source",
+    ...(stated ? { declaredPeriod: stated } : {}),
+    ...span,
+  }
 }
 
 function reasonMessage(reason: TallyManifestReason): string {

@@ -306,6 +306,7 @@ describe("extraction loop", () => {
     })
 
     expect(result.stopped).toBe("failed")
+    expect(result.stopCode).toBe("TALLY_BRIDGE_EXPORT_TOO_LARGE")
     const voucher = result.manifest.chunks.find((chunk) => chunk.kind === "vouchers")
     expect(voucher?.status).toBe("failed")
     expect(voucher?.error).toBe("TALLY_CHUNK_TOO_LARGE")
@@ -328,6 +329,7 @@ describe("extraction loop", () => {
     })
 
     expect(result.stopped).toBe("failed")
+    expect(result.stopCode).toBe("TALLY_BRIDGE_TALLY_UNAVAILABLE")
     const masters = result.manifest.chunks.find((chunk) => chunk.id === MASTERS_CHUNK_ID)
     expect(masters?.attempts).toBe(EXTRACTION_MAX_ATTEMPTS)
     expect(masters?.status).toBe("failed")
@@ -352,6 +354,7 @@ describe("extraction loop", () => {
     })
 
     expect(result.stopped).toBe("failed")
+    expect(result.stopCode).toBe("TALLY_BRIDGE_PERIOD_MISMATCH")
     expect(attempts).toBe(1)
   })
 
@@ -376,6 +379,7 @@ describe("extraction loop", () => {
     })
 
     expect(result.stopped).toBe("cancelled")
+    expect(result.stopCode).toBeUndefined()
     expect(source.calls).toHaveLength(1)
     expect(summariseExtraction(result.manifest).complete).toBe(1)
   })

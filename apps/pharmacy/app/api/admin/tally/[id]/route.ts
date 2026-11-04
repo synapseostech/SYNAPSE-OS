@@ -13,7 +13,7 @@ import {
   type TallyMigrationManifest,
 } from "@/lib/tally/chunks"
 import type { TallyConsolidationReport } from "@/lib/tally/consolidate"
-import { isTallyCutoverSession } from "@/lib/tally/manifest"
+import { isTallyCutoverSession, readStagedSources } from "@/lib/tally/manifest"
 import { buildCutoverPreflight } from "@/lib/tally/preflight"
 import type { TallyPlanSummary } from "@/lib/tally/types"
 import type { TallyReconcileCheck } from "@/lib/tally/reconcile"
@@ -128,6 +128,8 @@ export async function GET(
         }
       : null,
     manifestReason: typeof mapping.manifestReason === "string" ? mapping.manifestReason : null,
+    // The files staged one by one, so a reload lists what has arrived so far.
+    sources: readStagedSources(mapping.sources),
     // Chunk progress and the merge report, so a reload can resume and review.
     extraction: (mapping.extraction as TallyExtractionSummary | undefined) ?? null,
     consolidation: (mapping.consolidation as TallyConsolidationReport | undefined) ?? null,

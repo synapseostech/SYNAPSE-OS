@@ -22,10 +22,11 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useToast } from "@/hooks/use-toast"
-import { buildBridgeCommand } from "@/lib/tally/bridge-command"
+import { buildCompanyPinCommand, buildConnectorInstallCommand } from "@/lib/tally/bridge-command"
 import { requestBridgeExport, TallyBridgeError } from "@/lib/tally/bridge-client"
 import type { TallyExtractionSummary } from "@/lib/tally/chunks"
 import type { TallyConsolidationReport } from "@/lib/tally/consolidate"
+import { diagnosticFrom, reportTallyFailure } from "@/lib/tally/diagnostics"
 import type { TallyEditionDisclosure, TallyEditionProblem } from "@/lib/tally/editions"
 import { runTallyExtraction } from "@/lib/tally/extraction"
 import { cutoverBlockReason, track } from "@/lib/telemetry/events"
@@ -207,6 +208,45 @@ type ManifestView = {
 const formatPeriod = (period: TallyPeriod | null | undefined) =>
   period ? `${period.from} to ${period.to}` : null
 
+const isIsoDay = (value: string) =>
+  /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+  new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value
+
+/**
+ * The range an export names in its own file name, as the Synapse export
+ * script writes it (`3-daybook-20250101-20251231.xml`). Slices have to carry
+ * their own dates: one period typed into the form would make every slice claim
+ * the whole migration and collide with the others.
+ */
+function periodFromFileName(name: string): TallyPeriod | undefined {
+  const match = /(\d{4})(\d{2})(\d{2})-(\d{4})(\d{2})(\d{2})\.xml$/i.exec(name)
+  if (!match) return undefined
+  const from = `${match[1]}-${match[2]}-${match[3]}`
+  const to = `${match[4]}-${match[5]}-${match[6]}`
+  if (!isIsoDay(from) || !isIsoDay(to) || to < from) return undefined
+  return { from, to }
+}
+
+/** The part of the cut-over a file holds, when its name says so. */
+function kindFromFileName(name: string): "masters" | "vouchers" | undefined {
+  const lower = name.toLowerCase()
+  if (lower.includes("masters")) return "masters"
+  if (lower.includes("daybook") || lower.includes("day-book")) return "vouchers"
+  return undefined
+}
+
+/** One file already staged into the session, as the server lists it back. */
+type StagedFile = {
+  uploadId: string
+  fileName: string
+  kind: "masters" | "vouchers"
+  chunkId: string
+  range: TallyPeriod
+  recordsRead: number
+  bytes: number
+  stagedAt: string
+}
+
 type BridgeCheck = {
   status: "ok" | "tally" | "token" | "bridge" | "error"
   message: string
@@ -266,7 +306,10 @@ export default function TallyImportPage() {
   const { toast } = useToast()
   const fileInput = useRef<HTMLInputElement>(null)
 
-  const [file, setFile] = useState<File | null>(null)
+  const [files, setFiles] = useState<File[]>([])
+  const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([])
+  const [stagedProblems, setStagedProblems] = useState<string[]>([])
+  const [replacePrompt, setReplacePrompt] = useState<{ file: File; chunkId: string } | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [summary, setSummary] = useState<Summary | null>(null)
   const [preflightView, setPreflightView] = useState<PreflightView | null>(null)
@@ -320,19 +363,18 @@ export default function TallyImportPage() {
     // answer wins. Before the session loads there is no verdict to defer to.
     preflightView?.canApply !== false
 
-  const bridgeCommand = useMemo(
+  const installCommand = useMemo(
     () =>
-      buildBridgeCommand({
+      buildConnectorInstallCommand({
         origin: portalOrigin,
         host: tallyHost,
         port: tallyPort,
         executable: tallyExecutable,
-        fromDate: tallyFromDate,
-        toDate: tallyToDate,
         company: tallyCompany,
       }),
-    [portalOrigin, tallyHost, tallyPort, tallyExecutable, tallyFromDate, tallyToDate, tallyCompany],
+    [portalOrigin, tallyHost, tallyPort, tallyExecutable, tallyCompany],
   )
+  const pinCommand = useMemo(() => buildCompanyPinCommand(tallyCompany), [tallyCompany])
 
   useEffect(() => {
     setPortalOrigin(window.location.origin)
@@ -378,6 +420,7 @@ export default function TallyImportPage() {
       }
       if (data.progress) setProgress(data.progress as Progress)
       if (data.reconcile) setReconcile(data.reconcile as ReconcileCheck[])
+      if (Array.isArray(data.sources)) setStagedFiles(data.sources as StagedFile[])
       setExtraction((data.extraction as TallyExtractionSummary | null) ?? null)
       setConsolidation((data.consolidation as TallyConsolidationReport | null) ?? null)
       if (data.conversionDate) setConversionDate(data.conversionDate as string)
@@ -419,8 +462,43 @@ export default function TallyImportPage() {
     return from && to ? { from, to } : undefined
   }
 
+  /** Drops every review a fresh read or a newly staged file invalidates. */
+  function clearReview() {
+    setSummary(null)
+    setPreflightView(null)
+    setPreview(null)
+    setProgress(null)
+    setReconcile(null)
+    setManifestView(null)
+    setExtraction(null)
+    setConsolidation(null)
+    setEditionInfo(null)
+    setEditionProblems([])
+    setAcknowledged(false)
+  }
+
+  /** Shows a preview the server accepted, whichever path produced it. */
+  function showPreview(data: {
+    summary?: unknown
+    preview?: unknown
+    manifest?: unknown
+    edition?: unknown
+    editionProblems?: unknown
+  }) {
+    const next = (data.summary as Summary | undefined) ?? null
+    setSummary(next)
+    setPreview((data.preview as Preview | undefined) ?? null)
+    setManifestView((data.manifest as ManifestView | null | undefined) ?? null)
+    setEditionInfo((data.edition as TallyEditionDisclosure | undefined) ?? null)
+    setEditionProblems((data.editionProblems as TallyEditionProblem[] | undefined) ?? [])
+    // A fresh preview is a fresh decision: the acknowledgement never carries
+    // over from the file it was given for.
+    setAcknowledged(false)
+    if (!conversionDate && next?.conversionDate) setConversionDate(next.conversionDate)
+  }
+
   async function uploadAndPreview(
-    selectedFile: File | null = file,
+    selectedFile: File | null = files[0] ?? null,
     period?: { from: string; to: string },
   ) {
     if (!selectedFile) {
@@ -433,17 +511,7 @@ export default function TallyImportPage() {
     }
 
     setBusy("uploading")
-    setSummary(null)
-    setPreflightView(null)
-    setPreview(null)
-    setProgress(null)
-    setReconcile(null)
-    setManifestView(null)
-    setExtraction(null)
-    setConsolidation(null)
-    setEditionInfo(null)
-    setEditionProblems([])
-    setAcknowledged(false)
+    clearReview()
 
     try {
       const startResponse = await fetch("/api/admin/tally/upload-url", {
@@ -504,21 +572,174 @@ export default function TallyImportPage() {
         toast({ variant: "destructive", title: data.error ?? "The file could not be read" })
         return
       }
-      setSummary(data.summary as Summary)
-      setPreview(data.preview as Preview)
-      // A fresh preview is a fresh decision: the acknowledgement never carries
-      // over from the file it was given for.
-      setManifestView((data.manifest as ManifestView | null) ?? null)
-      setEditionInfo((data.edition as TallyEditionDisclosure | undefined) ?? null)
-      setEditionProblems((data.editionProblems as TallyEditionProblem[] | undefined) ?? [])
-      setAcknowledged(false)
-      if (!conversionDate && data.summary?.conversionDate) {
-        setConversionDate(data.summary.conversionDate as string)
-      }
+      showPreview(data)
       toast({ title: "File read — review the mapping before applying" })
     } finally {
       setBusy("idle")
     }
+  }
+
+  type StageOutcome =
+    | { ok: true; session: string; sources: StagedFile[]; problems: string[] }
+    | { ok: false; replaceChunkId?: string }
+
+  /**
+   * Uploads one file and hands it to the sources endpoint, which gives it the
+   * chunk its own company and period imply. Nothing is previewed here: a
+   * cut-over built from slices is read once, after the last one arrives.
+   */
+  async function stageOne(
+    selectedFile: File,
+    session: string | null,
+    replace: boolean,
+  ): Promise<StageOutcome> {
+    const startResponse = await fetch("/api/admin/tally/upload-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: selectedFile.name,
+        fileSize: selectedFile.size,
+        ...(session ? { sessionId: session } : {}),
+      }),
+    })
+    const start = await startResponse.json()
+    if (!startResponse.ok || typeof start.sessionId !== "string") {
+      if (start.code === "TALLY_CUTOVER_IN_PROGRESS" && typeof start.sessionId === "string") {
+        rememberSession(start.sessionId)
+        await loadSession(start.sessionId)
+      }
+      toast({ variant: "destructive", title: start.error ?? "Could not start the upload" })
+      return { ok: false }
+    }
+
+    const put = await fetch(start.signedUrl as string, {
+      method: "PUT",
+      headers: {
+        "Content-Type": selectedFile.name.toLowerCase().endsWith(".xls")
+          ? "application/octet-stream"
+          : selectedFile.type || "application/octet-stream",
+      },
+      body: selectedFile,
+    })
+    if (!put.ok) {
+      toast({ variant: "destructive", title: "The file could not be uploaded" })
+      return { ok: false }
+    }
+
+    rememberSession(start.sessionId as string)
+
+    // A slice names its own dates; the typed period is the fallback for a file
+    // that does not, and names the one range a masters export covers.
+    const period = periodFromFileName(selectedFile.name) ?? requestedPeriod(false)
+    const kind = kindFromFileName(selectedFile.name)
+    const sourcesResponse = await fetch(`/api/admin/tally/${start.sessionId}/sources`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        uploadId: start.uploadId,
+        fileName: selectedFile.name,
+        ...(period ? { period } : {}),
+        ...(kind ? { kind } : {}),
+        ...(replace ? { replace: true } : {}),
+      }),
+    })
+    const staged = await sourcesResponse.json()
+    if (!sourcesResponse.ok) {
+      if (staged.code === "TALLY_CHUNK_ALREADY_STAGED") {
+        return { ok: false, replaceChunkId: String(staged.chunkId ?? "") }
+      }
+      toast({ variant: "destructive", title: staged.error ?? "The file could not be added" })
+      return { ok: false }
+    }
+    return {
+      ok: true,
+      session: start.sessionId as string,
+      sources: Array.isArray(staged.sources) ? (staged.sources as StagedFile[]) : [],
+      problems: Array.isArray(staged.manifest?.problems)
+        ? (staged.manifest.problems as string[])
+        : [],
+    }
+  }
+
+  /** Stages every chosen file, then reads the whole set once. */
+  async function stageAndPreview(chosen: File[], replace = false) {
+    const oversize = chosen.find((entry) => entry.size > MAX_UPLOAD_BYTES)
+    if (oversize) {
+      toast({ variant: "destructive", title: `${oversize.name} is larger than 25 MB` })
+      return
+    }
+
+    setReplacePrompt(null)
+    setBusy("uploading")
+    clearReview()
+
+    let session = sessionId
+    try {
+      for (const selectedFile of chosen) {
+        const result = await stageOne(selectedFile, session, replace)
+        if (!result.ok) {
+          if (result.replaceChunkId) {
+            setReplacePrompt({ file: selectedFile, chunkId: result.replaceChunkId })
+          }
+          return
+        }
+        session = result.session
+        setStagedFiles(result.sources)
+        setStagedProblems(result.problems)
+      }
+    } finally {
+      setBusy("idle")
+    }
+
+    if (!session) return
+    await previewStaged(session)
+  }
+
+  /** Reads every staged file as one migration, once they have all arrived. */
+  async function previewStaged(session = sessionId) {
+    if (!session) return
+    setBusy("preview")
+    try {
+      const response = await fetch(`/api/admin/tally/${session}/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(conversionDate ? { conversionDate } : {}),
+          ...(bridgeEdition ? { edition: bridgeEdition } : {}),
+          mode,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        if (data.code === "TALLY_SOURCES_INCOMPLETE" && Array.isArray(data.problems)) {
+          setStagedProblems(data.problems.map(String))
+        }
+        toast({ variant: "destructive", title: data.error ?? "The files could not be read" })
+        return
+      }
+      showPreview(data)
+      toast({ title: "Files read — review the mapping before applying" })
+    } finally {
+      setBusy("idle")
+    }
+  }
+
+  /**
+   * What the main action does. One file on its own keeps the path it had
+   * before: a workbook, a CSV, or a single export carrying both masters and
+   * vouchers is read directly. Several files are staged one by one and read
+   * together at the end.
+   */
+  async function uploadAndReview() {
+    if (files.length === 0) {
+      toast({ variant: "destructive", title: "Choose a Tally export first" })
+      return
+    }
+    if (files.length === 1 && stagedFiles.length === 0) {
+      await uploadAndPreview(files[0] ?? null, requestedPeriod(false))
+      return
+    }
+    await stageAndPreview(files)
   }
 
   /** The review the server staged from the chunks, rendered like a preview. */
@@ -559,6 +780,12 @@ export default function TallyImportPage() {
       onProgress: (_manifest, summary) => setExtraction(summary),
     })
     if (result.stopped !== "complete") {
+      reportTallyFailure({
+        step: "extraction",
+        outcome: result.stopped,
+        ...(result.stopCode ? { code: result.stopCode } : {}),
+        sessionId: session,
+      })
       toast({
         variant: "destructive",
         title: "Extraction did not finish",
@@ -605,7 +832,7 @@ export default function TallyImportPage() {
         const source = new File([exported.xml], "tally-live-export.xml", {
           type: "application/xml",
         })
-        setFile(source)
+        setFiles([source])
         setBusy("idle")
         await uploadAndPreview(source, period)
         return
@@ -636,6 +863,11 @@ export default function TallyImportPage() {
       setBusy("extracting")
       await runExtraction(session.sessionId, company)
     } catch (error) {
+      reportTallyFailure({
+        step: mode === "closing" ? "closing-export" : "extraction",
+        outcome: "failed",
+        ...diagnosticFrom(error),
+      })
       toast({
         variant: "destructive",
         title: bridgeMessage(error, "Could not connect to the local Tally Bridge."),
@@ -654,6 +886,12 @@ export default function TallyImportPage() {
     try {
       await runExtraction(sessionId, tallyCompany.trim())
     } catch (error) {
+      reportTallyFailure({
+        step: "extraction-resume",
+        outcome: "failed",
+        ...diagnosticFrom(error),
+        sessionId,
+      })
       toast({
         variant: "destructive",
         title: bridgeMessage(error, "The extraction could not continue."),
@@ -663,10 +901,10 @@ export default function TallyImportPage() {
     }
   }
 
-  async function copyBridgeCommand() {
+  async function copyCommand(text: string, label: string) {
     try {
-      await navigator.clipboard.writeText(bridgeCommand)
-      toast({ title: "Bridge command copied" })
+      await navigator.clipboard.writeText(text)
+      toast({ title: `${label} copied` })
     } catch {
       toast({ variant: "destructive", title: "Could not copy — select the command manually" })
     }
@@ -682,6 +920,7 @@ export default function TallyImportPage() {
       })
 
       if (response.status === 401) {
+        reportTallyFailure({ step: "bridge-check", outcome: "http", status: 401 })
         setBridgeCheck({
           status: "token",
           message:
@@ -690,6 +929,7 @@ export default function TallyImportPage() {
         return
       }
       if (!response.ok) {
+        reportTallyFailure({ step: "bridge-check", outcome: "http", status: response.status })
         setBridgeCheck({
           status: "error",
           message: `The bridge answered with HTTP ${response.status}.`,
@@ -711,6 +951,7 @@ export default function TallyImportPage() {
         await loadTallyCompanies()
         return
       }
+      reportTallyFailure({ step: "bridge-check", outcome: "failed" })
       setBridgeCheck({
         status: "tally",
         message: `Bridge is running, but nothing answered at ${data.target ?? "Tally's HTTP port"}. Open Tally, sign in, and confirm its HTTP server is enabled.`,
@@ -718,6 +959,7 @@ export default function TallyImportPage() {
     } catch {
       // A cross-origin failure is opaque to the browser, so an unreachable
       // bridge and a bridge rejecting this origin are indistinguishable here.
+      reportTallyFailure({ step: "bridge-check", outcome: "network" })
       setBridgeCheck({
         status: "bridge",
         message: `Nothing answered at 127.0.0.1:17890. Start the bridge on this computer, or confirm SYNAPSE_TALLY_ALLOWED_ORIGINS is ${portalOrigin || "this page's origin"}.`,
@@ -736,7 +978,10 @@ export default function TallyImportPage() {
         headers: { "x-synapse-tally-bridge-token": bridgeToken.trim() },
         cache: "no-store",
       })
-      if (!response.ok) return
+      if (!response.ok) {
+        reportTallyFailure({ step: "bridge-companies", outcome: "http", status: response.status })
+        return
+      }
       const data = (await response.json()) as { companies?: string[]; edition?: string }
       const companies = Array.isArray(data.companies) ? data.companies : []
       setTallyCompanies(companies)
@@ -746,6 +991,7 @@ export default function TallyImportPage() {
       )
     } catch {
       // Discovery fails the same way the status probe does; the operator can type the name.
+      reportTallyFailure({ step: "bridge-companies", outcome: "network" })
     }
   }
 
@@ -807,6 +1053,13 @@ export default function TallyImportPage() {
         const data = await response.json()
         if (!response.ok) {
           track("tally_cutover_blocked", { reason: cutoverBlockReason(data.code) })
+          reportTallyFailure({
+            step: "apply",
+            outcome: "http",
+            status: response.status,
+            ...diagnosticFrom({ code: data.code }),
+            sessionId,
+          })
           toast({ variant: "destructive", title: data.error ?? "Apply stopped", description: data.progress ? `Stage: ${data.progress.stage}` : undefined })
           if (data.progress) setProgress(data.progress as Progress)
           return
@@ -832,6 +1085,15 @@ export default function TallyImportPage() {
         previous = position
       }
       toast({ variant: "destructive", title: "Apply ran too long", description: "Reload the session to see where it stopped." })
+    } catch (error) {
+      // Without this the operator saw a stopped spinner and nothing else: the
+      // refusal never reached the server, so it left no trace anywhere.
+      reportTallyFailure({ step: "apply", outcome: "network", ...diagnosticFrom(error), sessionId })
+      toast({
+        variant: "destructive",
+        title: "The cut-over could not continue",
+        description: "The connection dropped mid-apply. Reload the session to see where it stopped.",
+      })
     } finally {
       setBusy("idle")
     }
@@ -953,9 +1215,10 @@ export default function TallyImportPage() {
               <p className="text-sm font-medium">Start the bridge on this computer</p>
             </div>
             <p className="text-xs text-muted-foreground">
-              Node.js 22 is required and there is nothing to install. Run this from the repository root.
-              Open Tally, sign in, and select the company being cut over before running it.
-              The bridge listens only on 127.0.0.1 and cannot type a Tally password or choose a company for you.
+              Run the installer once from the unzipped connector package. It installs Node.js 22 if it is
+              missing, writes the configuration and prints the token to paste below. Open Tally, sign in, and
+              select the company being cut over before running it. The bridge listens only on 127.0.0.1 and
+              cannot type a Tally password or choose a company for you.
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
@@ -1070,18 +1333,37 @@ export default function TallyImportPage() {
                 </p>
               </div>
             </div>
-            <div className="rounded-md bg-muted p-3">
-              <pre className="overflow-x-auto whitespace-pre-wrap break-all text-xs">{bridgeCommand}</pre>
+            <div className="space-y-2">
+              <Label>Install the connector (first time on this computer)</Label>
+              <div className="rounded-md bg-muted p-3">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-all text-xs">{installCommand}</pre>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="outline" onClick={() => void copyCommand(installCommand, "Installer command")}>
+                  <Copy className="h-4 w-4" /> Copy installer
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Paste it into PowerShell, not Command Prompt. It prints the token once — the token is
+                  generated on this computer and never leaves it.
+                </span>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" onClick={() => void copyBridgeCommand()}>
-                <Copy className="h-4 w-4" /> Copy command
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                Run it, then paste the token it prints below. The token is generated on this computer and never
-                leaves it.
-              </span>
-            </div>
+            {pinCommand ? (
+              <div className="space-y-2">
+                <Label>Start it later, pinned to this company</Label>
+                <div className="rounded-md bg-muted p-3">
+                  <pre className="overflow-x-auto whitespace-pre-wrap break-all text-xs">{pinCommand}</pre>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="outline" onClick={() => void copyCommand(pinCommand, "Start command")}>
+                    <Copy className="h-4 w-4" /> Copy start command
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    The Start Menu shortcut starts it with the company the installer pinned.
+                  </span>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="space-y-2 rounded-lg border p-4">
@@ -1185,21 +1467,42 @@ export default function TallyImportPage() {
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
-              <Label htmlFor="tally-file">Tally XML, workbook or CSV (max 25 MB)</Label>
+              <Label htmlFor="tally-file">
+                Tally XML, workbook or CSV (max 25 MB each; choose several to build the history in slices)
+              </Label>
               <Input
                 id="tally-file"
                 ref={fileInput}
                 type="file"
+                multiple
                 accept={ACCEPTED}
                 disabled={cutoverAccess !== "ready"}
                 onChange={(event) => {
-                  const next = event.target.files?.[0] ?? null
-                  setFile(next)
+                  setFiles(Array.from(event.target.files ?? []))
                 }}
               />
-              {file && (
+              {files.length > 0 && (
+                <ul className="space-y-0.5 text-xs text-muted-foreground">
+                  {files.map((entry) => {
+                    const named = periodFromFileName(entry.name)
+                    return (
+                      <li key={`${entry.name}-${entry.size}`}>
+                        {entry.name} · {(entry.size / 1024 / 1024).toFixed(2)} MB
+                        {files.length > 1
+                          ? named
+                            ? ` · covers ${named.from} to ${named.to}`
+                            : " · no dates in its name; the period fields above are used for it"
+                          : ""}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+              {files.length > 1 && (
                 <p className="text-xs text-muted-foreground">
-                  {file.name} · {(file.size / 1024 / 1024).toFixed(2)} MB
+                  A file whose name ends in the dates it covers, like{" "}
+                  <span className="font-mono">3-daybook-20250101-20251231.xml</span>, is placed by
+                  those dates. The export script on the pharmacy computer writes them that way.
                 </p>
               )}
             </div>
@@ -1221,15 +1524,112 @@ export default function TallyImportPage() {
             </div>
           </div>
 
+          {stagedFiles.length > 0 && (
+            <div className="space-y-3 rounded-lg border p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold">Files in this cut-over — {stagedFiles.length}</p>
+                <p className="text-xs text-muted-foreground">
+                  They are read together, once, before anything is applied.
+                </p>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>File</TableHead>
+                    <TableHead>Covers</TableHead>
+                    <TableHead className="text-right">Records</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {stagedFiles.map((entry) => (
+                    <TableRow key={entry.uploadId}>
+                      <TableCell className="max-w-[18rem] truncate">{entry.fileName}</TableCell>
+                      <TableCell>
+                        {entry.kind === "masters"
+                          ? "Accounts, parties and stock"
+                          : formatPeriod(entry.range)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {entry.recordsRead.toLocaleString()}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+
+              {stagedProblems.length > 0 && (
+                <div className="rounded-lg border border-[#E8B84B]/50 bg-[#E8B84B]/10 p-3 text-xs">
+                  <p className="flex items-center gap-2 font-semibold">
+                    <AlertTriangle className="h-4 w-4" />
+                    Not ready to apply yet
+                  </p>
+                  <ul className="mt-1 space-y-1">
+                    {stagedProblems.map((entry) => (
+                      <li key={entry}>{entry}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {replacePrompt && (
+                <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
+                  <p className="font-semibold">A file is already staged for these dates.</p>
+                  <p className="mt-1 text-muted-foreground">
+                    {replacePrompt.file.name} covers the same dates as a file already in this
+                    cut-over. Replace the staged one with this file?
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void stageAndPreview([replacePrompt.file], true)}
+                      disabled={busy !== "idle"}
+                    >
+                      Replace it
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setReplacePrompt(null)}
+                      disabled={busy !== "idle"}
+                    >
+                      Keep the existing file
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => void uploadAndPreview(file, requestedPeriod(false))} disabled={cutoverAccess !== "ready" || busy !== "idle" || !file}>
+            <Button onClick={() => void uploadAndReview()} disabled={cutoverAccess !== "ready" || busy !== "idle" || files.length === 0}>
               {busy === "uploading" || busy === "preview" ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <FileSpreadsheet className="h-4 w-4" />
               )}
-              {busy === "uploading" ? "Uploading…" : busy === "preview" ? "Reading…" : "Upload and review"}
+              {busy === "uploading"
+                ? "Uploading…"
+                : busy === "preview"
+                  ? "Reading…"
+                  : files.length === 1 && stagedFiles.length === 0
+                    ? "Upload and review"
+                    : "Add files and review"}
             </Button>
+            {stagedFiles.length > 0 && (
+              <Button
+                variant="outline"
+                onClick={() => void previewStaged()}
+                disabled={cutoverAccess !== "ready" || busy !== "idle"}
+              >
+                {busy === "preview" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                Read the files staged so far
+              </Button>
+            )}
             {sessionId && (
               <Button variant="outline" onClick={() => void loadSession(sessionId)} disabled={busy !== "idle"}>
                 <RefreshCw className="h-4 w-4" /> Reload session

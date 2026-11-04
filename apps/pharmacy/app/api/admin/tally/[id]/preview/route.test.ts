@@ -2,6 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { NextRequest, NextResponse } from "next/server"
 import { TallySourceError } from "@/lib/tally/source"
 import { fakeSupabase, filtersOf, type FakeOperation, type FakeResult } from "@/lib/tally/test-db"
+import {
+  createManifest,
+  recordChunkResult,
+  type TallyMigrationManifest,
+} from "@/lib/tally/chunks"
+
+const AT = "2026-01-01T00:00:00.000Z"
 
 const m = vi.hoisted(() => ({
   auth: null as unknown,
@@ -10,6 +17,7 @@ const m = vi.hoisted(() => ({
   readDocument: vi.fn(),
   normalise: vi.fn(),
   writePlan: vi.fn(),
+  consolidate: vi.fn(),
 }))
 
 vi.mock("@/lib/api-auth", () => ({
@@ -29,6 +37,7 @@ vi.mock("@/lib/tally/source", async (importOriginal) => {
   return { ...actual, readTallyDocument: m.readDocument }
 })
 vi.mock("@/lib/tally/plan", () => ({ writeTallyPlan: m.writePlan }))
+vi.mock("@/lib/tally/consolidate-session", () => ({ consolidateStoredChunks: m.consolidate }))
 vi.mock("@synapse/db/tally-normalise", () => ({ normaliseTallyDocument: m.normalise }))
 
 import { POST } from "./route"
@@ -114,6 +123,35 @@ function sessionRow(status = "pending", mapping: Record<string, unknown> = {}) {
   }
 }
 
+/** A manifest whose every chunk has been read, so the tiling can be applied. */
+function completeManifest(parts = 1): TallyMigrationManifest {
+  const base = createManifest({
+    sessionId: "session-1",
+    company: "Demo Pharma",
+    mode: "opening",
+    period: { from: "2026-01-01", to: "2026-01-10" },
+    parts,
+    updatedAt: AT,
+  })
+  return base.chunks.reduce(
+    (next, chunk) => recordChunkResult(next, chunk.id, { status: "complete", recordsRead: 1 }, AT),
+    base,
+  )
+}
+
+const STAGED = [
+  {
+    uploadId: "u1",
+    fileName: "masters.xml",
+    kind: "masters",
+    chunkId: "masters",
+    range: { from: "2026-01-01", to: "2026-01-10" },
+    recordsRead: 3,
+    bytes: 10,
+    stagedAt: AT,
+  },
+]
+
 function setup(session: unknown, cutover: unknown = null) {
   m.db = fakeSupabase(
     (operation): FakeResult => {
@@ -147,6 +185,7 @@ describe("POST /api/admin/tally/[id]/preview", () => {
       document: { currency: "UGX" },
     })
     m.normalise.mockReset().mockReturnValue(PLAN)
+    m.consolidate.mockReset().mockResolvedValue({ plan: PLAN })
     m.writePlan
       .mockReset()
       .mockResolvedValue({
@@ -556,5 +595,61 @@ describe("POST /api/admin/tally/[id]/preview", () => {
       status: "failed",
       error_message: "File is not a supported Tally export.",
     })
+  })
+
+  it("consolidates every staged chunk once instead of reading the single uploaded path", async () => {
+    setup(sessionRow("pending", { manifest: completeManifest(), sources: STAGED }))
+
+    const res = await post({ conversionDate: "2026-04-01" })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(m.readSource).not.toHaveBeenCalled()
+    expect(m.consolidate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        tenantId: "tenant-1",
+        sessionId: "session-1",
+        conversionDate: "2026-04-01",
+      }),
+    )
+    expect(m.writePlan).toHaveBeenCalledWith(expect.anything(), "tenant-1", "session-1", PLAN, "xml")
+    // The stated period belongs to the accumulated manifest, not to any one file.
+    expect(body.manifest).toMatchObject({
+      period: { from: "2026-01-01", to: "2026-01-10" },
+      periodSource: "requested",
+    })
+  })
+
+  it("refuses a preview while the staged ranges do not tile the period", async () => {
+    const manifest = createManifest({
+      sessionId: "session-1",
+      company: "Demo Pharma",
+      mode: "opening",
+      period: { from: "2026-01-01", to: "2026-01-10" },
+      parts: 2,
+      updatedAt: AT,
+    })
+    // Only the masters and the first slice arrived; the second is still missing.
+    const partial = recordChunkResult(manifest, "masters", { status: "complete" }, AT)
+    setup(sessionRow("pending", { manifest: partial, sources: STAGED }))
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(422)
+    expect(body.code).toBe("TALLY_SOURCES_INCOMPLETE")
+    expect(body.problems.length).toBeGreaterThan(0)
+    expect(m.consolidate).not.toHaveBeenCalled()
+  })
+
+  it("refuses a staged session that lost its manifest rather than guessing a scope", async () => {
+    setup(sessionRow("pending", { manifest: null, sources: STAGED }))
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe("TALLY_SOURCES_EMPTY")
+    expect(m.consolidate).not.toHaveBeenCalled()
   })
 })

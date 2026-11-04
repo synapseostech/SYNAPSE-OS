@@ -5,12 +5,20 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+/** What PostgREST returns for a refused write; `code` is the SQLSTATE. */
+export type TallyDbError = {
+  message: string
+  code?: string
+  details?: string
+  hint?: string
+}
+
 export type TallyApplyDb = {
   from: (table: string) => any
   rpc: (
     fn: string,
     args: Record<string, unknown>,
-  ) => PromiseLike<{ data: unknown; error: { message: string } | null }>
+  ) => PromiseLike<{ data: unknown; error: TallyDbError | null }>
 }
 
 /** Vouchers posted per apply request. Bounded so no single call runs long. */

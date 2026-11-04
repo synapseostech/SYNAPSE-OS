@@ -8,7 +8,14 @@ import {
   voucherChunkId,
   type TallyMigrationManifest,
 } from "./chunks"
-import { buildManifestEvidence, buildSourceManifest, isTallyCutoverSession } from "./manifest"
+import {
+  buildManifestEvidence,
+  buildSourceManifest,
+  describeStagedDocument,
+  isMultiFileSession,
+  isTallyCutoverSession,
+  readStagedSources,
+} from "./manifest"
 
 const AT = "2026-11-01T00:00:00.000Z"
 const INPUT = { sessionId: "session-1", mode: "opening" as const, now: AT }
@@ -314,5 +321,160 @@ describe("isTallyCutoverSession", () => {
 
   it("does not claim a session with no mapping at all", () => {
     expect(isTallyCutoverSession({ source_system: "Tally", ai_mapping: null })).toBe(false)
+  })
+})
+
+describe("describeStagedDocument", () => {
+  it("refuses a file that does not name the company it came from", () => {
+    expect(describeStagedDocument(document({ company: undefined }), {})).toMatchObject({
+      ok: false,
+      code: "TALLY_COMPANY_MISSING",
+    })
+  })
+
+  it("refuses a file that was cut short before it could be read", () => {
+    expect(describeStagedDocument(document({ truncated: true }), {})).toMatchObject({
+      ok: false,
+      code: "SOURCE_TRUNCATED",
+    })
+  })
+
+  it("refuses a file holding neither masters nor vouchers", () => {
+    expect(describeStagedDocument(document(), {})).toMatchObject({
+      ok: false,
+      code: "TALLY_FILE_EMPTY",
+    })
+  })
+
+  it("names the masters chunk and counts every master record it holds", () => {
+    const described = describeStagedDocument(
+      document({ groups: records(1), ledgers: records(2) }),
+      {},
+    )
+
+    expect(described).toMatchObject({
+      ok: true,
+      kind: "masters",
+      chunkId: MASTERS_CHUNK_ID,
+      range: { from: "2026-01-01", to: "2026-01-10" },
+      recordsRead: 3,
+      periodSource: "source",
+    })
+  })
+
+  it("refuses a masters file that holds no master record", () => {
+    expect(
+      describeStagedDocument(document({ ledgers: [] }), { kind: "masters" }),
+    ).toMatchObject({ ok: false, code: "TALLY_MASTERS_EMPTY" })
+  })
+
+  it("names a slice by the period the operator asked for, not the year the file states", () => {
+    const described = describeStagedDocument(
+      document({ vouchers: [voucher("2026-01-03"), voucher("2026-01-07")] }),
+      { requestedPeriod: { from: "2026-01-01", to: "2026-03-31" } },
+    )
+
+    // The stated period is the company's books; taking it would make every
+    // slice claim the whole year and overlap the others.
+    expect(described).toMatchObject({
+      ok: true,
+      kind: "vouchers",
+      chunkId: voucherChunkId({ from: "2026-01-01", to: "2026-03-31" }),
+      range: { from: "2026-01-01", to: "2026-03-31" },
+      periodSource: "requested",
+      declaredPeriod: { from: "2026-01-01", to: "2026-01-10" },
+    })
+  })
+
+  it("falls back to the span of the vouchers when the file states no period", () => {
+    const described = describeStagedDocument(
+      document({
+        financialPeriod: {},
+        vouchers: [voucher("2026-01-03"), voucher("2026-01-07")],
+      }),
+      {},
+    )
+
+    expect(described).toMatchObject({
+      ok: true,
+      range: { from: "2026-01-03", to: "2026-01-07" },
+      firstDate: "2026-01-03",
+      lastDate: "2026-01-07",
+    })
+  })
+
+  it("refuses a slice holding a voucher outside the range it would be stored under", () => {
+    expect(
+      describeStagedDocument(
+        document({ vouchers: [voucher("2026-01-03"), voucher("2026-01-07")] }),
+        { requestedPeriod: { from: "2026-01-05", to: "2026-01-31" } },
+      ),
+    ).toMatchObject({ ok: false, code: "TALLY_VOUCHERS_OUTSIDE_RANGE" })
+  })
+
+  it("refuses a vouchers file with no period and no dated voucher rather than guessing", () => {
+    expect(
+      describeStagedDocument(document({ financialPeriod: {} }), { kind: "vouchers" }),
+    ).toMatchObject({ ok: false, code: "TALLY_PERIOD_MISSING" })
+  })
+
+  it("refuses a file holding both masters and vouchers instead of dropping half of it", () => {
+    expect(
+      describeStagedDocument(
+        document({ ledgers: records(1), vouchers: [voucher("2026-01-03")] }),
+        {},
+      ),
+    ).toMatchObject({ ok: false, code: "TALLY_FILE_COMBINED" })
+  })
+
+  it("stages an empty slice when its range is named, so the period still tiles", () => {
+    // A month with no transactions is part of the period. Refusing it would
+    // leave a hole no other file covers.
+    const described = describeStagedDocument(document({ financialPeriod: {} }), {
+      kind: "vouchers",
+      requestedPeriod: { from: "2026-01-01", to: "2026-01-31" },
+    })
+
+    expect(described).toMatchObject({
+      ok: true,
+      kind: "vouchers",
+      chunkId: voucherChunkId({ from: "2026-01-01", to: "2026-01-31" }),
+      recordsRead: 0,
+    })
+  })
+
+  it("takes a file as the kind the operator named", () => {
+    const described = describeStagedDocument(
+      document({ ledgers: records(1), vouchers: [voucher("2026-01-03")] }),
+      { kind: "vouchers", requestedPeriod: { from: "2026-01-01", to: "2026-01-31" } },
+    )
+
+    expect(described).toMatchObject({ ok: true, kind: "vouchers", recordsRead: 1 })
+  })
+})
+
+describe("isMultiFileSession", () => {
+  it("is true only once a file has been staged", () => {
+    expect(isMultiFileSession({ sources: [{ chunkId: "masters", uploadId: "u1" }] })).toBe(true)
+    expect(isMultiFileSession({ sources: [] })).toBe(false)
+    expect(isMultiFileSession({ path: "tenants/t/imports/s/source.xml" })).toBe(false)
+    expect(isMultiFileSession(null)).toBe(false)
+  })
+})
+
+describe("readStagedSources", () => {
+  it("keeps the entries a page can render and drops the rest", () => {
+    const sources = readStagedSources([
+      { uploadId: "u1", chunkId: "masters", fileName: "masters.xml" },
+      { chunkId: "vouchers:2026-01-01:2026-01-10" },
+      { uploadId: "u2" },
+      "nonsense",
+      null,
+    ])
+
+    expect(sources).toEqual([
+      { uploadId: "u1", chunkId: "masters", fileName: "masters.xml" },
+    ])
+    expect(readStagedSources(undefined)).toEqual([])
   })
 })

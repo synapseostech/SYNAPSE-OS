@@ -214,13 +214,17 @@ function emptyChunk(
   }
 }
 
-export function createManifest(input: {
+/**
+ * A manifest whose voucher chunks are added later, one per uploaded file. The
+ * masters chunk exists from the start because every session needs one; no
+ * voucher range is invented, so nothing claims coverage that was not uploaded.
+ */
+export function createOpenManifest(input: {
   sessionId: string
   company: string
   mode: "opening" | "closing"
   period: TallyDateRange
   updatedAt: string
-  parts?: number
   periodSource?: TallyPeriodSource
   declaredPeriod?: TallyDateRange
   edition?: TallyEdition
@@ -228,7 +232,7 @@ export function createManifest(input: {
   if (!input.sessionId.trim()) throw new Error("TALLY_MANIFEST_SESSION_MISSING")
   if (!input.company.trim()) throw new Error("TALLY_MANIFEST_COMPANY_MISSING")
 
-  const ranges = splitPeriod(input.period, input.parts ?? 1)
+  rangeEnd(input.period)
   const declaredPeriod = input.declaredPeriod
   return {
     version: TALLY_MANIFEST_VERSION,
@@ -241,11 +245,74 @@ export function createManifest(input: {
       ? { declaredPeriod: { from: declaredPeriod.from, to: declaredPeriod.to } }
       : {}),
     ...(input.edition ? { edition: input.edition } : {}),
+    chunks: [emptyChunk("masters", MASTERS_CHUNK_ID, { ...input.period })],
+    updatedAt: input.updatedAt,
+  }
+}
+
+export function createManifest(input: {
+  sessionId: string
+  company: string
+  mode: "opening" | "closing"
+  period: TallyDateRange
+  updatedAt: string
+  parts?: number
+  periodSource?: TallyPeriodSource
+  declaredPeriod?: TallyDateRange
+  edition?: TallyEdition
+}): TallyMigrationManifest {
+  const open = createOpenManifest(input)
+  const ranges = splitPeriod(input.period, input.parts ?? 1)
+  return {
+    ...open,
     chunks: [
-      emptyChunk("masters", MASTERS_CHUNK_ID, { ...input.period }),
+      ...open.chunks,
       ...ranges.map((range) => emptyChunk("vouchers", voucherChunkId(range), range)),
     ],
-    updatedAt: input.updatedAt,
+  }
+}
+
+/**
+ * Adds a chunk the manifest does not have yet. A file re-uploaded for a range
+ * already staged leaves the existing entry in place, so a retry cannot leave
+ * two chunks claiming the same range.
+ */
+export function ensureChunk(
+  manifest: TallyMigrationManifest,
+  input: { kind: TallyChunkKind; id: string; range: TallyDateRange },
+  now = new Date().toISOString(),
+): TallyMigrationManifest {
+  if (manifest.chunks.some((chunk) => chunk.id === input.id)) return manifest
+  rangeEnd(input.range)
+  return {
+    ...manifest,
+    chunks: [...manifest.chunks, emptyChunk(input.kind, input.id, { ...input.range })],
+    updatedAt: now,
+  }
+}
+
+/**
+ * Grows the promised period to cover a range staged later in the same session.
+ * Files may arrive in any order, so the period is the union of everything
+ * uploaded rather than the range of whichever file happened to come first.
+ * A narrower period never shrinks it.
+ */
+export function widenPeriod(
+  manifest: TallyMigrationManifest,
+  range: TallyDateRange,
+  now = new Date().toISOString(),
+): TallyMigrationManifest {
+  const start = Math.min(rangeStart(manifest.period), rangeStart(range))
+  const end = Math.max(rangeEnd(manifest.period), rangeEnd(range))
+  const period = { from: formatIsoDate(start), to: formatIsoDate(end) }
+  if (sameRange(period, manifest.period)) return manifest
+  return {
+    ...manifest,
+    period,
+    chunks: manifest.chunks.map((chunk) =>
+      chunk.kind === "masters" ? { ...chunk, range: { ...period } } : chunk,
+    ),
+    updatedAt: now,
   }
 }
 
@@ -547,6 +614,36 @@ export function recordChunkResult(
     chunks: manifest.chunks.map((chunk, at) => (at === index ? next : chunk)),
     updatedAt: now,
   }
+}
+
+/**
+ * Records a result for a chunk the operator explicitly uploaded again. Unlike
+ * `recordChunkResult`, a completed chunk is replaced rather than left alone:
+ * the new file stands in for the one already staged. Attempts and the first
+ * start time carry over, so a corrected slice still shows it was tried before.
+ */
+export function replaceChunkResult(
+  manifest: TallyMigrationManifest,
+  chunkId: string,
+  result: TallyChunkResult,
+  now = new Date().toISOString(),
+): TallyMigrationManifest {
+  const existing = manifest.chunks.find((chunk) => chunk.id === chunkId)
+  if (!existing) throw new Error("TALLY_CHUNK_UNKNOWN")
+
+  const reset: TallyMigrationManifest = {
+    ...manifest,
+    chunks: manifest.chunks.map((chunk) =>
+      chunk.id === chunkId
+        ? {
+            ...emptyChunk(chunk.kind, chunk.id, { ...chunk.range }),
+            attempts: chunk.attempts,
+            ...(chunk.startedAt ? { startedAt: chunk.startedAt } : {}),
+          }
+        : chunk,
+    ),
+  }
+  return recordChunkResult(reset, chunkId, result, now)
 }
 
 function executionOrder(manifest: TallyMigrationManifest): TallyMigrationChunk[] {

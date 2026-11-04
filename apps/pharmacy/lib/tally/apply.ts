@@ -20,6 +20,7 @@ import {
   TALLY_MIRROR_NOTE_PREFIX,
   isTallyMirrorNote,
   type TallyApplyDb,
+  type TallyDbError,
 } from "./types"
 
 export type TallyApplyStage =
@@ -77,6 +78,17 @@ export type TallyApplyChunkResult = {
 const MAX_FAILURES = 200
 const TRUNCATION_CODE = "FAILURES_TRUNCATED"
 const INSERT_BATCH = 200
+
+/**
+ * An abort that names where it happened. Item failures are checkpointed to the
+ * session; this is the other kind — the stage itself could not continue — and
+ * the route logs it, so the reason must outlive the request.
+ */
+function stepFailed(stage: TallyApplyStage, item: string | null, error: TallyDbError): Error {
+  const failure = new Error(`${stage}${item ? ` @ ${item}` : ""}: ${error.message}`)
+  failure.name = "TallyApplyStepError"
+  return Object.assign(failure, { stage, item, detail: error })
+}
 
 export function emptyProgress(now = new Date().toISOString()): TallyApplyProgress {
   return {
@@ -250,13 +262,14 @@ async function insertIgnore(
   table: string,
   rows: Array<Record<string, unknown>>,
   onConflict: string,
+  item: string,
 ): Promise<Array<Record<string, unknown>>> {
   if (rows.length === 0) return []
   const { data, error } = await db
     .from(table)
     .upsert(rows, { onConflict, ignoreDuplicates: true })
     .select()
-  if (error) throw new Error(error.message)
+  if (error) throw stepFailed("journals", item, error)
   return (data ?? []) as Array<Record<string, unknown>>
 }
 
@@ -366,27 +379,29 @@ async function stageAccounts(
   // leave a row on `unique (tenant_id, code)` that the seeder's system-key
   // conflict clause cannot absorb — and every later journal post reseeds.
   const seeded = await db.rpc("seed_pharmacy_accounting_accounts", { p_tenant_id: tenantId })
-  if (seeded.error) throw new Error(seeded.error.message)
+  if (seeded.error) throw stepFailed("accounts", "system chart", seeded.error)
 
   const accounts = await loadAccounts(db, tenantId)
   const existing = new Set(accounts.keys())
   const missing = plan.accounts.filter((account) => !existing.has(account.code))
   for (let index = 0; index < missing.length; index += INSERT_BATCH) {
     const batch = missing.slice(index, index + INSERT_BATCH).map((account) => ({
-      tenant_id: tenantId,
       code: account.code,
       name: account.name,
       account_type: account.accountType,
       normal_balance: account.normalBalance,
-      system_key: null,
-      is_system: false,
-      is_active: true,
     }))
-    const { error } = await db.from("pharmacy_accounting_accounts").insert(batch)
-    if (error && !/duplicate|unique/i.test(error.message)) {
-      throw new Error(error.message)
+    // The accounts table is closed to direct writes; imported ledgers enter
+    // through this function, the same way the seeded chart does.
+    const { data, error } = await db.rpc("add_pharmacy_accounting_accounts", {
+      p_tenant_id: tenantId,
+      p_accounts: batch,
+    })
+    if (error) {
+      const label = batch.length === 1 ? batch[0]!.code : `${batch[0]!.code} (+${batch.length - 1})`
+      throw stepFailed("accounts", label, error)
     }
-    progress.value.counts.accounts += batch.length
+    progress.value.counts.accounts += Number(data ?? 0)
   }
 }
 
@@ -640,6 +655,7 @@ async function mirrorSale(
       },
     ],
     "tenant_id,transaction_no",
+    sale.sourceId,
   )
   // A replay can find the parent already there — after an earlier run failed
   // on the items, or after a crash before the checkpoint caught up. Repair the
@@ -774,6 +790,7 @@ async function mirrorPurchase(
       },
     ],
     "tenant_id,purchase_no",
+    purchase.sourceId,
   )
   const insertedId = (inserted[0] as { id: string } | undefined)?.id
   const existing = insertedId
