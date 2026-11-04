@@ -4,7 +4,7 @@ import {
   UserCheck, ClipboardList, MessageSquare, Activity, Truck, FileText,
   BarChart3, RotateCcw, Wifi, CalendarClock, WalletCards, BrainCircuit,
   CreditCard, Building2, ShoppingBag, BookOpen, FileSpreadsheet,
-  Settings,
+  Settings, Download,
 } from "lucide-react"
 import { sessionHasCapability, type CapabilitySession } from "@/lib/capabilities"
 
@@ -83,6 +83,7 @@ export const NAV_GROUPS: PortalNavGroup[] = [
       { name: "Network",      href: "/portal/network",      icon: Wifi,          permission: "MANAGE_SETTINGS" },
       { name: "Inquiries",    href: "/portal/inquiries",    icon: MessageSquare, adminOnly: true },
       { name: "Activity Log", href: "/portal/activity-log", icon: Activity,      adminOnly: true },
+      { name: "Export",       href: "/portal/export",       icon: Download,      adminOnly: true },
       { name: "Settings",     href: "/portal/settings",     icon: Settings,      permission: "MANAGE_SETTINGS" },
     ],
   },
