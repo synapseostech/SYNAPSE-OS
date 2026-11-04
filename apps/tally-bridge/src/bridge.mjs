@@ -21,8 +21,47 @@ export const MAX_TALLY_EXPORT_BYTES = 25 * 1024 * 1024
 export const TALLY_EXPORT_TIMEOUT_MS = 60_000
 export const DEFAULT_TALLY_FROM_DATE = "19000101"
 export const MAX_TALLY_COMPANIES = 500
+/**
+ * Tally.ERP 9's success envelope carries no STATUS, so size is the only signal
+ * left when a reply holds no DATA and no records. An error page is a few hundred
+ * bytes; the smallest real export is far larger.
+ */
+const MIN_UNSIGNED_EXPORT_BYTES = 2048
 
-const REPORTS = ["All Masters", "Day Book"]
+export const VOUCHER_REGISTER_ID = "Voucher Register"
+
+/**
+ * The report names the bridge used to ask for do not work on the pharmacy's
+ * Tally.ERP 9 build: "All Masters" answers with an empty envelope, and "Day
+ * Book" ignores SVFROMDATE/SVTODATE and always returns today's vouchers.
+ *
+ * Masters are read as one collection per type instead, with the same report
+ * names and native methods `tally-export-history.ps1` was validated against on
+ * that installation.
+ */
+export const TALLY_MASTER_COLLECTIONS = [
+  {
+    type: "Ledger",
+    methods: ["Name", "Parent", "OpeningBalance", "ClosingBalance"],
+  },
+  { type: "Group", methods: ["Name", "Parent"] },
+  {
+    type: "StockItem",
+    methods: [
+      "Name",
+      "Parent",
+      "BaseUnits",
+      "OpeningBalance",
+      "OpeningRate",
+      "OpeningValue",
+      "ClosingBalance",
+      "ClosingValue",
+    ],
+  },
+  { type: "StockGroup", methods: ["Name", "Parent"] },
+  { type: "Unit", methods: ["Name", "Symbol"] },
+  { type: "Godown", methods: ["Name", "Parent"] },
+]
 
 // Tally installs to a different folder per edition, so the executable path is
 // the only signal available before anything is running.
@@ -284,15 +323,25 @@ export function buildTallyCompanyListRequest() {
   ].join("")
 }
 
+/** The last day of the month `value` falls in, in Tally's YYYYMMDD form. */
+export function monthEndTallyDate(value) {
+  const date = validTallyDate(value, "TO_DATE")
+  const year = Number(date.slice(0, 4))
+  const month = Number(date.slice(4, 6))
+  const last = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  return `${date.slice(0, 6)}${String(last).padStart(2, "0")}`
+}
+
 export function buildTallyExportRequest(report, { company, fromDate, toDate }) {
-  if (!REPORTS.includes(report)) throw new Error("TALLY_BRIDGE_REPORT_UNSUPPORTED")
+  if (report !== VOUCHER_REGISTER_ID) throw new Error("TALLY_BRIDGE_REPORT_UNSUPPORTED")
   const companyTag = company
     ? `<SVCURRENTCOMPANY>${escapeXml(company)}</SVCURRENTCOMPANY>`
     : ""
-  // Masters carry the period too: Tally only reports each ledger's and stock
-  // item's closing balance when SVTODATE is part of the request, and a
-  // balances-only cut-over has nothing to read without it.
-  const dateTags = `<SVFROMDATE>${validTallyDate(fromDate, "FROM_DATE")}</SVFROMDATE><SVTODATE>${validTallyDate(toDate, "TO_DATE")}</SVTODATE>`
+  // The Voucher Register honours the period, but only when SVTODATE is the last
+  // day of a month; any other end date is answered with today's vouchers, which
+  // is how the Day Book behaved for every date. The requested end is still what
+  // the caller is told was read, so the clamp lives only in the request.
+  const dateTags = `<SVFROMDATE>${validTallyDate(fromDate, "FROM_DATE")}</SVFROMDATE><SVTODATE>${monthEndTallyDate(toDate)}</SVTODATE>`
 
   return [
     "<ENVELOPE>",
@@ -303,6 +352,38 @@ export function buildTallyExportRequest(report, { company, fromDate, toDate }) {
     dateTags,
     "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>",
     "</STATICVARIABLES></DESC></BODY></ENVELOPE>",
+  ].join("")
+}
+
+/**
+ * One master type, asked for as a TDL collection. The collection carries no
+ * dates: a master's closing balance is reported against the company's own
+ * closing date, and adding a period changes nothing but the reply's size.
+ */
+export function buildMasterCollectionRequest(type, methods, { company } = {}) {
+  const id = `Synapse ${type}`
+  const companyTag = company
+    ? `<SVCURRENTCOMPANY>${escapeXml(company)}</SVCURRENTCOMPANY>`
+    : ""
+  const methodTags = methods
+    .map((method) => `<NATIVEMETHOD>${method}</NATIVEMETHOD>`)
+    .join("")
+
+  return [
+    "<ENVELOPE>",
+    "<HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE>",
+    `<ID>${id}</ID></HEADER>`,
+    "<BODY><DESC><STATICVARIABLES>",
+    companyTag,
+    "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>",
+    "</STATICVARIABLES>",
+    "<TDL><TDLMESSAGE>",
+    `<COLLECTION NAME="${id}" ISMODIFY="No" ISFIXED="No" ISINITIALIZE="No" ISOPTION="No" ISINTERNAL="No">`,
+    `<TYPE>${type}</TYPE>`,
+    methodTags,
+    "</COLLECTION>",
+    "</TDLMESSAGE></TDL>",
+    "</DESC></BODY></ENVELOPE>",
   ].join("")
 }
 
@@ -342,29 +423,132 @@ async function readResponseText(response) {
   return decode(Buffer.concat(chunks))
 }
 
-function extractData(responseText, report, { allowEmpty = false } = {}) {
+const REFUSAL_MARKERS = [
+  /<STATUS>\s*0\s*<\/STATUS>/i,
+  /<LINEERROR>/i,
+  /Unknown Request/i,
+  /<RESPONSE>[^<]*cannot be processed/i,
+]
+
+/**
+ * A Tally.ERP 9 export that succeeds carries no STATUS element at all, so a
+ * reply cannot be judged by its STATUS alone. The refusal markers are checked
+ * first; after that, a reply with a DATA element is read from it, and a reply
+ * without one is accepted only when it opens with an envelope and either
+ * carries records of the expected type or is far larger than any error page.
+ * A short, silent envelope is refused rather than passed on as an empty export.
+ */
+function extractExportData(responseText, label, { allowEmpty = false, recordTag } = {}) {
+  const prefix = `TALLY_BRIDGE_${label}`
   if (/<!DOCTYPE|<!ENTITY/i.test(responseText)) {
-    throw new Error(`TALLY_BRIDGE_${report.toUpperCase().replaceAll(" ", "_")}_UNSAFE_XML`)
+    throw new Error(`${prefix}_UNSAFE_XML`)
   }
+  if (REFUSAL_MARKERS.some((marker) => marker.test(responseText))) {
+    throw new Error(`${prefix}_REJECTED`)
+  }
+
   const status = /<STATUS>\s*([01])\s*<\/STATUS>/i.exec(responseText)?.[1]
-  if (status !== "1") {
-    throw new Error(
-      status === "0"
-        ? `TALLY_BRIDGE_${report.toUpperCase().replaceAll(" ", "_")}_REJECTED`
-        : `TALLY_BRIDGE_${report.toUpperCase().replaceAll(" ", "_")}_STATUS_MISSING`,
-    )
-  }
   const data = /<DATA(?:\s[^>]*)?>([\s\S]*?)<\/DATA>/i.exec(responseText)?.[1]
-  if (data !== undefined && !data.trim() && allowEmpty) {
+  if (data !== undefined) {
+    if (data.trim()) return data
     // A narrowed voucher range may legitimately hold no voucher. Tally saying
     // so with an empty DATA element is an empty range, not a lost response; a
     // missing DATA element is still refused below.
-    return ""
+    if (allowEmpty) return ""
+    throw new Error(`${prefix}_EMPTY`)
   }
-  if (!data?.trim()) {
-    throw new Error(`TALLY_BRIDGE_${report.toUpperCase().replaceAll(" ", "_")}_EMPTY`)
+  if (status === "1") throw new Error(`${prefix}_EMPTY`)
+
+  const opensWithEnvelope = /^\ufeff?\s*<ENVELOPE\b/i.test(responseText)
+  const carriesRecords = recordTag
+    ? new RegExp(`<${recordTag}\\b`, "i").test(responseText)
+    : false
+  if (
+    opensWithEnvelope &&
+    (carriesRecords || Buffer.byteLength(responseText) > MIN_UNSIGNED_EXPORT_BYTES)
+  ) {
+    return responseText
   }
-  return data
+  throw new Error(`${prefix}_STATUS_MISSING`)
+}
+
+const MONTH_NUMBERS = {
+  jan: 1,
+  feb: 2,
+  mar: 3,
+  apr: 4,
+  may: 5,
+  jun: 6,
+  jul: 7,
+  aug: 8,
+  sep: 9,
+  oct: 10,
+  nov: 11,
+  dec: 12,
+}
+
+/** The date a voucher block states, as YYYYMMDD, in the forms Tally writes. */
+function voucherCompactDate(block) {
+  const raw = /<DATE[^>]*>\s*([^<]{4,30}?)\s*<\/DATE>/i.exec(block)?.[1]
+  if (!raw) return undefined
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(raw)
+  if (compact) return `${compact[1]}${compact[2]}${compact[3]}`
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw)
+  if (iso) return `${iso[1]}${iso[2]}${iso[3]}`
+  const numeric = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec(raw)
+  if (numeric) {
+    return `${numeric[3]}${numeric[2].padStart(2, "0")}${numeric[1].padStart(2, "0")}`
+  }
+  const named = /^(\d{1,2})[- ]([A-Za-z]{3,})[- ](\d{4})$/.exec(raw)
+  if (named) {
+    const month = MONTH_NUMBERS[named[2].slice(0, 3).toLowerCase()]
+    if (month) {
+      return `${named[3]}${String(month).padStart(2, "0")}${named[1].padStart(2, "0")}`
+    }
+  }
+  return undefined
+}
+
+/**
+ * Keeps only the vouchers dated inside the period that was asked for.
+ *
+ * The register honours the requested end only when it lands on a month end, so
+ * the request is widened to that month end (`buildTallyExportRequest`) and
+ * Tally can answer with vouchers past the range the caller asked for. The
+ * portal refuses a chunk holding a voucher outside its own range
+ * (`TALLY_CHUNK_DATES_OUTSIDE`), and rightly so: a slice must account for its
+ * own days. A voucher whose date cannot be read is kept, because dropping what
+ * cannot be judged would lose records.
+ */
+export function keepVouchersWithinRange(xml, { fromDate, toDate } = {}) {
+  if (!fromDate && !toDate) return xml
+  return xml.replace(/<VOUCHER\b[^>]*>[\s\S]*?<\/VOUCHER>/gi, (block) => {
+    const date = voucherCompactDate(block)
+    if (!date) return block
+    if (fromDate && date < fromDate) return ""
+    if (toDate && date > toDate) return ""
+    return block
+  })
+}
+
+/**
+ * Tally writers disagree on the rate's unit suffix: ERP 9 writes
+ * `2500.00/ea`, and the importer reads that field as a plain amount, so the
+ * suffix makes it unreadable and the product is priced from its (negative)
+ * opening value instead of the rate. Only the number is kept.
+ */
+export function stripOpeningRateUnits(xml) {
+  return xml.replace(
+    /(<OPENINGRATE\b[^>]*>\s*[+-]?[\d.,]+)\s*\/\s*[^<]{1,64}(<\/OPENINGRATE>)/gi,
+    "$1$2",
+  )
+}
+
+function companyNameIn(xml) {
+  return (
+    /<COMPANY\b[^>]*?\bNAME="([^"]{1,400})"/i.exec(xml)?.[1] ??
+    /<COMPANYNAME>([^<]{1,400})<\/COMPANYNAME>/i.exec(xml)?.[1]
+  )
 }
 
 /**
@@ -372,20 +556,32 @@ function extractData(responseText, report, { allowEmpty = false } = {}) {
  * company — the name was not loaded, or someone switched company mid-run — the
  * payload is another business's books and must not reach the import.
  *
- * A response that names no company cannot be checked, and an unchecked payload
- * is indistinguishable from another company's books, so it is refused rather
- * than let through. That makes these reports unusable on any Tally build that
- * omits the company element; tally-probe.ps1 reports which builds do, so the
- * requirement is checked against a real installation rather than assumed.
+ * A reply that names no company cannot be checked that way, and ERP 9's
+ * collection and register exports name none at all. Refusing those would make
+ * every export on this build fail, so the pin is confirmed against the
+ * companies Tally has open instead — once per export, because the answer cannot
+ * change while the bridge holds the connection.
  */
-function assertPinnedCompany(xml, expected) {
-  if (!expected) throw new Error("TALLY_BRIDGE_COMPANY_UNPINNED")
-  const raw =
-    /<COMPANY\b[^>]*?\bNAME="([^"]{1,400})"/i.exec(xml)?.[1] ??
-    /<COMPANYNAME>([^<]{1,400})<\/COMPANYNAME>/i.exec(xml)?.[1]
-  if (raw === undefined) throw new Error("TALLY_BRIDGE_COMPANY_UNVERIFIED")
-  if (decodeXmlText(raw).toLowerCase() !== expected.trim().toLowerCase()) {
-    throw new Error("TALLY_BRIDGE_COMPANY_MISMATCH")
+function companyVerifier(fetchImpl, config, expected) {
+  let openCompanies
+  return async (xml) => {
+    if (!expected) throw new Error("TALLY_BRIDGE_COMPANY_UNPINNED")
+    const raw = companyNameIn(xml)
+    if (raw !== undefined) {
+      if (decodeXmlText(raw).toLowerCase() !== expected.trim().toLowerCase()) {
+        throw new Error("TALLY_BRIDGE_COMPANY_MISMATCH")
+      }
+      return
+    }
+    openCompanies ??= await listTallyCompanies(
+      config,
+      fetchImpl,
+      {},
+      { ensureServer: false },
+    )
+    if (!openCompanies.some((name) => name.toLowerCase() === expected.trim().toLowerCase())) {
+      throw new Error("TALLY_BRIDGE_COMPANY_UNVERIFIED")
+    }
   }
 }
 
@@ -396,9 +592,9 @@ function assertPinnedCompany(xml, expected) {
  * would surface as COMPANY_UNVERIFIED and neither the operator's toast nor the
  * server-side log line would say what Tally actually answered.
  */
-function checkedExport(xml, pinned, build) {
+async function checkedExport(verifyCompany, xml, build) {
   const payload = build()
-  assertPinnedCompany(xml, pinned)
+  await verifyCompany(xml)
   return payload
 }
 
@@ -441,19 +637,22 @@ function packageExport(masters, vouchers, company) {
 }
 
 export function combineTallyExports(masterXml, voucherXml, { company } = {}) {
-  const masters = extractData(masterXml, "All Masters")
-  const vouchers = extractData(voucherXml, "Day Book")
+  const masters = extractExportData(masterXml, "MASTERS")
+  const vouchers = extractExportData(voucherXml, "VOUCHERS", {
+    allowEmpty: true,
+    recordTag: "VOUCHER",
+  })
   const carried = COMPANY_MARKER.test(masters) ? "" : companyElement(masterXml, company)
   return packageExport(masters, vouchers, carried)
 }
 
 /**
- * A balances-only cut-over never posts a voucher, so the Day Book is not
+ * A balances-only cut-over never posts a voucher, so the register is not
  * fetched at all. A multi-year history can exceed the 25 MB ceiling on its own,
  * and downloading it only to discard it would fail the cut-over for no reason.
  */
 export function buildMasterOnlyExport(masterXml, { company } = {}) {
-  const masters = extractData(masterXml, "All Masters")
+  const masters = extractExportData(masterXml, "MASTERS")
   const carried = COMPANY_MARKER.test(masters) ? "" : companyElement(masterXml, company)
   return packageExport(masters, "", carried)
 }
@@ -465,7 +664,10 @@ export function buildMasterOnlyExport(masterXml, { company } = {}) {
  * pinned company element keeps the payload attributable to these books.
  */
 export function buildVoucherOnlyExport(voucherXml, { company } = {}) {
-  const vouchers = extractData(voucherXml, "Day Book", { allowEmpty: true })
+  const vouchers = extractExportData(voucherXml, "VOUCHERS", {
+    allowEmpty: true,
+    recordTag: "VOUCHER",
+  })
   const carried = COMPANY_MARKER.test(vouchers) ? "" : companyElement(voucherXml, company)
   return packageExport("", vouchers, carried)
 }
@@ -513,6 +715,32 @@ async function fetchReport(fetchImpl, config, report, period, company) {
     toDate: period.toDate,
   })
   return postTallyXml(fetchImpl, config, body)
+}
+
+/**
+ * The masters document, assembled from one collection per type because "All
+ * Masters" answers with an empty envelope on this build. A type with nothing in
+ * it — no godowns, say — is an empty block, not a failure; a document with no
+ * records at all is.
+ */
+async function fetchMasterDocument(fetchImpl, config, company) {
+  const blocks = []
+  for (const { type, methods } of TALLY_MASTER_COLLECTIONS) {
+    const xml = await postTallyXml(
+      fetchImpl,
+      config,
+      buildMasterCollectionRequest(type, methods, { company }),
+    )
+    blocks.push(
+      extractExportData(xml, `MASTERS_${type.toUpperCase()}`, {
+        allowEmpty: true,
+        recordTag: type.toUpperCase(),
+      }),
+    )
+  }
+  const records = stripOpeningRateUnits(blocks.join(""))
+  if (!records.trim()) throw new Error("TALLY_BRIDGE_MASTERS_EMPTY")
+  return `<ENVELOPE><HEADER><VERSION>1</VERSION></HEADER><BODY><DATA>${records}</DATA></BODY></ENVELOPE>`
 }
 
 /**
@@ -613,24 +841,35 @@ export async function exportTallyCompany(
   const period = resolveExportPeriod(config, now, requested)
   const pinned = String(company ?? config.company ?? "").trim()
   await ensureTallyHttpServer(config, tallyLifecycle)
+  const verifyCompany = companyVerifier(fetchImpl, config, pinned)
+  // When the requested end is not a month end the register read went past it,
+  // so the reply is cut back to the days this export was charged with.
+  const sliceToPeriod = (xml) =>
+    monthEndTallyDate(period.toDate) === period.toDate
+      ? xml
+      : keepVouchersWithinRange(xml, period)
   if (scope === "vouchers") {
-    const voucherXml = await fetchReport(fetchImpl, config, "Day Book", period, pinned)
-    return checkedExport(voucherXml, pinned, () =>
+    const voucherXml = sliceToPeriod(
+      await fetchReport(fetchImpl, config, VOUCHER_REGISTER_ID, period, pinned),
+    )
+    return checkedExport(verifyCompany, voucherXml, () =>
       buildVoucherOnlyExport(voucherXml, { company: pinned }),
     )
   }
-  const masterXml = await fetchReport(fetchImpl, config, "All Masters", period, pinned)
+  const masterXml = await fetchMasterDocument(fetchImpl, config, pinned)
   if (closingOnly || scope === "masters") {
-    return checkedExport(masterXml, pinned, () =>
+    return checkedExport(verifyCompany, masterXml, () =>
       buildMasterOnlyExport(masterXml, { company: pinned }),
     )
   }
   // Refused before the second fetch: a refused masters answer must not cost a
-  // Day Book download the size of the whole period.
-  extractData(masterXml, "All Masters")
-  assertPinnedCompany(masterXml, pinned)
-  const voucherXml = await fetchReport(fetchImpl, config, "Day Book", period, pinned)
-  return checkedExport(voucherXml, pinned, () =>
+  // register download the size of the whole period.
+  extractExportData(masterXml, "MASTERS")
+  await verifyCompany(masterXml)
+  const voucherXml = sliceToPeriod(
+    await fetchReport(fetchImpl, config, VOUCHER_REGISTER_ID, period, pinned),
+  )
+  return checkedExport(verifyCompany, voucherXml, () =>
     combineTallyExports(masterXml, voucherXml, { company: pinned }),
   )
 }

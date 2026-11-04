@@ -2099,7 +2099,7 @@ called to prepare it.
 | Tally company discovery | One real Tally Prime and one ERP 9 instance: the bridge’s company list matches `Gateway of Tally → Company Info` exactly, including renamed and multi-company setups |
 | Edition identification | On each edition, `/status`, `/companies` and the portal's review screen must agree on `prime` / `erp9`; an `unknown` for a correctly installed copy fails detection. Run the checklist in `TALLY_PRIME_ERP9_ACCEPTANCE.md` per edition and fill in its evidence file |
 | Opening/closing balances | Balances-only cut-over against a real company, with the operator reconciling every closing figure to Tally’s own Stock Summary |
-| Voucher extraction | A full `Day Book` export for a known range, compared line-for-line against a manual voucher count from Tally — not a parse-success check |
+| Voucher extraction | A full voucher export for a known range, compared line-for-line against a manual voucher count from Tally — not a parse-success check |
 | Reconciliation | Extract twice for the same period and confirm identical counts and totals; then compare against Tally’s own report totals |
 | Resume/retry | Kill the bridge mid-extraction and resume; confirm no voucher is duplicated or lost, and that the range bookkeeping matches |
 | Windows installation | The packaged installer, the six setup screens, the three Start Menu shortcuts and UAC elevation, on a real Windows host — reviewed from code and static tests only |

@@ -21,9 +21,9 @@ One Node.js process on the pharmacy computer. It:
 - listens on `127.0.0.1:17890` only — never on a LAN address, never on `0.0.0.0`;
 - accepts requests only from one exact portal origin and only with its own
   256-bit token;
-- asks Tally's local XML/HTTP server (default `127.0.0.1:9000`) for
-  **All Masters** and the **Day Book**, over date ranges, and streams the XML to
-  the portal;
+- asks Tally's local XML/HTTP server (default `127.0.0.1:9000`) for its master
+  collections and the **Voucher Register** over date ranges, and streams the XML
+  to the portal;
 - writes nothing to Tally, its data files or its configuration, and cannot type
   a Tally password or change the open company.
 
@@ -210,7 +210,7 @@ The checks, in order:
 | Token | 64 hex characters, compared with `timingSafeEqual`. Sent in `x-synapse-tally-bridge-token`, never in a URL. |
 | No token in the report | The preflight reports `{ tokenConfigured: boolean }` and nothing else. |
 | No Tally XML in the report | Only company **counts** and error codes leave the bridge during a check. |
-| No writes to Tally | The only Tally requests the bridge can make are `List of Companies`, `All Masters` and `Day Book`. There is no write path in the code. |
+| No writes to Tally | The only Tally requests the bridge can make are `List of Companies`, the six master collections (`Synapse Ledger`, `Synapse Group`, `Synapse StockItem`, `Synapse StockGroup`, `Synapse Unit`, `Synapse Godown`) and the `Voucher Register`. There is no write path in the code. |
 | Installer downloads | HTTPS from `nodejs.org` only, SHA-256 and Authenticode verified before `msiexec`. |
 | Installer side effects | No firewall, Defender, DNS or network commands; the static test in §11 asserts their absence. |
 | Config file | `config.json` is ACL-restricted to the installing account and `SYSTEM`. |

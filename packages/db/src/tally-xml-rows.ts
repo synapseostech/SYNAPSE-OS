@@ -145,6 +145,31 @@ export type TallyInventoryLine = {
   ledgers: TallyLedgerLine[]
 }
 
+/**
+ * The tags that link an order to the delivery note and the invoice that
+ * followed it (docs/pharmacy/TALLY_DOCUMENT_CHAIN_DESIGN.md §3, Q2).
+ *
+ * The ledger import does not read them. A probe reports which of these a
+ * company's export actually carries, because Tally leaves out every field the
+ * voucher never used — so an absent tag is an answer, not a parse failure.
+ */
+export const TALLY_LINKAGE_TAGS = [
+  "REFERENCE",
+  "VOUCHERREFERENCENUMBER",
+  "REFERENCENUMBER",
+  "BASICORDERREF",
+  "BASICORDERNO",
+  "BASICORDERNUMBER",
+  "BASICORDERDATE",
+  "BASICDUEDATEOFPYMT",
+  "BASICSHIPDOCUMENTNO",
+  "BASICSHIPPEDBY",
+  "BASICSHIPDATE",
+  "DUEDATE",
+  "DUEONDATE",
+  "BILLALLOCATIONS.LIST",
+] as const
+
 export type TallyVoucher = {
   guid?: string
   remoteId?: string
@@ -157,6 +182,8 @@ export type TallyVoucher = {
   isCancelled: boolean
   ledgerLines: TallyLedgerLine[]
   inventoryLines: TallyInventoryLine[]
+  /** Which of TALLY_LINKAGE_TAGS this voucher carried, in that order. */
+  linkage?: string[]
 }
 
 /** Why the parser stopped before the end of the file, and how much it read. */
@@ -325,6 +352,29 @@ function listText(node: XmlNode, listName: string, itemName: string): string | u
   return parts.length ? parts.join(", ") : undefined
 }
 
+/**
+ * The linkage tags present anywhere inside one voucher.
+ *
+ * They sit at different depths depending on the voucher — order references on
+ * the voucher, bill allocations under ledger lines — so this walks the whole
+ * subtree rather than probing known paths. The walk is bounded by the same
+ * record-node limit the parser already applied while building the tree.
+ */
+function collectLinkageTags(node: XmlNode): string[] {
+  const wanted = new Set<string>(TALLY_LINKAGE_TAGS)
+  const present = new Set<string>()
+  const stack: XmlNode[] = [node]
+  let visited = 0
+  while (stack.length && visited < MAX_RECORD_NODES) {
+    const current = stack.pop()!
+    visited++
+    const name = current.name.toUpperCase()
+    if (wanted.has(name)) present.add(name)
+    for (const child of current.children) stack.push(child)
+  }
+  return TALLY_LINKAGE_TAGS.filter((tag) => present.has(tag))
+}
+
 function readLedgerLine(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyLedgerLine | undefined {
   const ledgerName = textOf(node, "LEDGERNAME") ?? attrOf(node, "LEDGERNAME")
   if (!ledgerName) return undefined
@@ -447,6 +497,7 @@ function readVoucher(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyVouche
     ]
       .map((entry) => readInventoryLine(entry, warnings))
       .filter((entry): entry is TallyInventoryLine => entry !== undefined),
+    linkage: collectLinkageTags(node),
   }
 }
 

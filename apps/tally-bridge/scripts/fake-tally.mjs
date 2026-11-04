@@ -17,9 +17,10 @@
  *
  *   ok               the fixtures, filtered to the requested period
  *   reject           <STATUS>0</STATUS>          -> *_REJECTED
- *   status-missing   no <STATUS> element         -> *_STATUS_MISSING
+ *   status-missing   a short envelope, no DATA   -> *_STATUS_MISSING
  *   empty            named company, empty DATA   -> *_EMPTY
- *   no-company       payload with no company     -> COMPANY_UNVERIFIED
+ *   no-company       no company in the payload, and a different company open
+ *                                                -> COMPANY_UNVERIFIED
  *   unsafe           a DOCTYPE header            -> *_UNSAFE_XML
  *   unavailable      never listens               -> TALLY_UNAVAILABLE
  *   slow             accepts, never answers      -> TALLY_TIMEOUT
@@ -47,9 +48,18 @@ export const FAKE_TALLY_MODES = [
 /** Which synthetic document a request asked for. */
 export function reportForRequest(body) {
   if (body.includes("<ID>List of Companies</ID>")) return "companies"
-  if (body.includes("<ID>All Masters</ID>")) return "masters"
-  if (body.includes("<ID>Day Book</ID>")) return "daybook"
+  const collection = /<ID>Synapse\s+([A-Za-z]+)<\/ID>/.exec(body)?.[1]
+  if (collection) return `masters:${collection}`
+  if (body.includes("<ID>Voucher Register</ID>")) return "daybook"
   return undefined
+}
+
+/** One type's records, as the collection request would have returned them. */
+function collectionReply(source, type) {
+  const blocks = source.match(
+    new RegExp(`<${type}\\b[^>]*>[\\s\\S]*?<\\/${type}>|<${type}\\b[^>]*\\/>`, "gi"),
+  )
+  return `<ENVELOPE><HEADER><VERSION>1</VERSION><STATUS>1</STATUS></HEADER><BODY><DATA>${blocks?.join("") ?? " "}</DATA></BODY></ENVELOPE>`
 }
 
 function compactDate(text, tag) {
@@ -95,6 +105,17 @@ export function renderReply({ report, mode, fixtures, requestBody = "" }) {
   if (mode === "status-missing") return NO_STATUS
   if (mode === "empty") return EMPTY_DATA
   if (mode === "unsafe") return UNSAFE
+
+  if (mode === "no-company" && report === "companies") {
+    // The payloads name no company, and the company the bridge was pinned to is
+    // not open either — that is the case a pin exists to refuse.
+    return '<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA><COLLECTION><COMPANY NAME="Another Company"/></COLLECTION></DATA></BODY></ENVELOPE>'
+  }
+
+  if (report.startsWith("masters:")) {
+    const source = mode === "no-company" ? withoutCompany(fixtures.masters) : fixtures.masters
+    return collectionReply(source, report.slice("masters:".length))
+  }
 
   const source = fixtures[report] ?? ""
   const body = mode === "no-company" ? withoutCompany(source) : source

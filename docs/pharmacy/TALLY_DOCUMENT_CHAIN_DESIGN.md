@@ -22,11 +22,12 @@ ledger postings and closing balances: sales orders becoming delivery notes
 becoming invoices, purchase orders becoming receipt notes becoming bills, and
 the rejection, stock journal and physical stock entries in between.
 
-Today's importer deliberately does not carry those documents. It reads
-`All Masters` and `Day Book`, posts the accounting vouchers, mirrors sales and
-purchases, receives opening or closing stock, and reports every other voucher
-type as an exception (`VOUCHER_TYPE_UNSUPPORTED`). That is a correct boundary
-for an accounting migration and an insufficient one for this requirement.
+Today's importer deliberately does not carry those documents. It reads the
+master collections and the `Voucher Register`, posts the accounting vouchers,
+mirrors sales and purchases, receives opening or closing stock, and reports
+every other voucher type as an exception (`VOUCHER_TYPE_UNSUPPORTED`). That is
+a correct boundary for an accounting migration and an insufficient one for this
+requirement.
 
 This document proposes a second, separate import that stores those documents as
 history without making them operational.
@@ -58,7 +59,7 @@ replayed stock figure drift away from Tally's closing stock.
 Two periods are in play, and the archive must not blur them. The importer skips
 every voucher dated before the conversion date (`VOUCHER_BEFORE_CONVERSION`) —
 opening balances carry that period instead. The archive, if it covers the whole
-Day Book range, will therefore hold documents that the ledger deliberately does
+voucher range, will therefore hold documents that the ledger deliberately does
 not contain. That is expected: the archive is a document record, not a trail of
 the postings. The review screen should say which period each covers.
 
@@ -71,7 +72,7 @@ read-only export of a copy of the client's company.
 
 | # | Question | Why it decides the design |
 |---|---|---|
-| Q1 | Does Tally's `Day Book` XML export contain order vouchers, or only accounting and inventory vouchers? | The bridge can ask for exactly two reports. If orders are not in `Day Book`, the connector must change before any of this is possible |
+| Q1 | Does Tally's `Voucher Register` XML export contain order vouchers, or only accounting and inventory vouchers? | The bridge can ask for the register and the master collections. If orders are not in the register, the connector must change before any of this is possible |
 | Q2 | Which linkage fields does the XML carry — `REFERENCE`, `VOUCHERREFERENCENUMBER`, `BASICORDER...`, dispatch details, due dates? | Without them the archive is a list of documents, not a chain |
 | Q3 | What does Tally's own count of each document type say for the period? | That number is the only independent reconciliation the archive can be held to |
 
@@ -109,7 +110,10 @@ asking for.
 
 ## 5. Data model
 
-Three tables. Not a migration yet — this is the proposed shape for review.
+Three tables. Written as
+[20261104130000_pharmacy_tally_document_archive.sql](../../supabase/migrations/20261104130000_pharmacy_tally_document_archive.sql)
+— prepared, not applied — and still unproven against Gate 0: if Q1 comes back
+"orders are not in the register", the tables exist and nothing writes them.
 
 ```sql
 create table public.pharmacy_tally_documents (
@@ -185,6 +189,22 @@ invent a fourth variant.
 Writes come from the service role during apply only. `authenticated` gets
 `select` and nothing else.
 
+The migration adds four things this sketch did not spell out:
+
+- the policy is `for select` only. The grant and the missing write policy are
+  two independent locks, so a later grant of `update` would still be denied;
+- `pharmacy_tally_document_lines` points at its document through
+  `(document_id, tenant_id)`, not `document_id` alone, so a line whose tenant
+  disagreed with its document is unrepresentable — the service role writes
+  those rows, and disagreeing tenants would show one pharmacy's line to
+  another;
+- `pharmacy_tally_document_imports` carries no policy and no grant at all. It
+  is machinery, not a document;
+- `session_id` is `ON DELETE RESTRICT`, so
+  `purge_pharmacy_tenant_data` clears the archive before it clears
+  `pharmacy_import_sessions`. Without that ordering the reset fails on the
+  first archived document.
+
 ---
 
 ## 6. Extraction and reconciliation
@@ -192,9 +212,10 @@ Writes come from the service role during apply only. `authenticated` gets
 The documents come from the same chunks the vouchers come from, so nothing new
 is fetched when the export is already being read.
 
-- `mode = "closing"` currently skips the Day Book entirely. Document archiving
-  needs it anyway, so the combination becomes: balances from `All Masters`,
-  documents from `Day Book`, no vouchers posted. That is a third cut-over shape
+- `mode = "closing"` currently skips the voucher export entirely. Document
+  archiving needs it anyway, so the combination becomes: balances from the
+  master collections, documents from the `Voucher Register`, no vouchers
+  posted. That is a third cut-over shape
   and should be named as one in the review screen rather than inferred.
 - The document count joins the chunk manifest's reconciliation. A chunk whose
   documents were not independently counted stays `unverified`, exactly as a
@@ -339,8 +360,8 @@ write.
 1. Copy the Tally company to a folder on the client PC and open the copy.
 2. Pick a period containing at least one order, one delivery note, one receipt
    note, one rejection, one stock journal and one physical stock entry.
-3. Run the bridge's `All Masters` and `Day Book` export for that period through
-   the existing read-only path.
+3. Run the bridge's master and voucher export for that period through the
+   existing read-only path.
 4. Record, without pasting XML or ledger values: whether each document type
    appears at all; which of the linkage fields from §3 Q2 are present on one
    example of each; Tally's own per-type count for the period.
@@ -355,7 +376,36 @@ exports, and the parser looks for `<VOUCHER>` nodes rather than a report name,
 so part of the gap may close without touching the connector. That is a thing to
 test, not a thing this design asserts.
 
-If Q1 comes back "orders are not in the Day Book", the answer is not a workaround
+### 13.1 The portal probe
+
+Steps 3 and 4 no longer have to be done by reading XML. The Tally cut-over page
+carries a read-only probe: `Probe an export before you cut over`, backed by
+`POST /api/admin/tally/probe`
+([route](../../apps/pharmacy/app/api/admin/tally/probe/route.ts),
+[report](../../apps/pharmacy/lib/tally/probe.ts)). An admin selects one export
+and it answers Q1, Q2 and Q3 for that file:
+
+- **Q1** — the voucher types present, each flagged `staged` or `not imported`
+  against `tallyVoucherSourceType`. A type the ledger import drops is listed
+  first, so an absent order register reads as "0 sales orders", not as silence.
+- **Q2** — for each such type, every tag in `TALLY_LINKAGE_TAGS`
+  ([tally-xml-rows.ts](../../packages/db/src/tally-xml-rows.ts)) with the number
+  of vouchers that carried it. Zeros are printed, because a missing tag is the
+  answer Q2 is asking for.
+- **Q3** — per-type voucher and cancelled counts, plus master counts and the
+  company's own period, to reconcile Tally's register totals against.
+
+The file is parsed and discarded: no import session, no staged object, no
+ledger write. It refuses a file whose envelope never closed, since a truncated
+export would report "this type is absent" for records that were cut off.
+
+What the probe does **not** settle is whether the bridge itself exports these
+reports — it only reads a file the operator exports by hand. That remains the
+Windows run in §14 step 8. The probe has been exercised against synthetic
+exports and the fixture suite only; no real company export has been put through
+it yet.
+
+If Q1 comes back "orders are not in the register", the answer is not a workaround
 in this design. It is a connector change — additional reports or a TDL
 collection per voucher type — with its own acceptance on both TallyPrime and
 ERP 9, and it should be priced before the client is told the chain is coming.
@@ -366,9 +416,13 @@ ERP 9, and it should be priced before the client is told the chain is coming.
 
 In order; each blocks the next.
 
-1. **Probe** (§13). No code.
+1. **Probe** (§13). The portal probe (§13.1) answers Q1–Q3 from one uploaded
+   export; the Windows run is still required to prove the bridge exports them.
 2. **Parser fields** for the linkage Q2 confirms, with fixtures.
-3. **Schema, RLS and isolation tests** for the three tables.
+3. **Schema, RLS and isolation tests** for the three tables. Prepared in
+   20261104130000 with a static contract in
+   [pharmacy-tally-document-archive.test.mjs](../../scripts/pharmacy-tally-document-archive.test.mjs);
+   the behavioural RLS run against a disposable database has not been done.
 4. **Normalise** the documents into the plan, with counts and exceptions.
 5. **Preview and review** surface, including the mode statement.
 6. **Apply stage**, resumable and idempotent.

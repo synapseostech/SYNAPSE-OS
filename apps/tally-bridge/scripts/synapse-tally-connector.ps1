@@ -342,7 +342,7 @@ function Copy-ConnectorFiles {
         $to = Join-Path $Destination $file
         $toDirectory = Split-Path -Parent $to
         if (-not (Test-Path $toDirectory)) { New-Item -ItemType Directory -Force -Path $toDirectory | Out-Null }
-        Copy-Item -Path $from -To $to -Force
+        Copy-Item -Path $from -Destination $to -Force
     }
     $logs = Join-Path $Destination "logs"
     if (-not (Test-Path $logs)) { New-Item -ItemType Directory -Force -Path $logs | Out-Null }
@@ -351,7 +351,7 @@ function Copy-ConnectorFiles {
 function Protect-ConfigFile {
     param([string]$Path)
     $account = "$($env:USERDOMAIN)\$($env:USERNAME)"
-    & icacls $Path /inheritance:r /grant:r "${account}:(R,W)" "SYSTEM:(F)" | Out-Null
+    & icacls $Path /inheritance:r /grant:r "${account}:(M)" "SYSTEM:(F)" | Out-Null
     # A failed icacls leaves the token readable by every account that inherits
     # from the parent folder, so the installer stops instead of reporting a
     # restriction it did not apply.
@@ -383,7 +383,7 @@ function Write-Config {
     try {
         [System.IO.File]::WriteAllText($temp, $json, $utf8)
         Protect-ConfigFile -Path $temp
-        Move-Item -Path $temp -To $Path -Force
+        Move-Item -Path $temp -Destination $Path -Force
     } catch {
         Remove-Item -Path $temp -Force -ErrorAction SilentlyContinue
         throw
@@ -479,7 +479,7 @@ function Uninstall-Connector {
     }
     if (Test-Path $InstallRoot) {
         if (-not (Test-ConnectorInstallRoot -Path $InstallRoot)) {
-            Write-Warning "Refusing to remove $InstallRoot: it is not a folder this installer filled (its src\cli.mjs and package.json are missing). Remove it by hand if that really is the connector's folder."
+            Write-Warning "Refusing to remove ${InstallRoot}: it is not a folder this installer filled (its src\cli.mjs and package.json are missing). Remove it by hand if that really is the connector's folder."
         } else {
             Remove-Item -Path $InstallRoot -Recurse -Force
             Write-Step "Removed $InstallRoot."

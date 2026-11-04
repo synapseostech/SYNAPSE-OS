@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-04T17:15:52.051Z",
-  "security_definer_count": 87,
+  "generated_at": "2026-11-04T21:07:35.272Z",
+  "security_definer_count": 88,
   "public_or_anon_execute_grants": [],
   "unexpected_public_execute": [],
   "possible_implicit_public_exec": [
@@ -468,6 +468,10 @@
     {
       "file": "20261103103000_tally_ledger_accounts_rpc.sql",
       "fn": "public.add_pharmacy_accounting_accounts"
+    },
+    {
+      "file": "20261104120000_pharmacy_tenant_purge.sql",
+      "fn": "public.purge_pharmacy_tenant_data"
     }
   ]
 }

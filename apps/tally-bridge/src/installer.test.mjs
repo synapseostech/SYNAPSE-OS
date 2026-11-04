@@ -166,6 +166,7 @@ describe("installer handles secrets and existing work", () => {
 
   it("restricts config.json to the installing account and SYSTEM", () => {
     assert.match(INSTALLER, /icacls \$Path \/inheritance:r/)
+    assert.match(INSTALLER, /\$\{account\}:\(M\)/)
     assert.match(INSTALLER, /"SYSTEM:\(F\)"/)
   })
 
@@ -181,7 +182,7 @@ describe("installer handles secrets and existing work", () => {
   it("restricts the token before it reaches the live path, and swaps it in whole", () => {
     const write = INSTALLER.slice(INSTALLER.indexOf("function Write-Config"), INSTALLER.indexOf("function New-Shortcut"))
     assert.ok(
-      write.indexOf("Protect-ConfigFile -Path $temp") < write.indexOf("Move-Item -Path $temp -To $Path -Force"),
+      write.indexOf("Protect-ConfigFile -Path $temp") < write.indexOf("Move-Item -Path $temp -Destination $Path -Force"),
       "the temporary file must be restricted before it is moved into place",
     )
     assert.match(write, /Remove-Item -Path \$temp -Force -ErrorAction SilentlyContinue/)

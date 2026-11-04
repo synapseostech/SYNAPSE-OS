@@ -57,8 +57,9 @@ Write-Host "Copy this token into the portal: $env:SYNAPSE_TALLY_BRIDGE_TOKEN"
 node apps\tally-bridge\src\cli.mjs
 ```
 
-What it does: asks Tally for `All Masters` and `Day Book` and pushes the result
-through the same preview as a manual upload.
+What it does: asks Tally for its masters (one collection per type) and its
+vouchers (the `Voucher Register`) and pushes the result through the same preview
+as a manual upload.
 
 - **Opening balances and history** reads the masters once, then the voucher
   history one date range at a time. The portal takes the period you entered on
@@ -149,7 +150,9 @@ as incompatible and asks for the installer; it does not fall back silently.
 ## Route B — Tally XML export
 
 In Tally Prime, export **All Masters** and **Day Book** to XML
-(`Gateway of Tally → Export → Data`), choosing the output folder yourself.
+(`Gateway of Tally → Export → Data`), choosing the output folder yourself. This
+route uses Tally's own reports; the bridge does not, because `All Masters`
+answers empty and `Day Book` ignores the dates on some builds.
 Upload the resulting `.xml`. Any folder on the machine is fine — the portal
 upload is a file picker, not a folder watcher.
 
@@ -163,7 +166,9 @@ Refused: anything containing a DTD or entity declaration (`<!…`), files over
 **25 MB**, and non-UTF-8 XML. A renamed file is still detected by its bytes.
 
 If the export is larger than 25 MB, narrow the Day Book date range and export
-again — the cut-over is resumed from its existing session, not restarted.
+again — the cut-over is resumed from its existing session, not restarted. (A
+live extraction over the bridge avoids this: it reads one range at a time and
+halves a range Tally returns too large.)
 
 ---
 

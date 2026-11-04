@@ -617,7 +617,7 @@ export function TallySetupAssistant({
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  The extraction reads All Masters and the Day Book over Tally&apos;s local XML/HTTP interface.
+                  The extraction reads Tally&apos;s masters and vouchers over its local XML/HTTP interface.
                   It does not post, alter or delete anything in Tally.
                 </p>
               </div>
