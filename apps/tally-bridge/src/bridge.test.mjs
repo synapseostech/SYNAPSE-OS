@@ -484,7 +484,10 @@ describe("Tally export", () => {
   })
 
   it("requests every master type, then the dated Voucher Register", async () => {
-    const now = new Date("2026-10-30T23:30:00.000Z")
+    // Built in local time on purpose: the bridge reads the end date with local
+    // getters, so a UTC literal here would make the expectation depend on the
+    // runner's timezone. October 31 is the month's last day, so no clamp applies.
+    const now = new Date(2026, 9, 31, 12, 0, 0)
     const tally = tallyStandIn()
     const xml = await exportTallyCompany(
       config({ SYNAPSE_TALLY_COMPANY: "Test Pharmacy" }),
