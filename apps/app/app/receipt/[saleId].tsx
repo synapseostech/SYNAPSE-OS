@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Alert,
   BackHandler,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
@@ -96,6 +98,8 @@ export default function ReceiptScreen() {
   // wording below never says "printed".
   const [printOutcome, setPrintOutcome] = useState<'requested' | 'failed' | null>(null)
   const [printUnrecorded, setPrintUnrecorded] = useState(false)
+  const [refundOpen, setRefundOpen] = useState(false)
+  const [refundReason, setRefundReason] = useState('')
   const requiresPrintDecision = mandatory === '1'
   // The prompt is an instruction until the exit is gated: back must lead to
   // one of the two decisions, never past them.
@@ -338,29 +342,32 @@ export default function ReceiptScreen() {
 
   const handleRefund = async () => {
     if (!receipt) return
-    Alert.alert('Refund / void sale', `Void ${receipt.receiptNumber} and restock its items? This cannot be undone.`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Refund',
-        style: 'destructive',
-        onPress: async () => {
-          setBusy('refund')
-          try {
-            await apiRequest('/api/mobile/pharmacy/refunds', {
-              method: 'POST',
-              token,
-              body: { saleId, reason: 'Refund from app' },
-            })
-            await load()
-            Alert.alert('Refunded', 'The sale was voided and stock restored.')
-          } catch (err) {
-            Alert.alert('Refund failed', err instanceof ApiError ? err.message : 'Try again.')
-          } finally {
-            setBusy(null)
-          }
-        },
-      },
-    ])
+    setRefundReason('')
+    setRefundOpen(true)
+  }
+
+  const submitRefund = async () => {
+    if (!receipt) return
+    const reason = refundReason.trim()
+    if (!reason) {
+      Alert.alert('Refund reason', 'Enter why this sale is being refunded.')
+      return
+    }
+    setBusy('refund')
+    try {
+      await apiRequest('/api/mobile/pharmacy/refunds', {
+        method: 'POST',
+        token,
+        body: { saleId, reason },
+      })
+      setRefundOpen(false)
+      await load()
+      Alert.alert('Refunded', 'The sale was voided and stock restored.')
+    } catch (err) {
+      Alert.alert('Refund failed', err instanceof ApiError ? err.message : 'Try again.')
+    } finally {
+      setBusy(null)
+    }
   }
 
   const handleReprint = async () => {
@@ -537,6 +544,50 @@ export default function ReceiptScreen() {
           </View>
         </>
       )}
+
+      <Modal
+        visible={refundOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRefundOpen(false)}
+      >
+        <Pressable style={styles.sheetBackdrop} onPress={() => setRefundOpen(false)}>
+          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.sheetTitle} accessibilityRole="header">
+              Refund / void sale
+            </Text>
+            <Text style={styles.sheetMessage}>
+              Void {receipt?.receiptNumber} and restock its items? This cannot be undone, and the
+              reason is kept on the audit trail.
+            </Text>
+            <TextInput
+              style={styles.sheetInput}
+              placeholder="Reason (required)"
+              placeholderTextColor={colors.textMuted}
+              value={refundReason}
+              onChangeText={setRefundReason}
+              autoFocus
+              maxLength={300}
+            />
+            <View style={styles.sheetActions}>
+              <Button
+                label="Cancel"
+                onPress={() => setRefundOpen(false)}
+                variant="ghost"
+                style={styles.sheetActionBtn}
+              />
+              <Button
+                label="Refund"
+                onPress={() => void submitRefund()}
+                loading={busy === 'refund'}
+                disabled={!refundReason.trim()}
+                variant="danger"
+                style={styles.sheetActionBtn}
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
 }
@@ -616,4 +667,44 @@ const styles = StyleSheet.create({
   },
   printWarn: { color: TONE_COLORS.amber },
   actionBtn: { flex: 1 },
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  sheet: {
+    backgroundColor: colors.surface,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  sheetTitle: {
+    ...typography.h3,
+    color: colors.text,
+    fontFamily: 'DMSans_700Bold',
+  },
+  sheetMessage: {
+    ...typography.bodySm,
+    color: colors.textSecondary,
+    fontFamily: 'DMSans_400Regular',
+  },
+  sheetInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    color: colors.text,
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 15,
+  },
+  sheetActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  sheetActionBtn: { flex: 1 },
 })

@@ -463,14 +463,15 @@ export function renderReceiptHtml(
 
   return `<!doctype html><html><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
   * { box-sizing: border-box; }
   @page { margin: 6mm; }
+  /* Tahoma is the pharmacy default. The stack falls through to faces that ship
+     with Windows, macOS, Android and Linux so a receipt never waits on a web
+     font — printing has to work when the till is offline. */
+  :root { --receipt-font: Tahoma, Verdana, "Segoe UI", "DejaVu Sans", "Noto Sans", Arial, sans-serif; }
   body {
-    font-family: "IBM Plex Mono", "Courier New", ui-monospace, monospace;
+    font-family: var(--receipt-font);
     color:#0b0b0d;
     margin:0;
     padding:12px;
@@ -484,21 +485,20 @@ export function renderReceiptHtml(
   .receipt.paper-80 { --receipt-width: 300px; }
   .receipt.paper-a4 { --receipt-width: 640px; }
   .center { text-align:center; }
-  .muted { color:#555; font-size:0.92em; font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif; }
+  .muted { color:#555; font-size:0.92em; }
   h1 {
-    font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
     font-size:1.35em;
     margin:0;
     letter-spacing: 0.02em;
     font-weight: 700;
   }
-  .label { font-weight:700; letter-spacing:1px; margin:8px 0; font-family: "IBM Plex Sans", sans-serif; }
+  .label { font-weight:700; letter-spacing:1px; margin:8px 0; }
   .nonfiscal { color:#b45309; }
   table { width:100%; border-collapse:collapse; font-size:1em; }
   td { padding:4px 0; vertical-align:top; }
   td.c { text-align:center; white-space:nowrap; padding-left:6px; }
   td.r { text-align:right; white-space:nowrap; padding-left:6px; font-variant-numeric: tabular-nums; }
-  .sub { color:#666; font-size:0.85em; font-family: "IBM Plex Sans", sans-serif; }
+  .sub { color:#666; font-size:0.85em; }
   hr { border:none; border-top:1px dashed #999; margin:8px 0; }
   .totals td { font-size:1.05em; }
   .totals .tot { font-weight:700; font-size:1.2em; }
@@ -506,7 +506,6 @@ export function renderReceiptHtml(
     position:absolute; inset:20% 0 auto; text-align:center;
     font-size:2.4em; color:rgba(180,83,9,0.18); font-weight:700;
     transform: rotate(-18deg); pointer-events:none;
-    font-family: "IBM Plex Sans", sans-serif;
   }
   .foot { margin-top:10px; font-size:0.92em; }
   @media print {

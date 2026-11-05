@@ -156,9 +156,30 @@ export async function PUT(
         : (existingTransaction as { discount: number }).discount ?? 0
     const newTax = roundMoney((newTotalAmount - discount) * effectiveTaxRate)
 
+    // Every submitted line must belong to this transaction. Matching on the
+    // item id alone let a crafted request rewrite the prices of another
+    // transaction in the same tenant while billing this one.
+    const lineIds = new Set(
+      (existingTransaction.items ?? []).map((row: { id: string }) => row.id),
+    )
+    const submittedIds = new Set(body.items.map((item) => item.id))
+    if (
+      submittedIds.size !== lineIds.size ||
+      body.items.length !== lineIds.size ||
+      !body.items.every((item) => lineIds.has(item.id))
+    ) {
+      return NextResponse.json(
+        {
+          error: "Items do not match this transaction. Reload it and try again.",
+          code: "ITEMS_MISMATCH",
+        },
+        { status: 400 },
+      )
+    }
+
     // Update transaction items
     for (const item of updatedItems) {
-      await supabaseAdmin
+      const { error: itemError } = await supabaseAdmin
         .from("pharmacy_transaction_items")
         .update({
           quantity: item.quantity,
@@ -166,7 +187,12 @@ export async function PUT(
           total_price: item.total_price,
         })
         .eq("id", item.id)
+        .eq("transaction_id", id)
         .eq("tenant_id", tenantId)
+      if (itemError) {
+        console.error("Update transaction item error:", itemError)
+        return NextResponse.json({ error: "Failed to update transaction" }, { status: 500 })
+      }
     }
 
     // Update transaction

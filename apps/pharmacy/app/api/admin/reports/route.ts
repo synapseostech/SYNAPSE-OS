@@ -4,6 +4,41 @@ import { supabaseAdmin } from "@/lib/supabase/admin"
 import { decodePaidAmount } from "@/lib/pos/partial-payment"
 import { summariseLineTax, type TaxLineRow } from "@/lib/pos/tax-summary"
 
+// The business day is Africa/Kampala (UTC+3 year-round), the zone the ledger,
+// the sale RPC and the data export all use. Server-local midnight put sales
+// made between 21:00 and midnight UTC on the previous day's report.
+const KAMPALA_OFFSET_MS = 3 * 60 * 60 * 1000
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
+function kampalaToday(): string {
+  return new Date(Date.now() + KAMPALA_OFFSET_MS).toISOString().slice(0, 10)
+}
+
+function shiftDay(day: string, days: number): string {
+  const shifted = new Date(`${day}T00:00:00Z`)
+  shifted.setUTCDate(shifted.getUTCDate() + days)
+  return shifted.toISOString().slice(0, 10)
+}
+
+function dayStart(day: string): string {
+  return `${day}T00:00:00+03:00`
+}
+
+/** End of the business day: a `lte` against plain midnight dropped the last day. */
+function dayEnd(day: string): string {
+  return `${day}T23:59:59.999+03:00`
+}
+
+function parseStart(value: string | null, fallbackDay: string): Date {
+  if (!value) return new Date(dayStart(fallbackDay))
+  return new Date(DATE_ONLY.test(value) ? dayStart(value) : value)
+}
+
+function parseEnd(value: string | null): Date {
+  if (!value) return new Date()
+  return new Date(DATE_ONLY.test(value) ? dayEnd(value) : value)
+}
+
 export async function GET(request: NextRequest) {
   try {
     const auth = await requirePharmacyPermission(["reports.operational", "reports.financial"])
@@ -22,13 +57,14 @@ export async function GET(request: NextRequest) {
 
     switch (period) {
       case "today":
-        dateFrom = new Date(new Date().setHours(0, 0, 0, 0))
+        dateFrom = new Date(dayStart(kampalaToday()))
         break
-      case "yesterday":
-        dateFrom = new Date(new Date().setHours(0, 0, 0, 0))
-        dateFrom.setDate(dateFrom.getDate() - 1)
-        dateTo = new Date(new Date().setHours(0, 0, 0, 0))
+      case "yesterday": {
+        const yesterday = shiftDay(kampalaToday(), -1)
+        dateFrom = new Date(dayStart(yesterday))
+        dateTo = new Date(dayEnd(yesterday))
         break
+      }
       case "week":
         dateFrom = new Date()
         dateFrom.setDate(dateFrom.getDate() - 7)
@@ -42,11 +78,11 @@ export async function GET(request: NextRequest) {
         dateFrom.setFullYear(dateFrom.getFullYear() - 1)
         break
       case "custom":
-        dateFrom = startDate ? new Date(startDate) : new Date()
-        dateTo = endDate ? new Date(endDate) : new Date()
+        dateFrom = parseStart(startDate, kampalaToday())
+        dateTo = parseEnd(endDate)
         break
       default:
-        dateFrom = new Date(new Date().setHours(0, 0, 0, 0))
+        dateFrom = new Date(dayStart(kampalaToday()))
     }
 
     const dateFromISO = dateFrom.toISOString()
@@ -289,7 +325,11 @@ export async function GET(request: NextRequest) {
         { date: string; total: number; count: number }
       >()
       for (const tx of transactions) {
-        const dateStr = tx.created_at.split("T")[0]
+        const dateStr = new Date(
+          new Date(tx.created_at).getTime() + KAMPALA_OFFSET_MS
+        )
+          .toISOString()
+          .slice(0, 10)
         const existing = salesByDayMap.get(dateStr) ?? {
           date: dateStr,
           total: 0,

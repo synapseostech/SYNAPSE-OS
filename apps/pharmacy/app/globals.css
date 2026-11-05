@@ -154,9 +154,10 @@
   .btn-danger    { @apply inline-flex items-center justify-center gap-2 rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:bg-red-600 active:scale-[0.98] transition-all; }
 }
 
-/* ── Thermal Receipt (IBM Plex — dense, high-contrast for thermal printers) ─ */
+/* ── Thermal Receipt (Tahoma default — dense, high-contrast for thermal printers) ─ */
 .thermal-receipt {
-  font-family: var(--font-mono), "IBM Plex Mono", "Courier New", Courier, monospace;
+  --receipt-font: Tahoma, Verdana, "Segoe UI", "DejaVu Sans", "Noto Sans", Arial, sans-serif;
+  font-family: var(--receipt-font);
   font-size: calc(9.5pt * var(--receipt-font-scale, 1));
   line-height: 1.15;
   width: var(--receipt-width, 72mm);
@@ -175,7 +176,7 @@
 .thermal-receipt.paper-a4 { --receipt-width: 180mm; }
 .thermal-receipt p { margin: 0 0 0.4mm; color: #000; }
 .thermal-receipt .tr-brand {
-  font-family: var(--font-sans), "IBM Plex Sans", system-ui, sans-serif;
+  font-family: var(--receipt-font);
   letter-spacing: 0.01em;
   font-weight: 800;
   color: #000;
@@ -186,7 +187,7 @@
 .tr-sm      { font-size: calc(8pt * var(--receipt-font-scale, 1)); color: #000; }
 .tr-lg      { font-size: calc(10pt * var(--receipt-font-scale, 1)); color: #000; font-weight: 800; }
 .tr-mono    { letter-spacing: 0.5px; color: #000; }
-.tr-muted   { color: #111; font-family: var(--font-mono), "IBM Plex Mono", "Courier New", Courier, monospace; }
+.tr-muted   { color: #111; }
 .tr-dash    { border-top: 1px dashed #000; margin: 0.7mm 0; }
 .tr-heavy   { border-top: 2px solid #000; margin: 0.7mm 0; }
 .tr-row     { display: flex; justify-content: space-between; align-items: flex-start; gap: 1mm; margin-bottom: 0.3mm; width: 100%; box-sizing: border-box; color: #000; }

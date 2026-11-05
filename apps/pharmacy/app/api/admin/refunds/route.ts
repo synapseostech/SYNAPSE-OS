@@ -302,13 +302,36 @@ export async function POST(request: NextRequest) {
       product: { id: string; name: string; quantity: number } | null
     }
 
+    const transactionLines = transaction.items as TransactionItemRow[]
     const itemsToRefund: RefundItemInput[] =
       items && items.length > 0
         ? (items as RefundItemInput[])
-        : (transaction.items as TransactionItemRow[]).map((i) => ({
+        : transactionLines.map((i) => ({
             id: i.id,
             quantity: i.quantity,
           }))
+
+    // This path sets the whole transaction to REFUNDED and records no per-line
+    // refund, so a partial request would mark the sale fully refunded while
+    // only part of the money went back — and the remainder could never be
+    // refunded. Refuse it instead of producing that state.
+    const requestedByLine = new Map<string, number>()
+    for (const item of itemsToRefund) {
+      requestedByLine.set(item.id, (requestedByLine.get(item.id) ?? 0) + Number(item.quantity ?? 0))
+    }
+    const coversWholeSale =
+      requestedByLine.size === transactionLines.length &&
+      transactionLines.every((line) => requestedByLine.get(line.id) === Number(line.quantity ?? 0))
+    if (!coversWholeSale) {
+      return NextResponse.json(
+        {
+          error:
+            "Partial refunds are not supported for order transactions. Refund the whole transaction.",
+          code: "PARTIAL_REFUND_UNSUPPORTED",
+        },
+        { status: 400 },
+      )
+    }
 
     // What the customer actually paid is the header figure, not the sum of
     // line prices: lines exclude the tax added on top and the discount taken
@@ -366,7 +389,7 @@ export async function POST(request: NextRequest) {
       transaction: updatedTransaction,
       source: "order",
       warning:
-        "Legacy order refund restored product quantity only. Units are not sellable until received onto a genuine batch.",
+        "Order refund recorded. No stock was moved: returned units are not sellable until a pharmacist receives them onto a genuine batch.",
     })
   } catch (error) {
     console.error("Process refund error:", error)

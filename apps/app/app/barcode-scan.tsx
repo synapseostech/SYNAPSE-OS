@@ -44,12 +44,15 @@ export default function BarcodeScanScreen() {
       setError(null)
       try {
         const data = await searchPosProducts(token, code.trim())
-        const exact =
-          data.products.find(
-            (p) =>
-              String(p.barcode ?? '').toLowerCase() === code.trim().toLowerCase() ||
-              String(p.sku ?? '').toLowerCase() === code.trim().toLowerCase(),
-          ) ?? data.products[0]
+        // A scan must match the code exactly. The search endpoint is a
+        // substring match, so falling back to its first hit offered whatever
+        // product happened to contain the digits — and "Add to sale" then rang
+        // up the wrong item.
+        const exact = data.products.find(
+          (p) =>
+            String(p.barcode ?? '').toLowerCase() === code.trim().toLowerCase() ||
+            String(p.sku ?? '').toLowerCase() === code.trim().toLowerCase(),
+        )
         if (!exact) {
           setResult(null)
           setError(`No product found for “${code.trim()}”`)

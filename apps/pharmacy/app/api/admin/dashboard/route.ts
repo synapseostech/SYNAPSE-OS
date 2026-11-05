@@ -80,9 +80,11 @@ export async function GET(request: NextRequest) {
       hasPermission(session, "VIEW_TRANSACTIONS") ||
       hasPermission(session, "MANAGE_TRANSACTIONS")
 
-    const todayStart = new Date()
-    todayStart.setHours(0, 0, 0, 0)
-    const todayStartISO = todayStart.toISOString()
+    // Midnight in the business zone the ledger uses, not the server's clock.
+    const kampalaToday = new Date(Date.now() + 3 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10)
+    const todayStartISO = new Date(`${kampalaToday}T00:00:00+03:00`).toISOString()
     const thirtyDaysFromNow = new Date(
       Date.now() + 30 * 24 * 60 * 60 * 1000
     ).toISOString()

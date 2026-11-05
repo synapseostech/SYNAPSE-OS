@@ -77,6 +77,16 @@ export default function CreditLedgerScreen() {
 
   const money = (value: number) => `UGX ${Number(value ?? 0).toLocaleString()}`
   const today = todayIso()
+  // The API lists entries newest first. Older credit is settled by the newer
+  // repayments beneath it, so only a customer's latest entry can still be
+  // overdue — badging every historical row kept paid-up accounts looking in
+  // arrears.
+  const latestEntryByCustomer = new Map<string, string>()
+  for (const entry of data?.entries ?? []) {
+    if (entry.customerId && !latestEntryByCustomer.has(entry.customerId)) {
+      latestEntryByCustomer.set(entry.customerId, entry.id)
+    }
+  }
 
   return (
     <ScreenShell
@@ -118,8 +128,13 @@ export default function CreditLedgerScreen() {
                 const isSettlement = entry.type === 'repayment' || entry.type === 'refund'
                 const label =
                   entry.type === 'refund' ? 'Refund' : entry.type === 'repayment' ? 'Repayment' : 'Credit sale'
+                const isLatestForCustomer =
+                  !entry.customerId || latestEntryByCustomer.get(entry.customerId) === entry.id
                 const overdue =
-                  !isSettlement && entry.balanceAfter > 0 && Boolean(entry.dueDate && entry.dueDate < today)
+                  isLatestForCustomer &&
+                  !isSettlement &&
+                  entry.balanceAfter > 0 &&
+                  Boolean(entry.dueDate && entry.dueDate < today)
                 return (
                   <Card key={entry.id}>
                     <View style={styles.entryTop}>
