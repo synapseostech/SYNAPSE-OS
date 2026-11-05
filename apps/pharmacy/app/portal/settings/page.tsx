@@ -30,6 +30,7 @@ interface Settings {
   receiptPaperWidth: "58" | "80" | "a4"
   receiptFontScale: number
   autoPrintReceipt: boolean
+  mandatoryReceiptPrint: boolean
 }
 
 export default function SettingsPage() {
@@ -48,6 +49,7 @@ export default function SettingsPage() {
     receiptPaperWidth: "80",
     receiptFontScale: 1,
     autoPrintReceipt: false,
+    mandatoryReceiptPrint: true,
   })
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
@@ -96,6 +98,7 @@ export default function SettingsPage() {
             receiptPaperWidth,
             receiptFontScale: Number(data.receipt_font_scale ?? data.receiptFontScale ?? 1) || 1,
             autoPrintReceipt: Boolean(data.auto_print_receipt ?? data.autoPrintReceipt),
+            mandatoryReceiptPrint: (data.mandatory_receipt_print ?? data.mandatoryReceiptPrint) !== false,
           })
           if (data.logo) setLogoPreview(data.logo)
         }
@@ -501,13 +504,34 @@ export default function SettingsPage() {
               <input
                 type="checkbox"
                 className="mt-1"
+                checked={settings.mandatoryReceiptPrint}
+                onChange={(e) =>
+                  setSettings({ ...settings, mandatoryReceiptPrint: e.target.checked })
+                }
+              />
+              <span>
+                <span className="font-medium">Ask about the receipt after every sale</span>
+                <span className="block text-xs text-muted-foreground mt-0.5">
+                  The till stops after each sale until the cashier prints the receipt or
+                  records that the printer was unavailable, so a failed print is visible.
+                  Turn this off to let sales finish without that step.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 text-sm text-foreground">
+              <input
+                type="checkbox"
+                className="mt-1"
+                disabled={settings.mandatoryReceiptPrint}
                 checked={settings.autoPrintReceipt}
                 onChange={(e) => setSettings({ ...settings, autoPrintReceipt: e.target.checked })}
               />
               <span>
                 <span className="font-medium">Auto-print after sale</span>
                 <span className="block text-xs text-muted-foreground mt-0.5">
-                  Opens the print dialog immediately when a POS sale completes (no “Print receipt?” prompt).
+                  {settings.mandatoryReceiptPrint
+                    ? "Needs “Ask about the receipt after every sale” turned off: the automatic print cannot ask the cashier anything, so there would be nowhere to report a broken printer."
+                    : "Opens the print dialog immediately when a POS sale completes, with no “Print receipt?” prompt."}
                 </span>
               </span>
             </label>
