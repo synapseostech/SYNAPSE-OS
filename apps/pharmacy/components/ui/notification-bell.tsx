@@ -62,8 +62,25 @@ export function NotificationBell() {
   }, [fetchNotifications])
 
   useEffect(() => {
-    // Initial cleanup and fetch
-    cleanupOrphanedNotifications()
+    // The cleanup is a DELETE: once per browser session is enough, and a portal
+    // that reopens a dozen times a day must not fire a write on every mount.
+    const CLEANUP_KEY = "notifications-cleaned"
+    let cleaned = false
+    try {
+      cleaned = window.sessionStorage.getItem(CLEANUP_KEY) === "1"
+    } catch {
+      // Storage blocked: fall back to cleaning every mount rather than never.
+    }
+    if (cleaned) {
+      fetchNotifications()
+    } else {
+      try {
+        window.sessionStorage.setItem(CLEANUP_KEY, "1")
+      } catch {
+        // ignore
+      }
+      cleanupOrphanedNotifications()
+    }
 
     // Poll for new notifications every 30 seconds
     const interval = setInterval(fetchNotifications, 30000)
