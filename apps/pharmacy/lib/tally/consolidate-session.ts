@@ -14,12 +14,13 @@ import { readTallyDocument } from "./source"
 import {
   readTallySource,
   tallyChunkSourcePath,
+  TALLY_SOURCE_LIMIT,
   type TallyStorageClient,
 } from "./storage"
 import type { TallyMigrationManifest } from "./chunks"
 
-/** One chunk's own ceiling. The bucket is wider; this is what the parser can take. */
-export const TALLY_CHUNK_LIMIT = 20 * 1024 * 1024
+/** One chunk's own ceiling: whatever the upload accepted, preview must be able to read. */
+export const TALLY_CHUNK_LIMIT = TALLY_SOURCE_LIMIT
 
 export type TallyConsolidatedPlan = {
   plan: ReturnType<typeof normaliseTallyDocument>

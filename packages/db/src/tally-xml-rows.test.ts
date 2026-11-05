@@ -318,21 +318,23 @@ describe("parseTallyXmlRows", () => {
   })
 
   it("counts every record type against the limit and reports the true total", () => {
-    // 120,000 godowns + 130,000 groups fill the limit exactly; the ledger that
+    // Two different record types fill the limit exactly; the ledger that
     // follows is the one that must not be read.
+    const godowns = Math.floor(TALLY_XML_ROW_LIMITS.MAX_RECORDS / 2)
+    const groups = TALLY_XML_ROW_LIMITS.MAX_RECORDS - godowns
     const records =
-      '<GODOWN NAME="G"/>'.repeat(120_000) +
-      '<GROUP NAME="P"/>'.repeat(130_000) +
+      '<GODOWN NAME="G"/>'.repeat(godowns) +
+      '<GROUP NAME="P"/>'.repeat(groups) +
       '<LEDGER NAME="L"/>'
     const document = parseTallyXmlRows(tallyExport(records))
 
-    assert.equal(document.godowns.length, 120_000)
-    assert.equal(document.groups.length, 130_000)
+    assert.equal(document.godowns.length, godowns)
+    assert.equal(document.groups.length, groups)
     assert.equal(document.ledgers.length, 0)
     assert.deepEqual(document.truncated, {
       reason: "RECORD_LIMIT",
-      limit: 250_000,
-      recordsProcessed: 250_000,
+      limit: TALLY_XML_ROW_LIMITS.MAX_RECORDS,
+      recordsProcessed: TALLY_XML_ROW_LIMITS.MAX_RECORDS,
     })
   })
 

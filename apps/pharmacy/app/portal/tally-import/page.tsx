@@ -22,12 +22,28 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useToast } from "@/hooks/use-toast"
 import { diagnosticFrom, reportTallyFailure } from "@/lib/tally/diagnostics"
 import type { TallyEditionDisclosure, TallyEditionProblem } from "@/lib/tally/editions"
+import { TALLY_SOURCE_LIMIT } from "@/lib/tally/storage"
 import { cutoverBlockReason, track } from "@/lib/telemetry/events"
 
 export const dynamic = "force-dynamic"
 
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+const MAX_UPLOAD_MB = TALLY_SOURCE_LIMIT / 1024 / 1024
 const ACCEPTED = ".xml,.xlsx,.xls,.csv"
+
+/**
+ * A refused upload is answered by Storage, not by this app: its message is the
+ * only thing that says whether the file was too large or the link had expired.
+ */
+async function uploadFailureTitle(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { message?: string; error?: string }
+    const reason = body.message ?? body.error
+    if (reason) return `The file could not be uploaded: ${reason}`
+  } catch {
+    // Not JSON — fall through to wording that claims nothing.
+  }
+  return "The file could not be uploaded"
+}
 
 type Counts = {
   ledgers: number
@@ -437,8 +453,8 @@ export default function TallyImportPage() {
       toast({ variant: "destructive", title: "Choose a Tally export first" })
       return
     }
-    if (selectedFile.size > MAX_UPLOAD_BYTES) {
-      toast({ variant: "destructive", title: "File is larger than 25 MB" })
+    if (selectedFile.size > TALLY_SOURCE_LIMIT) {
+      toast({ variant: "destructive", title: `File is larger than ${MAX_UPLOAD_MB} MB` })
       return
     }
 
@@ -474,7 +490,7 @@ export default function TallyImportPage() {
         body: selectedFile,
       })
       if (!put.ok) {
-        toast({ variant: "destructive", title: "The file could not be uploaded" })
+        toast({ variant: "destructive", title: await uploadFailureTitle(put) })
         return
       }
 
@@ -604,9 +620,12 @@ export default function TallyImportPage() {
 
   /** Stages every chosen file, then reads the whole set once. */
   async function stageAndPreview(chosen: File[], replace = false) {
-    const oversize = chosen.find((entry) => entry.size > MAX_UPLOAD_BYTES)
+    const oversize = chosen.find((entry) => entry.size > TALLY_SOURCE_LIMIT)
     if (oversize) {
-      toast({ variant: "destructive", title: `${oversize.name} is larger than 25 MB` })
+      toast({
+        variant: "destructive",
+        title: `${oversize.name} is larger than ${MAX_UPLOAD_MB} MB`,
+      })
       return
     }
 
@@ -947,7 +966,7 @@ export default function TallyImportPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="tally-file">
-                Tally XML, workbook or CSV (max 25 MB each; choose several to build the history in slices)
+                Tally XML, workbook or CSV (max {MAX_UPLOAD_MB} MB each; choose several to build the history in slices)
               </Label>
               <Input
                 id="tally-file"

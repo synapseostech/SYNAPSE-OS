@@ -18,9 +18,11 @@
 
 import { stripDelimited } from "./tally-xml"
 
-const MAX_BYTES = 25 * 1024 * 1024
-const MAX_TAGS = 2_000_000
-const MAX_RECORDS = 250_000
+const MAX_BYTES = 50 * 1024 * 1024
+// Tag and record ceilings scale with the byte ceiling: they bound the work a
+// single parsed document can ask for, not the document's size on its own.
+const MAX_TAGS = 4_000_000
+const MAX_RECORDS = 500_000
 const MAX_RECORD_NODES = 50_000
 const MAX_TEXT = 4096
 const MAX_WARNINGS = 200
@@ -597,8 +599,18 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
   if (/<!/.test(withoutComments)) throw new Error("MIGRATION_XML_ENTITIES_REJECTED")
   if (!withoutComments.includes("<")) throw new Error("MIGRATION_XML_MALFORMED")
 
-  const tagCount = withoutComments.match(/<[A-Za-z/]/g)?.length ?? 0
-  if (tagCount > MAX_TAGS) throw new Error("MIGRATION_XML_TOO_COMPLEX")
+  // Counted rather than collected: a match() array of four million
+  // one-character strings costs more memory than the document it measures.
+  let tagCount = 0
+  for (let index = 0; index < withoutComments.length; index += 1) {
+    if (withoutComments.charCodeAt(index) !== 0x3c) continue
+    const next = withoutComments.charCodeAt(index + 1)
+    const isTag =
+      (next >= 0x41 && next <= 0x5a) || (next >= 0x61 && next <= 0x7a) || next === 0x2f
+    if (!isTag) continue
+    tagCount += 1
+    if (tagCount > MAX_TAGS) throw new Error("MIGRATION_XML_TOO_COMPLEX")
+  }
 
   const text = stripDelimited(withoutComments, "<?", "?>")
   const warnings: TallyXmlRowWarning[] = []

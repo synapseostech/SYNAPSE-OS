@@ -4,7 +4,7 @@
     Runs on the pharmacy computer with Tally open and the company loaded.
     It asks Tally for the whole transaction history between two dates, in
     slices small enough to import, and writes one XML file per slice plus one
-    masters file. A slice Tally answers with more than 25 MB is split and
+    masters file. A slice Tally answers with more than 50 MB is split and
     fetched again, so every file in the folder can be imported.
 
     The vouchers come from the Voucher Register, not the Day Book report: on
@@ -46,7 +46,7 @@ param(
     [string]$To = "",
     # 0 means "find it": Tally's listening ports first, then the usual ones.
     [int]$Port = 0,
-    # One calendar month per file: a busy pharmacy month stays under the 25 MB
+    # One calendar month per file: a busy pharmacy month stays under the 50 MB
     # the importer accepts, so the run needs no splitting.
     [int]$MonthsPerFile = 1,
     [string]$OutDir = "$env:USERPROFILE\Desktop\SynapseTallyExport",
@@ -58,7 +58,7 @@ $ProgressPreference = "SilentlyContinue"
 
 # The importer refuses a source larger than this, so a slice above it is
 # useless. Reported here rather than written and forgotten.
-$LimitBytes = 25MB
+$LimitBytes = 50MB
 
 function Say([string]$text, $ForegroundColor = $null) {
     if ($null -ne $ForegroundColor) {
@@ -244,7 +244,7 @@ function Get-BooksStart([string]$company) {
     return $null
 }
 
-# The voucher dates a file holds, read from its head and tail only: a 25 MB
+# The voucher dates a file holds, read from its head and tail only: a 50 MB
 # export is one long line, and scanning all of it to report the range would
 # cost more than the run itself.
 function Get-VoucherDates([string]$path, [int]$edgeBytes = 262144) {
@@ -599,7 +599,7 @@ function Export-Vouchers([datetime]$sliceFrom, [datetime]$sliceTo, [int]$depth) 
             }
         }
         Say ("    {0}  {1}  TOO BIG" -f $label, (Format-Size $result.Bytes)) -ForegroundColor Red
-        $script:problems.Add("$label is " + (Format-Size $result.Bytes) + ", over the 25 MB limit, even for a single day")
+        $script:problems.Add("$label is " + (Format-Size $result.Bytes) + ", over the 50 MB limit, even for a single day")
         return
     }
 
