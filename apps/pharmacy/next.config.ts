@@ -20,6 +20,12 @@ const nextConfig: NextConfig = {
   },
   output: 'standalone',
   outputFileTracingRoot: path.join(__dirname, "../.."),
+  // The Tally export script is read from the repo at request time by
+  // /api/admin/tally/script; without this the standalone bundle omits it.
+  // Globs resolve against this app's directory, not outputFileTracingRoot.
+  outputFileTracingIncludes: {
+    "/api/admin/tally/script": ["../tally-bridge/scripts/tally-export-history.ps1"],
+  },
   images: {
     unoptimized: true,
     remotePatterns: [
