@@ -100,6 +100,8 @@ export async function POST(
     fileName?: unknown
     kind?: unknown
     period?: unknown
+    fallbackPeriod?: unknown
+    company?: unknown
     replace?: unknown
   } = {}
   try {
@@ -141,24 +143,49 @@ export async function POST(
   const kind =
     body.kind === "masters" || body.kind === "vouchers" ? body.kind : undefined
 
-  let requestedPeriod: TallyDateRange | undefined
-  if (body.period !== undefined) {
-    const candidate = body.period as { from?: unknown; to?: unknown }
+  const readPeriod = (value: unknown): TallyDateRange | undefined => {
+    const candidate = value as { from?: unknown; to?: unknown }
     if (
       typeof candidate !== "object" ||
       candidate === null ||
       typeof candidate.from !== "string" ||
       typeof candidate.to !== "string"
     ) {
-      return NextResponse.json(
-        {
-          error: "period must be an object with from and to dates",
-          code: "TALLY_PERIOD_BODY_INVALID",
-        },
-        { status: 400 },
-      )
+      return undefined
     }
-    requestedPeriod = { from: candidate.from, to: candidate.to }
+    return { from: candidate.from, to: candidate.to }
+  }
+
+  const periodInvalid = () =>
+    NextResponse.json(
+      {
+        error: "period must be an object with from and to dates",
+        code: "TALLY_PERIOD_BODY_INVALID",
+      },
+      { status: 400 },
+    )
+
+  let requestedPeriod: TallyDateRange | undefined
+  if (body.period !== undefined) {
+    requestedPeriod = readPeriod(body.period)
+    if (!requestedPeriod) return periodInvalid()
+  }
+
+  // The period entered for the whole cut-over, used only for a file that names
+  // no period of its own. It ranks below the file's own statement so one set of
+  // dates cannot make every slice claim the whole range.
+  let fallbackPeriod: TallyDateRange | undefined
+  if (body.fallbackPeriod !== undefined) {
+    fallbackPeriod = readPeriod(body.fallbackPeriod)
+    if (!fallbackPeriod) return periodInvalid()
+  }
+
+  const company = typeof body.company === "string" ? body.company.trim() : ""
+  if (body.company !== undefined && typeof body.company !== "string") {
+    return NextResponse.json(
+      { error: "company must be a string", code: "TALLY_COMPANY_BODY_INVALID" },
+      { status: 400 },
+    )
   }
 
   const replace = body.replace === true
@@ -178,7 +205,12 @@ export async function POST(
   try {
     const bytes = await readTallySource(storage(), stagedPath)
     const { document } = readTallyDocument(bytes, fileName)
-    const described = describeStagedDocument(document, { requestedPeriod, kind })
+    const described = describeStagedDocument(document, {
+      requestedPeriod,
+      fallbackPeriod,
+      company,
+      kind,
+    })
     if (!described.ok) {
       return NextResponse.json(
         { error: described.message, code: described.code },
@@ -202,12 +234,19 @@ export async function POST(
       createOpenManifest({
         sessionId: id,
         company: described.company,
+        companySource: described.companySource,
         mode: mapping.mode ?? "opening",
         period: described.range,
         periodSource: described.periodSource,
         ...(described.declaredPeriod ? { declaredPeriod: described.declaredPeriod } : {}),
         updatedAt: now,
       })
+
+    // A file that names the company is better evidence than the operator's
+    // word, so the record upgrades rather than keeps claiming it was entered.
+    if (existing && described.companySource === "file" && existing.companySource !== "file") {
+      manifest = { ...manifest, companySource: "file", updatedAt: now }
+    }
 
     manifest = widenPeriod(manifest, described.range, now)
     manifest = ensureChunk(

@@ -74,6 +74,11 @@ export type TallyMigrationManifest = {
   sessionId: string
   company: string
   mode: "opening" | "closing"
+  /**
+   * Where the company name came from: the export itself, or the operator's
+   * entry. Absent on manifests written before the operator could supply one.
+   */
+  companySource?: "file" | "operator"
   /** The period this migration promises to cover. */
   period: TallyDateRange
   /** `source` when the file stated its period, `requested` when the operator did. */
@@ -228,6 +233,7 @@ export function createOpenManifest(input: {
   periodSource?: TallyPeriodSource
   declaredPeriod?: TallyDateRange
   edition?: TallyEdition
+  companySource?: "file" | "operator"
 }): TallyMigrationManifest {
   if (!input.sessionId.trim()) throw new Error("TALLY_MANIFEST_SESSION_MISSING")
   if (!input.company.trim()) throw new Error("TALLY_MANIFEST_COMPANY_MISSING")
@@ -238,6 +244,7 @@ export function createOpenManifest(input: {
     version: TALLY_MANIFEST_VERSION,
     sessionId: input.sessionId,
     company: input.company,
+    ...(input.companySource ? { companySource: input.companySource } : {}),
     mode: input.mode,
     period: { from: input.period.from, to: input.period.to },
     periodSource: input.periodSource ?? (declaredPeriod ? "source" : "requested"),
@@ -260,6 +267,7 @@ export function createManifest(input: {
   periodSource?: TallyPeriodSource
   declaredPeriod?: TallyDateRange
   edition?: TallyEdition
+  companySource?: "file" | "operator"
 }): TallyMigrationManifest {
   const open = createOpenManifest(input)
   const ranges = splitPeriod(input.period, input.parts ?? 1)

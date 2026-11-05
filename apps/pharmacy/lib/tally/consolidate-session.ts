@@ -48,7 +48,10 @@ export async function consolidateStoredChunks(
     parts.push(readTallyDocument(bytes, `${chunk.id}.xml`).document)
   }
 
-  const consolidation = consolidateTallyParts(parts, { period: input.manifest.period })
+  const consolidation = consolidateTallyParts(parts, {
+    period: input.manifest.period,
+    company: input.manifest.company,
+  })
   const plan = normaliseTallyDocument(consolidation.document, {
     conversionDate: input.conversionDate,
     mode: input.manifest.mode,

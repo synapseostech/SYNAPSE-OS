@@ -56,6 +56,7 @@ export function isTallyCutoverSession(input: {
 
 export type TallyManifestReason =
   | "TALLY_COMPANY_MISSING"
+  | "TALLY_COMPANY_MISMATCH"
   | "TALLY_PERIOD_MISSING"
   | "TALLY_PERIOD_INVALID"
 
@@ -125,6 +126,10 @@ function parseRange(range: TallyDateRange | undefined): TallyDateRange | undefin
   return { from: range.from, to: range.to }
 }
 
+function sameCompany(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase()
+}
+
 /** One file staged into a session, as the page lists it back to the operator. */
 export type TallyStagedSource = {
   uploadId: string
@@ -169,6 +174,8 @@ export type TallyStagedDescription =
       company: string
       recordsRead: number
       periodSource: "source" | "requested"
+      /** `operator` when the company came from the form, not from the file. */
+      companySource: "file" | "operator"
       declaredPeriod?: TallyDateRange
       firstDate?: string
       lastDate?: string
@@ -179,22 +186,41 @@ export type TallyStagedDescription =
  * Which chunk an uploaded file stands for, derived from what the file says
  * about itself.
  *
- * The range comes from the period the file states, then the span of the
- * vouchers inside it, then the period the operator asked for. A vouchers file
- * holding a voucher outside the range it ended up with is refused: staging it
- * would record dates the chunk does not cover, and the manifest would reject
- * that later, after the bytes were already stored.
+ * The range comes from the period the operator asked for, then the period the
+ * file states, then the span of the vouchers inside it, then the operator's
+ * stated period as a last resort. A vouchers file holding a voucher outside the
+ * range it ended up with is refused: staging it would record dates the chunk
+ * does not cover, and the manifest would reject that later, after the bytes
+ * were already stored.
+ *
+ * A file that does not name its company takes the one the operator entered,
+ * and the result says so. A file that names a different one is refused.
  */
 export function describeStagedDocument(
   document: TallyXmlDocument,
-  input: { requestedPeriod?: TallyDateRange; kind?: "masters" | "vouchers" },
+  input: {
+    requestedPeriod?: TallyDateRange
+    fallbackPeriod?: TallyDateRange
+    company?: string
+    kind?: "masters" | "vouchers"
+  },
 ): TallyStagedDescription {
-  const company = (document.company ?? "").trim()
+  const fileCompany = (document.company ?? "").trim()
+  const statedCompany = (input.company ?? "").trim()
+  if (fileCompany && statedCompany && !sameCompany(fileCompany, statedCompany)) {
+    return {
+      ok: false,
+      code: "TALLY_COMPANY_MISMATCH",
+      message: `This file belongs to "${fileCompany}", but "${statedCompany}" was entered for this cut-over.`,
+    }
+  }
+  const company = fileCompany || statedCompany
   if (!company) {
     return {
       ok: false,
       code: "TALLY_COMPANY_MISSING",
-      message: "This file does not name the Tally company it came from.",
+      message:
+        "This file does not name the Tally company it came from, and none was entered above.",
     }
   }
   if (document.truncated) {
@@ -269,6 +295,19 @@ export function describeStagedDocument(
     }
   }
 
+  let fallback: TallyDateRange | undefined
+  if (input.fallbackPeriod) {
+    try {
+      fallback = parseRange(input.fallbackPeriod)
+    } catch {
+      return {
+        ok: false,
+        code: "TALLY_PERIOD_INVALID",
+        message: "The period entered for this cut-over is not a valid date range.",
+      }
+    }
+  }
+
   if (kind === "masters" && masterRecords === 0) {
     return {
       ok: false,
@@ -283,8 +322,10 @@ export function describeStagedDocument(
 
   // The period the operator asked for names the slice. A stated financial year
   // is the company's books, not a slice's bounds: using it for a Day Book range
-  // would make every slice claim the whole year and overlap the others.
-  const range = requested ?? stated ?? (kind === "vouchers" ? spanned : undefined)
+  // would make every slice claim the whole year and overlap the others. The
+  // operator's entered period is last for the same reason.
+  const range =
+    requested ?? stated ?? (kind === "vouchers" ? spanned : undefined) ?? fallback
   if (!range) {
     return {
       ok: false,
@@ -318,6 +359,7 @@ export function describeStagedDocument(
     company,
     recordsRead: kind === "masters" ? masterRecords : document.vouchers.length,
     periodSource: requested ? "requested" : "source",
+    companySource: fileCompany ? "file" : "operator",
     ...(stated ? { declaredPeriod: stated } : {}),
     ...span,
   }
@@ -326,7 +368,9 @@ export function describeStagedDocument(
 function reasonMessage(reason: TallyManifestReason): string {
   switch (reason) {
     case "TALLY_COMPANY_MISSING":
-      return "This export does not name the Tally company it came from. Re-export with company details included, or use the Tally Bridge, which pins the company."
+      return "This export does not name the Tally company it came from. Enter the company above and preview it again."
+    case "TALLY_COMPANY_MISMATCH":
+      return "This export names a different Tally company from the one entered above. Check which company the file came from."
     case "TALLY_PERIOD_MISSING":
       return "This file does not state the period it covers. Set the period the export was taken for, then preview it again."
     case "TALLY_PERIOD_INVALID":
@@ -345,9 +389,15 @@ export function buildSourceManifest(
     mode: "opening" | "closing"
     now: string
     requestedPeriod?: TallyDateRange
+    company?: string
   },
 ): TallyManifestBuild {
-  const company = (document.company ?? "").trim()
+  const fileCompany = (document.company ?? "").trim()
+  const statedCompany = (input.company ?? "").trim()
+  if (fileCompany && statedCompany && !sameCompany(fileCompany, statedCompany)) {
+    return buildFailure("TALLY_COMPANY_MISMATCH")
+  }
+  const company = fileCompany || statedCompany
   if (!company) return buildFailure("TALLY_COMPANY_MISSING")
 
   const stated = document.financialPeriod
@@ -385,6 +435,7 @@ export function buildSourceManifest(
   let manifest = createManifest({
     sessionId: input.sessionId,
     company,
+    companySource: fileCompany ? "file" : "operator",
     mode: input.mode,
     period,
     periodSource: declaredPeriod ? "source" : "requested",

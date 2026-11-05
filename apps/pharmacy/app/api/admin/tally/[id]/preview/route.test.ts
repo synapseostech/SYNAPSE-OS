@@ -466,6 +466,70 @@ describe("POST /api/admin/tally/[id]/preview", () => {
     expect(mapping.manifestProblems).toEqual([expect.stringContaining("TALLY_COMPANY_MISSING")])
   })
 
+  it("builds a manifest from the company the operator entered when the file names none", async () => {
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: {
+        currency: "UGX",
+        groups: [],
+        ledgers: [{ name: "Cash" }],
+        stockGroups: [],
+        stockItems: [],
+        units: [],
+        godowns: [],
+        vouchers: [],
+        warnings: [],
+      },
+    })
+
+    const res = await post({
+      company: "  Api-Cure Pharma Ltd ",
+      period: { from: "2026-01-01", to: "2026-01-10" },
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.manifest.period).toEqual({ from: "2026-01-01", to: "2026-01-10" })
+
+    const update = m.db.operations.find((operation) => operation.action === "update")
+    const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifest).toMatchObject({
+      company: "Api-Cure Pharma Ltd",
+      companySource: "operator",
+    })
+  })
+
+  it("keeps the company a re-preview was first given", async () => {
+    setup(
+      sessionRow("pending", {
+        manifest: {
+          ...completeManifest(),
+          companySource: "operator",
+        },
+      }),
+    )
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: {
+        currency: "UGX",
+        groups: [],
+        ledgers: [{ name: "Cash" }],
+        stockGroups: [],
+        stockItems: [],
+        units: [],
+        godowns: [],
+        vouchers: [],
+        warnings: [],
+      },
+    })
+
+    const res = await post({ period: { from: "2026-01-01", to: "2026-01-10" } })
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.manifest.period).toEqual({ from: "2026-01-01", to: "2026-01-10" })
+  })
+
   it("uses the period the operator asked for when the export states none", async () => {
     m.readDocument.mockReturnValue({
       format: "xml",
