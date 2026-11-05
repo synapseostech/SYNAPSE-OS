@@ -112,7 +112,7 @@ export default function StockItemDetailScreen() {
   }, [load])
 
   const save = async () => {
-    if (!token || !id) return
+    if (!token || !id || !item) return
     const quantity = Number(qtyText)
     const reorderLevel = Number(reorderText)
     const price = Number(priceText)
@@ -134,6 +134,11 @@ export default function StockItemDetailScreen() {
     }
     setSaving(true)
     try {
+      // The server refuses any quantity it cannot tie to a genuine batch, so
+      // send it only when it actually changed. Sending the unchanged count
+      // made editing the name or price of a catalogue-only product fail with
+      // REQUIRES_BATCH.
+      const quantityChanged = Math.floor(quantity) !== Number(item.quantity)
       await apiRequest(`/api/mobile/inventory/${id}`, {
         method: 'PATCH',
         token,
@@ -144,11 +149,15 @@ export default function StockItemDetailScreen() {
           unit: unitText.trim() || undefined,
           price,
           costPrice: costText.trim() ? Number(costText) : undefined,
-          quantity: Math.floor(quantity),
           reorderLevel: Math.floor(reorderLevel),
-          batchNumber: batchText.trim() || null,
-          expiryDate: expiryText.trim() || null,
           reason: reason.trim() || undefined,
+          ...(quantityChanged
+            ? {
+                quantity: Math.floor(quantity),
+                batchNumber: batchText.trim() || null,
+                expiryDate: expiryText.trim() || null,
+              }
+            : {}),
         },
       })
       setEditing(false)

@@ -710,10 +710,13 @@ export default function POSPage() {
   const taxableBaseDiffers = taxAmount > 0 && taxableBase < total
   const taxLabel = taxSource === "vat" ? `VAT (${taxRate}%)` : `Tax (${taxRate}%)`
   const grandTotal = total + taxAmount
-  const settlement = settlePayment(
-    grandTotal,
-    paymentMethod === "CREDIT" ? 0 : amountPaid || 0,
-  )
+  // An empty Amount Paid field means "gave the exact total", not "gave nothing".
+  // Reading it as 0 turned every plain cash sale into a full underpayment: the
+  // sale was refused for want of a customer name, and with one it posted the
+  // entire total to the credit ledger and put the patient on the debtor list.
+  const tenderedRaw = amountPaid.trim()
+  const tendered = paymentMethod === "CREDIT" ? 0 : tenderedRaw === "" ? grandTotal : Number(tenderedRaw) || 0
+  const settlement = settlePayment(grandTotal, tendered)
   const change = settlement.change
   const balanceDue = settlement.balanceDue
   const isPartialPayment = settlement.isPartial && paymentMethod !== "CREDIT"

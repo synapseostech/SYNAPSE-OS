@@ -73,11 +73,21 @@ export default function PurchaseOrdersScreen() {
     load()
   }, [load])
 
+  // Statuses that may still take stock. A cancelled order is finished, and a
+  // received one is done — receiving either would create stock from a PO that
+  // never went out.
+  const RECEIVABLE_STATUSES = new Set(['DRAFT', 'ORDERED', 'SENT', 'PARTIALLY_RECEIVED'])
+  const canReceive = (po: PharmacyPurchaseOrder) =>
+    RECEIVABLE_STATUSES.has(po.status) && po.items.some((i) => i.productId)
+
   const openReceive = (po: PharmacyPurchaseOrder) => {
+    if (!canReceive(po)) return
     const draft: ReceiptDraft = {}
     for (const item of po.items) {
       if (!item.productId) continue
-      draft[item.productId] = {
+      // Keyed by the PO line: a PO may list the same product twice, and keying
+      // by product made the second line overwrite the first.
+      draft[item.id] = {
         batchNumber: '',
         expiryDate: '',
         quantity: String(item.quantity),
@@ -92,9 +102,10 @@ export default function PurchaseOrdersScreen() {
     if (!token || !receiving) return
     const linked = receiving.items.filter((i) => i.productId)
     const receiptItems = linked.map((item) => {
-      const d = receiptDraft[item.productId!]
+      const d = receiptDraft[item.id]
       return {
         productId: item.productId!,
+        purchaseOrderItemId: item.id,
         batchNumber: d?.batchNumber?.trim() ?? '',
         expiryDate: d?.expiryDate?.trim() ?? '',
         quantity: Number(d?.quantity ?? item.quantity),
@@ -244,7 +255,7 @@ export default function PurchaseOrdersScreen() {
                 UGX {Number(item.totalAmount).toLocaleString()} · {item.items.length} line
                 {item.items.length === 1 ? '' : 's'}
               </Text>
-              {item.status !== 'RECEIVED' && item.items.some((i) => i.productId) ? (
+              {canReceive(item) ? (
                 <Pressable style={styles.receiveBtn} onPress={() => openReceive(item)}>
                   <Text style={styles.receiveText}>Receive stock</Text>
                 </Pressable>
@@ -269,7 +280,7 @@ export default function PurchaseOrdersScreen() {
             {(receiving?.items ?? [])
               .filter((i) => i.productId)
               .map((item) => {
-                const d = receiptDraft[item.productId!] ?? {
+                const d = receiptDraft[item.id] ?? {
                   batchNumber: '',
                   expiryDate: '',
                   quantity: String(item.quantity),
@@ -284,7 +295,7 @@ export default function PurchaseOrdersScreen() {
                       onChangeText={(v) =>
                         setReceiptDraft((prev) => ({
                           ...prev,
-                          [item.productId!]: { ...d, batchNumber: v },
+                          [item.id]: { ...d, batchNumber: v },
                         }))
                       }
                     />
@@ -294,7 +305,7 @@ export default function PurchaseOrdersScreen() {
                       onChangeText={(v) =>
                         setReceiptDraft((prev) => ({
                           ...prev,
-                          [item.productId!]: { ...d, expiryDate: v },
+                          [item.id]: { ...d, expiryDate: v },
                         }))
                       }
                       placeholder="2027-12-31"
@@ -306,7 +317,7 @@ export default function PurchaseOrdersScreen() {
                       onChangeText={(v) =>
                         setReceiptDraft((prev) => ({
                           ...prev,
-                          [item.productId!]: { ...d, quantity: v },
+                          [item.id]: { ...d, quantity: v },
                         }))
                       }
                       keyboardType="numeric"
@@ -317,7 +328,7 @@ export default function PurchaseOrdersScreen() {
                       onChangeText={(v) =>
                         setReceiptDraft((prev) => ({
                           ...prev,
-                          [item.productId!]: { ...d, costPrice: v },
+                          [item.id]: { ...d, costPrice: v },
                         }))
                       }
                       keyboardType="numeric"

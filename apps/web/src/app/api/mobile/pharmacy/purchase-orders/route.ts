@@ -251,6 +251,8 @@ export async function PATCH(req: NextRequest) {
     status?: string
     receiptItems?: Array<{
       productId: string
+      /** PO line id — the only way to tell two lines for the same product apart. */
+      purchaseOrderItemId?: string
       batchNumber: string
       expiryDate: string
       quantity?: number
@@ -290,6 +292,12 @@ export async function PATCH(req: NextRequest) {
     if (purchaseOrder.status === 'RECEIVED') {
       return NextResponse.json({ error: 'Purchase order already received' }, { status: 409 })
     }
+    if (purchaseOrder.status === 'CANCELLED') {
+      return NextResponse.json(
+        { error: 'A cancelled purchase order cannot receive stock.', code: 'PURCHASE_ORDER_CANCELLED' },
+        { status: 409 },
+      )
+    }
 
     const poItems = (purchaseOrder.items as Array<{
       id: string
@@ -325,7 +333,11 @@ export async function PATCH(req: NextRequest) {
 
     const lines = (body.receiptItems ?? [])
       .map((receipt) => {
-        const line = linkedItems.find((item) => item.product_id === receipt.productId)
+        // Match the PO line, not the product: a PO may list the same product
+        // twice, and matching by product sent both receipts to the first line.
+        const line = receipt.purchaseOrderItemId
+          ? linkedItems.find((item) => item.id === receipt.purchaseOrderItemId)
+          : linkedItems.find((item) => item.product_id === receipt.productId)
         if (!line || !(Math.trunc(Number(receipt.quantity ?? line.quantity)) > 0)) return null
         return {
           clientItemId: line.id,
@@ -354,7 +366,7 @@ export async function PATCH(req: NextRequest) {
       supplierId: purchaseOrder.supplier_id,
       supplierInvoiceNo: purchaseOrder.order_no,
       purchaseOrderId: purchaseOrder.id,
-      idempotencyKey: `po-receive:${purchaseOrder.id}:${lines.map((l) => `${l.productId}:${l.batchNumber}:${l.quantity}`).join('|')}`,
+      idempotencyKey: `po-receive:${purchaseOrder.id}:${lines.map((l) => `${l.purchaseOrderItemId}:${l.batchNumber}:${l.quantity}`).join('|')}`,
       receiveNow: true,
       lines,
     })

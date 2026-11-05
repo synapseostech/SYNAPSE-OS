@@ -284,7 +284,23 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 })
     }
 
-    // Update order status
+    // A completed order has already written its sale. Completing it again
+    // created a second transaction and deducted every line twice.
+    if (order.status === status) {
+      return NextResponse.json(
+        {
+          error:
+            status === "COMPLETED"
+              ? "Order is already completed."
+              : `Order is already ${status.toLowerCase()}.`,
+          code: status === "COMPLETED" ? "ORDER_ALREADY_COMPLETED" : "ORDER_STATUS_UNCHANGED",
+        },
+        { status: 409 },
+      )
+    }
+
+    // Update order status, guarded by the status just read so two concurrent
+    // requests cannot both go on to record a sale.
     const { data: updatedOrder, error: updateError } = await supabaseAdmin
       .from("pharmacy_orders")
       .update({
@@ -294,15 +310,25 @@ export async function PATCH(request: NextRequest) {
       })
       .eq("id", id)
       .eq("tenant_id", tenantId)
+      .eq("status", order.status)
       .select()
-      .single()
+      .maybeSingle()
 
     if (updateError) {
       console.error("Error updating order:", updateError)
       return NextResponse.json({ error: "Failed to update order" }, { status: 500 })
     }
+    if (!updatedOrder) {
+      return NextResponse.json(
+        {
+          error: "Order changed while it was being updated. Reload and try again.",
+          code: "ORDER_STATUS_RACE",
+        },
+        { status: 409 },
+      )
+    }
 
-    // If completing a customer order, create transaction and deduct stock
+    // If completing a customer order, create transaction and deduct stock.
     if (status === "COMPLETED" && order.order_type === "CUSTOMER") {
       const itemsWithProducts = (order.items as Array<{
         id: string
@@ -314,6 +340,14 @@ export async function PATCH(request: NextRequest) {
       }>).filter((item) => item.product_id !== null)
 
       if (itemsWithProducts.length > 0) {
+        const revertOrder = async () => {
+          await supabaseAdmin
+            .from("pharmacy_orders")
+            .update({ status: order.status, updated_at: new Date().toISOString() })
+            .eq("id", id)
+            .eq("tenant_id", tenantId)
+            .eq("status", "COMPLETED")
+        }
         const transactionNo = generateTransactionNo()
 
         const { data: transaction, error: txError } = await supabaseAdmin
@@ -334,9 +368,39 @@ export async function PATCH(request: NextRequest) {
 
         if (txError || !transaction) {
           console.error("Error creating transaction:", txError)
-        } else {
-          // Insert transaction items
-          await supabaseAdmin.from("pharmacy_transaction_items").insert(
+          await revertOrder()
+          return NextResponse.json(
+            { error: "Failed to record the sale for this order. The order was left unchanged." },
+            { status: 500 },
+          )
+        }
+
+        const debited: Array<{ productId: string; quantity: number }> = []
+        // Undo a half-finished completion: put back the units already taken,
+        // drop the sale row and return the order to its previous status, so it
+        // can be completed again without a second transaction or a short shelf.
+        const rollback = async () => {
+          for (const done of debited) {
+            await adjustPharmacyBatchStock(supabaseAdmin as any, {
+              tenantId,
+              productId: done.productId,
+              quantity: done.quantity,
+              type: "INCREASE",
+              reason: `Order ${order.order_no} completion rolled back`,
+              actorId: session.user.id,
+            })
+          }
+          await supabaseAdmin
+            .from("pharmacy_transactions")
+            .delete()
+            .eq("id", transaction.id)
+            .eq("tenant_id", tenantId)
+          await revertOrder()
+        }
+
+        const { error: itemsError } = await supabaseAdmin
+          .from("pharmacy_transaction_items")
+          .insert(
             itemsWithProducts.map((item) => ({
               tenant_id: tenantId,
               transaction_id: transaction.id,
@@ -345,31 +409,38 @@ export async function PATCH(request: NextRequest) {
               unit_price: item.unit_price,
               cost_price: 0,
               total_price: item.total_price,
-            }))
+            })),
           )
+        if (itemsError) {
+          console.error("Error creating transaction items:", itemsError)
+          await rollback()
+          return NextResponse.json(
+            { error: "Failed to record the sale for this order. The order was left unchanged." },
+            { status: 500 },
+          )
+        }
 
-          // Deduct sellable batch stock via FEFO (never product.quantity).
-          for (const item of itemsWithProducts) {
-            if (!item.product_id) continue
-
-            const debit = await adjustPharmacyBatchStock(supabaseAdmin as any, {
-              tenantId,
-              productId: item.product_id,
-              quantity: item.quantity,
-              type: "DECREASE",
-              reason: `Order ${order.order_no} completed`,
-              actorId: session.user.id,
-            })
-            if (debit.error) {
-              return NextResponse.json(
-                pharmacyDomainError(debit.error.code, debit.error.humanMessage, {
-                  productId: item.product_id,
-                  requestedQuantity: item.quantity,
-                }),
-                { status: httpStatusForPharmacyError(debit.error.code) },
-              )
-            }
+        // Deduct sellable batch stock via FEFO (never product.quantity).
+        for (const item of itemsWithProducts) {
+          const debit = await adjustPharmacyBatchStock(supabaseAdmin as any, {
+            tenantId,
+            productId: item.product_id!,
+            quantity: item.quantity,
+            type: "DECREASE",
+            reason: `Order ${order.order_no} completed`,
+            actorId: session.user.id,
+          })
+          if (debit.error) {
+            await rollback()
+            return NextResponse.json(
+              pharmacyDomainError(debit.error.code, debit.error.humanMessage, {
+                productId: item.product_id!,
+                requestedQuantity: item.quantity,
+              }),
+              { status: httpStatusForPharmacyError(debit.error.code) },
+            )
           }
+          debited.push({ productId: item.product_id!, quantity: item.quantity })
         }
       }
     }

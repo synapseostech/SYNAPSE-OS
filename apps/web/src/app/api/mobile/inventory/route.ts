@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyToken, validateSession } from '@synapse/auth'
 import { supabaseAdmin } from '@synapse/db/admin'
 import { receivePharmacyStock } from '@synapse/db/inventory-rpc'
+import { daysUntilExpiry, kampalaToday } from '@synapse/db/inventory'
 import { normaliseExpiry } from '@synapse/db/import-validation'
 import {
   isMobileAuth,
@@ -24,13 +25,14 @@ type ItemStatus = 'ok' | 'low' | 'expiring' | 'expired'
 function classifyProduct(
   quantity: number,
   reorderLevel: number,
-  expiryDate: string | null
+  expiryDate: string | null,
+  today: string
 ): ItemStatus {
-  const today = new Date()
-  if (expiryDate) {
-    const exp = new Date(expiryDate)
-    if (exp < today) return 'expired'
-    const days = (exp.getTime() - today.getTime()) / 86400000
+  // Calendar days in the business zone, not server-time arithmetic: a dose
+  // expiring tomorrow was reading as expiring-today across midnight in Kampala.
+  const days = daysUntilExpiry(expiryDate, today)
+  if (days !== null) {
+    if (days < 0) return 'expired'
     if (days <= 60) return 'expiring'
   }
   if (quantity <= reorderLevel) return 'low'
@@ -56,23 +58,25 @@ export async function GET(req: NextRequest) {
     })
   }
 
+  // The whole catalogue: a 100-row page hid every product past the first
+  // hundred alphabetically and made the counts below describe only that slice.
   const { data: products, error } = await db()
     .from('pharmacy_products')
     .select('id, name, quantity, reorder_level, expiry_date')
     .eq('tenant_id', tenantId)
     .eq('is_active', true)
     .order('name', { ascending: true })
-    .limit(100)
 
   if (error) {
     return NextResponse.json({ error: 'Failed to load inventory' }, { status: 500 })
   }
 
+  const today = kampalaToday()
   const items = (products ?? []).map((p: Record<string, unknown>) => {
     const quantity = Number(p.quantity) || 0
     const reorderLevel = Number(p.reorder_level) || 0
     const expiryDate = (p.expiry_date as string | null) ?? null
-    const status = classifyProduct(quantity, reorderLevel, expiryDate)
+    const status = classifyProduct(quantity, reorderLevel, expiryDate, today)
 
     return {
       id: p.id as string,

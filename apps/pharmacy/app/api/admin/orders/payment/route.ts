@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
       .from("pharmacy_orders")
       .select(
         `
-        id, order_no, order_type, total_amount, customer_id, payment_status,
+        id, order_no, order_type, total_amount, customer_id, status, payment_status,
         items:pharmacy_order_items(id, product_id, product_name, quantity, unit_price, total_price)
       `
       )
@@ -39,6 +39,26 @@ export async function POST(request: NextRequest) {
 
     if (order.payment_status === "PAID") {
       return NextResponse.json({ error: "Order already paid" }, { status: 400 })
+    }
+
+    // An order completed through the status endpoint already wrote its sale.
+    // Charging it again here would record a second transaction and deduct the
+    // stock twice.
+    if (order.status === "COMPLETED") {
+      return NextResponse.json(
+        {
+          error:
+            "This order was already completed from the order screen, so its sale is recorded. Refund that transaction instead of charging it again.",
+          code: "ORDER_ALREADY_COMPLETED",
+        },
+        { status: 409 },
+      )
+    }
+    if (order.status === "CANCELLED") {
+      return NextResponse.json(
+        { error: "A cancelled order cannot be paid. Reopen it first.", code: "ORDER_CANCELLED" },
+        { status: 409 },
+      )
     }
 
     if (order.order_type === "SUPPLIER") {
@@ -83,6 +103,48 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Claim the order first, guarded by the status just read. Two payments
+    // posted at once would otherwise both record a sale for the same order.
+    const { data: claimed, error: claimError } = await supabaseAdmin
+      .from("pharmacy_orders")
+      .update({
+        status: "COMPLETED",
+        payment_status: "PAID",
+        processed_by: session.user.id,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", orderId)
+      .eq("tenant_id", tenantId)
+      .eq("status", order.status)
+      .select("id")
+      .maybeSingle()
+
+    if (claimError) {
+      console.error("Error claiming order for payment:", claimError)
+      return NextResponse.json({ error: "Failed to process payment" }, { status: 500 })
+    }
+    if (!claimed) {
+      return NextResponse.json(
+        {
+          error: "Order changed while the payment was being processed. Reload and try again.",
+          code: "ORDER_STATUS_RACE",
+        },
+        { status: 409 },
+      )
+    }
+
+    const revertClaim = async () => {
+      await supabaseAdmin
+        .from("pharmacy_orders")
+        .update({
+          status: order.status,
+          payment_status: order.payment_status,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", orderId)
+        .eq("tenant_id", tenantId)
+    }
+
     // Create transaction
     const transactionNo = generateTransactionNo()
 
@@ -104,14 +166,36 @@ export async function POST(request: NextRequest) {
 
     if (txError || !transaction) {
       console.error("Error creating transaction:", txError)
+      await revertClaim()
       return NextResponse.json({ error: "Failed to create transaction" }, { status: 500 })
     }
 
     // Insert transaction items
     const txItemsWithProductId = orderItems.filter((item) => item.product_id !== null)
 
+    const debited: Array<{ productId: string; quantity: number }> = []
+    // Undo everything this request wrote, so a retry starts from a clean order.
+    const rollback = async () => {
+      for (const done of debited) {
+        await adjustPharmacyBatchStock(supabaseAdmin as any, {
+          tenantId,
+          productId: done.productId,
+          quantity: done.quantity,
+          type: "INCREASE",
+          reason: `Order ${order.order_no} payment rolled back`,
+          actorId: session.user.id,
+        })
+      }
+      await supabaseAdmin
+        .from("pharmacy_transactions")
+        .delete()
+        .eq("id", transaction.id)
+        .eq("tenant_id", tenantId)
+      await revertClaim()
+    }
+
     if (txItemsWithProductId.length > 0) {
-      await supabaseAdmin.from("pharmacy_transaction_items").insert(
+      const { error: itemsError } = await supabaseAdmin.from("pharmacy_transaction_items").insert(
         txItemsWithProductId.map((item) => ({
           tenant_id: tenantId,
           transaction_id: transaction.id,
@@ -122,6 +206,11 @@ export async function POST(request: NextRequest) {
           total_price: item.total_price,
         }))
       )
+      if (itemsError) {
+        console.error("Error creating transaction items:", itemsError)
+        await rollback()
+        return NextResponse.json({ error: "Failed to create transaction" }, { status: 500 })
+      }
     }
 
     // Deduct sellable batch stock via FEFO (never product.quantity).
@@ -137,6 +226,7 @@ export async function POST(request: NextRequest) {
         actorId: session.user.id,
       })
       if (debit.error) {
+        await rollback()
         return NextResponse.json(
           pharmacyDomainError(debit.error.code, debit.error.humanMessage, {
             productId: item.product_id,
@@ -145,19 +235,10 @@ export async function POST(request: NextRequest) {
           { status: httpStatusForPharmacyError(debit.error.code) },
         )
       }
+      debited.push({ productId: item.product_id, quantity: item.quantity })
     }
 
-    // Update order status to COMPLETED and payment status to PAID
-    await supabaseAdmin
-      .from("pharmacy_orders")
-      .update({
-        status: "COMPLETED",
-        payment_status: "PAID",
-        processed_by: session.user.id,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", orderId)
-      .eq("tenant_id", tenantId)
+    // The order was already claimed above, before the sale was written.
 
     // Create audit log
     await supabaseAdmin.from("pharmacy_audit_logs").insert({

@@ -300,6 +300,8 @@ export function updatePharmacyPurchaseOrderStatus(
     status: string
     receiptItems?: Array<{
       productId: string
+      /** PO line id, so a product listed twice is received twice. */
+      purchaseOrderItemId?: string
       batchNumber: string
       expiryDate: string
       quantity?: number
