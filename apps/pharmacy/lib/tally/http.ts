@@ -101,11 +101,19 @@ export function tallyErrorResponse(
   }
 
   const message = error instanceof Error ? error.message : "Import failed"
-  const code = message.match(/^([A-Z_]+):/)?.[1] ?? message
+  const match = /^([A-Z_]+):\s*([\s\S]*)$/.exec(message)
+  const code = match?.[1] ?? message
+  // Whatever the code was thrown with after the colon is the only explanation
+  // of a failure the server log has already stopped keeping.
+  const detail = match?.[2]?.trim() || undefined
   const status = STATUS_BY_CODE[code]
   if (status) {
     return NextResponse.json(
-      { error: MESSAGE_BY_CODE[code] ?? message.replace(/^[A-Z_]+:\s*/, ""), code },
+      {
+        error: MESSAGE_BY_CODE[code] ?? message.replace(/^[A-Z_]+:\s*/, ""),
+        code,
+        ...(detail ? { detail } : {}),
+      },
       { status },
     )
   }
@@ -114,5 +122,8 @@ export function tallyErrorResponse(
   // what to do; the code is what identifies the failure once the logs are gone.
   logTallyFailure("tally.request.failed", {}, error)
   const labelled = /^[A-Z0-9_]+$/.test(code)
-  return NextResponse.json(labelled ? { error: fallback, code } : { error: fallback }, { status: 500 })
+  return NextResponse.json(
+    labelled ? { error: fallback, code, ...(detail ? { detail } : {}) } : { error: fallback },
+    { status: 500 },
+  )
 }

@@ -73,12 +73,27 @@ export async function ensureTallyBucket(db: TallyStorageClient): Promise<void> {
     // Storage applies the bucket's own cap to every signed upload, so a bucket
     // created under an older, smaller limit keeps refusing files this app now
     // accepts. Raise it once rather than making the operator re-create it.
-    const current = (existing.data as { file_size_limit?: number | null } | null)?.file_size_limit
+    const bucket = existing.data as {
+      file_size_limit?: number | null
+      allowed_mime_types?: string[] | null
+    } | null
+    const current = bucket?.file_size_limit
+    const raise: Record<string, unknown> = {}
     if (typeof current === "number" && current > 0 && current < TALLY_SOURCE_LIMIT) {
+      raise.fileSizeLimit = TALLY_SOURCE_LIMIT
+    }
+    // The normalised plan is stored as JSON beside the XML sources, so a bucket
+    // restricted to the export types alone accepts the upload and then refuses
+    // to save the plan — every preview fails after the file was already read.
+    const allowed = bucket?.allowed_mime_types
+    if (Array.isArray(allowed) && allowed.length > 0 && !allowed.includes("application/json")) {
+      raise.allowedMimeTypes = [...allowed, "application/json"]
+    }
+    if (Object.keys(raise).length > 0) {
       // A project-wide Storage limit can refuse the raise. That must not fail the
       // upload outright: the file may still fit the old cap, and Storage's own
       // error is what the browser surfaces when it does not.
-      await db.storage.updateBucket(TALLY_BUCKET, { fileSizeLimit: TALLY_SOURCE_LIMIT })
+      await db.storage.updateBucket(TALLY_BUCKET, raise)
     }
     return
   }

@@ -15,6 +15,7 @@ import { TALLY_SYSTEM_ACCOUNT_CODES } from "@synapse/db/tally-map"
 import type { TallyApplyStage } from "./apply"
 import { TALLY_APPLY_CHUNK, type TallyPlanSummary } from "./types"
 import {
+  ensureTallyBucket,
   readTallyJson,
   tallyChunkPath,
   writeTallyJson,
@@ -135,6 +136,10 @@ export async function writeTallyPlan(
   format: "xml" | "xlsx" | "xls" | "csv",
 ): Promise<TallyPlanSummary> {
   const summary = summarisePlan(plan, format)
+  // The plan is JSON. A bucket that was set up for the export's XML alone
+  // accepts every upload and then refuses to store this, after the whole file
+  // has already been read.
+  await ensureTallyBucket(db)
 
   const staticPlan: StaticPlan = {
     company: plan.company,
