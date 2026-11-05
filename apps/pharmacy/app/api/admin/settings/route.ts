@@ -113,6 +113,10 @@ export async function POST(request: NextRequest) {
     const receiptPaperWidth = normalizePaperWidth(data.receiptPaperWidth, printerType)
     const receiptFontScale = Number(data.receiptFontScale ?? 1) || 1
     const autoPrintReceipt = Boolean(data.autoPrintReceipt)
+    // Only an explicit boolean changes the requirement; an absent field (an older
+    // screen) must not quietly relax a sale-time control.
+    const mandatoryReceiptPrint =
+      typeof data.mandatoryReceiptPrint === "boolean" ? data.mandatoryReceiptPrint : undefined
 
     // VAT keys travel only when the caller sent them, so a save from a screen
     // without VAT controls cannot silently switch VAT off or reset its rate.
@@ -149,6 +153,9 @@ export async function POST(request: NextRequest) {
       receipt_paper_width: receiptPaperWidth,
       receipt_font_scale: receiptFontScale,
       auto_print_receipt: autoPrintReceipt,
+      ...(mandatoryReceiptPrint !== undefined
+        ? { mandatory_receipt_print: mandatoryReceiptPrint }
+        : {}),
     }
 
     let settings: any = null

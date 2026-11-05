@@ -23,6 +23,11 @@ function vatCategoryFrom(value: unknown): "standard" | "exempt" | "zero_rated" {
   return raw === "standard" || raw === "zero_rated" ? raw : "exempt"
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** A cart is a handful of lines; anything larger is not a sale refresh. */
+const MAX_IDS = 200
+
 function medicineNameSearchPattern(name: string): string {
   return name
     .trim()
@@ -39,7 +44,25 @@ export async function GET(request: NextRequest) {
     if (!auth.ok) return auth.response
     const { session, tenantId } = auth
 
-    const { data: products, error } = await (supabaseAdmin as any)
+    // `?ids=` narrows the response to the products the till just sold, so a
+    // completed sale can refresh its own lines instead of re-downloading the
+    // whole catalogue. An ids parameter that yields nothing valid returns an
+    // empty list rather than silently falling back to the full catalogue.
+    const idsParam = request.nextUrl.searchParams.get("ids")
+    let ids: string[] | null = null
+    if (idsParam !== null) {
+      ids = Array.from(
+        new Set(
+          idsParam
+            .split(",")
+            .map((id) => id.trim())
+            .filter((id) => UUID_RE.test(id)),
+        ),
+      ).slice(0, MAX_IDS)
+      if (ids.length === 0) return NextResponse.json([])
+    }
+
+    let query = (supabaseAdmin as any)
       .from("pharmacy_products")
       .select(`
         id, tenant_id, name, sku, barcode, price, cost_price, quantity, unit_of_measure,
@@ -52,7 +75,10 @@ export async function GET(request: NextRequest) {
       `)
       .eq("tenant_id", tenantId)
       .eq("is_active", true)
-      .order("created_at", { ascending: false })
+
+    if (ids) query = query.in("id", ids)
+
+    const { data: products, error } = await query.order("created_at", { ascending: false })
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 

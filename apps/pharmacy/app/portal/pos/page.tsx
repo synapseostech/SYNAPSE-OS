@@ -220,6 +220,9 @@ export default function POSPage() {
   const creditCustomerRef = useRef<HTMLSelectElement>(null)
   const creditDueDateRef = useRef<HTMLInputElement>(null)
   const completeSaleRef = useRef<HTMLButtonElement>(null)
+  // Read by the post-sale refresh, whose callback can outlive the render that
+  // created it.
+  const productsRef = useRef<Product[]>([])
   const [liveMessage, setLiveMessage] = useState("")
   const receiptPrintPolicy = useMemo(() => resolveReceiptPrintPolicy(settings), [settings])
 
@@ -280,6 +283,16 @@ export default function POSPage() {
       window.removeEventListener('offline', handleOffline)
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
     }
+  }, [])
+
+  // Another till changes stock too, and a sale now refreshes only its own
+  // lines, so the full catalogue is pulled slowly in the background instead.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") void fetchProducts()
+    }, 5 * 60 * 1000)
+    return () => clearInterval(interval)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const updatePendingSyncCount = async () => {
@@ -469,6 +482,39 @@ export default function POSPage() {
           description: "Failed to fetch products",
         })
       }
+    }
+  }
+
+  useEffect(() => {
+    productsRef.current = products
+  }, [products])
+
+  // A sale only changes the lines it sold, so refresh those rather than the
+  // whole catalogue: that download was the till's heaviest per-sale cost.
+  const refreshSoldProducts = async (ids: string[]) => {
+    const unique = Array.from(new Set(ids.filter(Boolean)))
+    if (unique.length === 0) return
+    try {
+      const response = await fetch(
+        `/api/admin/inventory?ids=${encodeURIComponent(unique.join(","))}`,
+      )
+      if (!response.ok) throw new Error("Failed to refresh sold products")
+      const data = await response.json()
+      const fresh = Array.isArray(data) ? (data as Product[]) : []
+      const byId = new Map(fresh.map((product) => [product.id, product]))
+      const sold = new Set(unique)
+      // A sold product that does not come back was removed or deactivated while
+      // the till was open; drop it so the next sale cannot pick it again.
+      const next = productsRef.current
+        .filter((product) => !sold.has(product.id) || byId.has(product.id))
+        .map((product) => byId.get(product.id) ?? product)
+      productsRef.current = next
+      setProducts(next)
+      saveMetadata("products", next)
+    } catch (error) {
+      console.error("Failed to refresh sold products:", error)
+      // Fall back to the full refresh this replaced rather than leave it stale.
+      await fetchProducts()
     }
   }
 
@@ -973,8 +1019,9 @@ export default function POSPage() {
             setShowPrintPrompt(true)
           }
 
+          const soldProductIds = cart.map((item) => item.id)
           startNewSale()
-          fetchProducts()
+          void refreshSoldProducts(soldProductIds)
         } else {
           track("sale_failed", { stage: "response", status: response.status })
           const missingId = String(data.error ?? "")
@@ -985,7 +1032,9 @@ export default function POSPage() {
             // removed or deactivated. Drop the dead line so the rest of the
             // sale can go through instead of failing again on every retry.
             setCart((current) => current.filter((line) => line.id !== missingId))
-            fetchProducts()
+            // The dead line is in this list and will not come back, so the
+            // merge drops it from the catalogue as well.
+            void refreshSoldProducts(cart.map((line) => line.id))
             toast({
               variant: "destructive",
               title: "Item no longer available",
