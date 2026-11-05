@@ -76,7 +76,13 @@ export async function POST(
     )
   }
 
-  let body: { conversionDate?: string; mode?: unknown; period?: unknown; edition?: unknown } = {}
+  let body: {
+    conversionDate?: string
+    mode?: unknown
+    period?: unknown
+    edition?: unknown
+    company?: unknown
+  } = {}
   try {
     const text = await request.text()
     if (text.trim()) {
@@ -85,10 +91,19 @@ export async function POST(
         mode?: unknown
         period?: unknown
         edition?: unknown
+        company?: unknown
       }
     }
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
+  }
+  // The company the operator entered, used only when the file names none.
+  const bodyCompany = typeof body.company === "string" ? body.company.trim() : ""
+  if (body.company !== undefined && typeof body.company !== "string") {
+    return NextResponse.json(
+      { error: "company must be a string", code: "TALLY_COMPANY_BODY_INVALID" },
+      { status: 400 },
+    )
   }
   if (body.mode !== undefined && body.mode !== "opening" && body.mode !== "closing") {
     return NextResponse.json(
@@ -131,6 +146,10 @@ export async function POST(
   }
 
   const mapping = (session.ai_mapping ?? {}) as MappingState
+  // A re-preview of the same session keeps the company the first one was given,
+  // so changing the cut-over date does not ask for it again.
+  const statedCompany =
+    bodyCompany || (isManifestLike(mapping.manifest) ? mapping.manifest.company.trim() : "")
   // An upload carries no edition of its own; the portal passes the one the
   // bridge reported, and anything it cannot place is recorded as unknown.
   const edition = normaliseTallyEdition(body.edition ?? mapping.edition)
@@ -187,7 +206,15 @@ export async function POST(
       const read = readTallyDocument(bytes, session.file_name ?? undefined)
       document = read.document
       format = read.format
-      plan = normaliseTallyDocument(document, {
+      // A file that names no company is planned under the one the operator
+      // entered, so the plan, the preflight and the manifest state one name.
+      // The manifest itself is built from the parsed file, which still says
+      // the company came from the form rather than from the export.
+      const planDocument =
+        !document.company?.trim() && statedCompany
+          ? { ...document, company: statedCompany }
+          : document
+      plan = normaliseTallyDocument(planDocument, {
         conversionDate: body.conversionDate ?? mapping.conversionDate,
         mode: body.mode ?? mapping.mode,
         currency: document.currency,
@@ -205,6 +232,7 @@ export async function POST(
         mode: plan.mode ?? body.mode ?? mapping.mode ?? "opening",
         now: summary.preparedAt,
         requestedPeriod,
+        company: statedCompany,
       })
     } else if (stagedManifest) {
       const gate = canApplyManifest(stagedManifest)

@@ -105,6 +105,11 @@ export type TallyConsolidation = {
 export type TallyConsolidationInput = {
   /** The period the migration promises to cover. */
   period: TallyDateRange
+  /**
+   * The company the operator entered, used only when no part names one. A part
+   * that names a different company is still a mismatch, not a preference.
+   */
+  company?: string
   /** Master records count reported by the source, when one exists. */
   expectedMasters?: number
   /** Voucher count reported by the source, when one exists. */
@@ -224,7 +229,7 @@ function dateGaps(dates: string[], period: TallyDateRange): Array<{ from: string
   return gaps
 }
 
-function companyOf(parts: TallyXmlDocument[]): string {
+function companyOf(parts: TallyXmlDocument[], stated?: string): string {
   const names = new Set(
     parts
       .map((part) => (part.company ?? "").trim().toLowerCase())
@@ -232,8 +237,15 @@ function companyOf(parts: TallyXmlDocument[]): string {
   )
   if (names.size > 1) throw new TallyConsolidationError("TALLY_CONSOLIDATION_COMPANY_MISMATCH")
   const named = parts.find((part) => (part.company ?? "").trim())?.company?.trim() ?? ""
-  if (!named) throw new TallyConsolidationError("TALLY_CONSOLIDATION_COMPANY_MISSING")
-  return named
+  const entered = (stated ?? "").trim()
+  if (named) {
+    if (entered && entered.toLowerCase() !== named.toLowerCase()) {
+      throw new TallyConsolidationError("TALLY_CONSOLIDATION_COMPANY_MISMATCH")
+    }
+    return named
+  }
+  if (entered) return entered
+  throw new TallyConsolidationError("TALLY_CONSOLIDATION_COMPANY_MISSING")
 }
 
 export function consolidateTallyParts(
@@ -241,7 +253,7 @@ export function consolidateTallyParts(
   input: TallyConsolidationInput,
 ): TallyConsolidation {
   if (parts.length === 0) throw new TallyConsolidationError("TALLY_CONSOLIDATION_EMPTY")
-  const company = companyOf(parts)
+  const company = companyOf(parts, input.company)
 
   const groups = mergeBy<TallyGroup>(parts.map((part) => part.groups))
   const ledgers = mergeBy<TallyLedger>(parts.map((part) => part.ledgers))

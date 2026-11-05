@@ -284,6 +284,51 @@ const money = (value: number | undefined | null, currency: string) =>
     ? "—"
     : `${currency} ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
+/** One group of staged files — masters, or one slice of the day book each. */
+function StagedGroup({
+  title,
+  files,
+  empty,
+}: {
+  title: string
+  files: StagedFile[]
+  empty: string
+}) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {title} — {files.length}
+      </p>
+      {files.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{empty}</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>File</TableHead>
+              <TableHead>Covers</TableHead>
+              <TableHead className="text-right">Records</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {files.map((entry) => (
+              <TableRow key={entry.uploadId}>
+                <TableCell className="max-w-[18rem] truncate">{entry.fileName}</TableCell>
+                <TableCell>
+                  {entry.kind === "masters"
+                    ? "Accounts, parties and stock"
+                    : formatPeriod(entry.range)}
+                </TableCell>
+                <TableCell className="text-right">{entry.recordsRead.toLocaleString()}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </div>
+  )
+}
+
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "warn" | "bad" }) {
   return (
     <div className="rounded-lg border p-4">
@@ -320,11 +365,32 @@ export default function TallyImportPage() {
   const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "disabled" | "error">("checking")
   const [scriptPort, setScriptPort] = useState("")
   const [scriptCompany, setScriptCompany] = useState("")
+  const [companyFrom, setCompanyFrom] = useState("")
+  const [companyTo, setCompanyTo] = useState("")
   const [editionInfo, setEditionInfo] = useState<TallyEditionDisclosure | null>(null)
   const [editionProblems, setEditionProblems] = useState<TallyEditionProblem[]>([])
   const [busy, setBusy] = useState<
     "idle" | "uploading" | "preview" | "applying" | "saving"
   >("idle")
+
+  const stagedMasters = useMemo(
+    () => stagedFiles.filter((entry) => entry.kind === "masters"),
+    [stagedFiles],
+  )
+  const stagedVouchers = useMemo(
+    () => stagedFiles.filter((entry) => entry.kind !== "masters"),
+    [stagedFiles],
+  )
+  const stagedVoucherTotal = useMemo(
+    () => stagedVouchers.reduce((total, entry) => total + entry.recordsRead, 0),
+    [stagedVouchers],
+  )
+  const stagedVoucherSpan = useMemo(() => {
+    if (stagedVouchers.length === 0) return null
+    const from = stagedVouchers.map((entry) => entry.range.from).sort()[0] as string
+    const to = stagedVouchers.map((entry) => entry.range.to).sort().at(-1) as string
+    return { from, to }
+  }, [stagedVouchers])
 
   const blocking = useMemo(
     () => (summary?.exceptions ?? []).filter((entry) => entry.severity === "blocking"),
@@ -346,6 +412,13 @@ export default function TallyImportPage() {
     // The server judges a wider list than this screen; when it has spoken, its
     // answer wins. Before the session loads there is no verdict to defer to.
     preflightView?.canApply !== false
+
+  // The dates the operator entered, used only for a file that states none.
+  const companyPeriod = useMemo<TallyPeriod | undefined>(() => {
+    const from = companyFrom.trim()
+    const to = companyTo.trim()
+    return isIsoDay(from) && isIsoDay(to) && to >= from ? { from, to } : undefined
+  }, [companyFrom, companyTo])
 
   const exportCommand = useMemo(() => {
     const company = scriptCompany.trim()
@@ -521,7 +594,8 @@ export default function TallyImportPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...(conversionDate ? { conversionDate } : {}),
-          ...(period ? { period } : {}),
+          ...(period ? { period } : companyPeriod ? { period: companyPeriod } : {}),
+          ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
           mode,
         }),
       })
@@ -608,17 +682,19 @@ export default function TallyImportPage() {
 
     rememberSession(start.sessionId as string)
 
-    // A slice names its own dates; the typed period is the fallback for a file
-    // that does not, and names the one range a masters export covers.
+    // A slice names its own dates; the dates entered above are the fallback for
+    // a file that does not, and name the one range a masters export covers.
     const period = periodFromFileName(selectedFile.name)
     const kind = kindFromFileName(selectedFile.name)
+    const company = scriptCompany.trim()
     const sourcesResponse = await fetch(`/api/admin/tally/${start.sessionId}/sources`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         uploadId: start.uploadId,
         fileName: selectedFile.name,
-        ...(period ? { period } : {}),
+        ...(period ? { period } : companyPeriod ? { fallbackPeriod: companyPeriod } : {}),
+        ...(company ? { company } : {}),
         ...(kind ? { kind } : {}),
         ...(replace ? { replace: true } : {}),
       }),
@@ -688,6 +764,7 @@ export default function TallyImportPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...(conversionDate ? { conversionDate } : {}),
+          ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
           mode,
         }),
       })
@@ -746,7 +823,11 @@ export default function TallyImportPage() {
       const previewResponse = await fetch(`/api/admin/tally/${sessionId}/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversionDate, mode }),
+        body: JSON.stringify({
+          conversionDate,
+          mode,
+          ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
+        }),
       })
       const previewData = await previewResponse.json()
       if (!previewResponse.ok) {
@@ -892,6 +973,53 @@ export default function TallyImportPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="space-y-3 rounded-lg border p-4">
+            <p className="text-sm font-medium">Company details</p>
+            <p className="text-xs text-muted-foreground">
+              Used when a file does not name its company. Tally&apos;s own export already names it,
+              and so does the script below; enter it here for an export that does not, and every
+              file you add is attributed to it.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="script-company">Tally company</Label>
+                <Input
+                  id="script-company"
+                  value={scriptCompany}
+                  onChange={(event) => setScriptCompany(event.target.value)}
+                  placeholder="Company name, exactly as Tally shows it"
+                  autoComplete="off"
+                  disabled={cutoverAccess !== "ready"}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="company-from">Covers from</Label>
+                <Input
+                  id="company-from"
+                  type="date"
+                  value={companyFrom}
+                  onChange={(event) => setCompanyFrom(event.target.value)}
+                  disabled={cutoverAccess !== "ready"}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="company-to">Covers to</Label>
+                <Input
+                  id="company-to"
+                  type="date"
+                  value={companyTo}
+                  onChange={(event) => setCompanyTo(event.target.value)}
+                  disabled={cutoverAccess !== "ready"}
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              The dates are used only for a file that carries none of its own — the export script
+              names every slice it writes. Leave the company blank and the script lists the
+              companies Tally has open, then asks which one.
+            </p>
+          </div>
+
           <div className="space-y-3 rounded-lg border border-dashed p-4">
             <div className="flex items-center gap-2">
               <Terminal className="h-4 w-4 text-primary" />
@@ -924,19 +1052,6 @@ export default function TallyImportPage() {
               </Button>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="script-company">Tally company</Label>
-                <Input
-                  id="script-company"
-                  value={scriptCompany}
-                  onChange={(event) => setScriptCompany(event.target.value)}
-                  placeholder="Company name, exactly as Tally shows it"
-                  autoComplete="off"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Leave it blank and the script lists the companies Tally has open, then asks which one.
-                </p>
-              </div>
               <div className="space-y-1.5">
                 <Label htmlFor="script-port">Tally HTTP port (optional)</Label>
                 <Input
@@ -1057,30 +1172,24 @@ export default function TallyImportPage() {
                   They are read together, once, before anything is applied.
                 </p>
               </div>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>File</TableHead>
-                    <TableHead>Covers</TableHead>
-                    <TableHead className="text-right">Records</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {stagedFiles.map((entry) => (
-                    <TableRow key={entry.uploadId}>
-                      <TableCell className="max-w-[18rem] truncate">{entry.fileName}</TableCell>
-                      <TableCell>
-                        {entry.kind === "masters"
-                          ? "Accounts, parties and stock"
-                          : formatPeriod(entry.range)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {entry.recordsRead.toLocaleString()}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <StagedGroup
+                title="Masters"
+                files={stagedMasters}
+                empty="No masters file yet — Apply needs one."
+              />
+              <StagedGroup
+                title="Transactions"
+                files={stagedVouchers}
+                empty="No day-book file yet — Apply needs at least one."
+              />
+
+              {stagedVoucherSpan && (
+                <p className="text-xs text-muted-foreground">
+                  Covers {stagedVoucherSpan.from} → {stagedVoucherSpan.to} ·{" "}
+                  {stagedVoucherTotal.toLocaleString()} voucher
+                  {stagedVoucherTotal === 1 ? "" : "s"}
+                </p>
+              )}
 
               {stagedProblems.length > 0 && (
                 <div className="rounded-lg border border-[#E8B84B]/50 bg-[#E8B84B]/10 p-3 text-xs">

@@ -243,6 +243,25 @@ describe("consolidating chunk documents", () => {
     expect(() => consolidateTallyParts([], { period })).toThrow(/TALLY_CONSOLIDATION_EMPTY/)
   })
 
+  it("takes companyless parts under the company the operator entered", () => {
+    const { document: merged, report } = consolidateTallyParts(
+      [document({ company: undefined }), document({ company: undefined })],
+      { period, company: "Api-Cure Pharma Ltd" },
+    )
+
+    expect(merged.company).toBe("Api-Cure Pharma Ltd")
+    expect(report.company).toBe("Api-Cure Pharma Ltd")
+  })
+
+  it("refuses a part that names a company other than the one entered", () => {
+    expect(() =>
+      consolidateTallyParts([document({ company: "Test Pharmacy" })], {
+        period,
+        company: "Other Pharmacy",
+      }),
+    ).toThrow(/TALLY_CONSOLIDATION_COMPANY_MISMATCH/)
+  })
+
   it("carries a truncated part forward as a problem instead of a complete migration", () => {
     const { report } = consolidateTallyParts(
       [

@@ -227,11 +227,13 @@ async function applySessionStep(input: {
           typeof mapping.summary === "object" && mapping.summary !== null
             ? (mapping.summary as TallyPlanSummary)
             : null
-        const sourceCompany = storedSummary?.company ?? storedSummary?.companyKey ?? "not stated"
         const storedManifest =
           mapping.manifest !== undefined && isManifestLike(mapping.manifest)
             ? (mapping.manifest as TallyMigrationManifest)
             : null
+        const sourceCompany =
+          (storedSummary?.company ?? storedSummary?.companyKey ?? "not stated") +
+          (storedManifest?.companySource === "operator" ? " (entered by the operator)" : "")
         const { error: auditWriteError } = await db().from("pharmacy_audit_logs").insert({
           tenant_id: tenantId,
           profile_id: actorId,

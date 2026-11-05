@@ -285,6 +285,78 @@ describe("POST /api/admin/tally/[id]/sources", () => {
     expect(m.writeBytes).not.toHaveBeenCalled()
   })
 
+  it("stages a companyless masters file under the company entered in the form", async () => {
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: { ...MASTERS, company: undefined, financialPeriod: {} },
+    })
+
+    const res = await post({
+      ...upload,
+      company: "  Api-Cure Pharma Ltd ",
+      fallbackPeriod: { from: "2025-10-01", to: "2026-11-30" },
+    })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.source).toMatchObject({
+      kind: "masters",
+      range: { from: "2025-10-01", to: "2026-11-30" },
+    })
+
+    const update = lastUpdate()
+    const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifest).toMatchObject({
+      company: "Api-Cure Pharma Ltd",
+      companySource: "operator",
+      period: { from: "2025-10-01", to: "2026-11-30" },
+    })
+  })
+
+  it("records the file as the source once a file names the company", async () => {
+    setup(
+      sessionRow({
+        manifest: createOpenManifest({
+          sessionId: "session-1",
+          company: "Demo Pharma",
+          companySource: "operator",
+          mode: "opening",
+          period: { from: "2024-01-01", to: "2026-03-31" },
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        }),
+      }),
+    )
+    m.readDocument.mockReturnValue({ format: "xml", document: DAY_BOOK })
+
+    const res = await post({ ...upload, fileName: "day-book-q1.xml" })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.manifest.period).toEqual({ from: "2024-01-01", to: "2026-03-31" })
+
+    const update = lastUpdate()
+    const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifest).toMatchObject({ companySource: "file" })
+  })
+
+  it("refuses a company entered in the form that disagrees with the staged one", async () => {
+    setup(sessionRow({ manifest: mastersStaged() }))
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: { ...DAY_BOOK, company: undefined },
+    })
+
+    const res = await post({
+      ...upload,
+      fileName: "day-book-q1.xml",
+      company: "Another Pharmacy",
+    })
+
+    expect(res.status).toBe(422)
+    expect((await res.json()).code).toBe("TALLY_COMPANY_MISMATCH")
+    expect(m.writeBytes).not.toHaveBeenCalled()
+  })
+
   it("refuses a file holding both masters and vouchers instead of dropping half of it", async () => {
     m.readDocument.mockReturnValue({
       format: "xml",

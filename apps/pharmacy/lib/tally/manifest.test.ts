@@ -453,6 +453,91 @@ describe("describeStagedDocument", () => {
   })
 })
 
+describe("describeStagedDocument — company entered by the operator", () => {
+  it("takes the company entered in the form when the file names none", () => {
+    const described = describeStagedDocument(
+      document({ company: undefined, ledgers: records(2) }),
+      { company: "  Api-Cure Pharma Ltd " },
+    )
+
+    expect(described).toMatchObject({
+      ok: true,
+      kind: "masters",
+      company: "Api-Cure Pharma Ltd",
+      companySource: "operator",
+    })
+  })
+
+  it("keeps the company the file names and records where it came from", () => {
+    expect(
+      describeStagedDocument(document({ ledgers: records(1) }), { company: "" }),
+    ).toMatchObject({ ok: true, company: "Demo Pharma", companySource: "file" })
+  })
+
+  it("matches a company the operator typed in a different case", () => {
+    expect(
+      describeStagedDocument(document({ ledgers: records(1) }), { company: "demo pharma" }),
+    ).toMatchObject({ ok: true, companySource: "file" })
+  })
+
+  it("refuses a file that names a different company from the one entered", () => {
+    expect(
+      describeStagedDocument(document({ ledgers: records(1) }), { company: "Other Pharma" }),
+    ).toMatchObject({ ok: false, code: "TALLY_COMPANY_MISMATCH" })
+  })
+
+  it("places a masters file that states no period on the entered period", () => {
+    const described = describeStagedDocument(
+      document({ company: undefined, financialPeriod: {}, ledgers: records(1) }),
+      { company: "Api-Cure Pharma Ltd", fallbackPeriod: { from: "2025-10-01", to: "2026-11-30" } },
+    )
+
+    expect(described).toMatchObject({
+      ok: true,
+      range: { from: "2025-10-01", to: "2026-11-30" },
+    })
+  })
+
+  it("keeps a slice's own dates rather than the period entered for the cut-over", () => {
+    // One range typed into the form would make every slice claim the whole
+    // migration and collide with the others.
+    const described = describeStagedDocument(
+      document({
+        company: undefined,
+        financialPeriod: {},
+        vouchers: [voucher("2026-01-03"), voucher("2026-01-08")],
+      }),
+      { company: "Api-Cure Pharma Ltd", fallbackPeriod: { from: "2025-10-01", to: "2026-11-30" } },
+    )
+
+    expect(described).toMatchObject({
+      ok: true,
+      range: { from: "2026-01-03", to: "2026-01-08" },
+    })
+  })
+})
+
+describe("buildSourceManifest — company entered by the operator", () => {
+  it("builds a manifest from the company entered in the form", () => {
+    const result = buildSourceManifest(document({ company: undefined }), {
+      ...INPUT,
+      company: "Api-Cure Pharma Ltd",
+    })
+
+    expect(result.manifest).toMatchObject({
+      company: "Api-Cure Pharma Ltd",
+      companySource: "operator",
+    })
+  })
+
+  it("refuses an export that names another company", () => {
+    const result = buildSourceManifest(document(), { ...INPUT, company: "Other Pharma" })
+
+    expect(result.manifest).toBeUndefined()
+    expect(result.reason).toBe("TALLY_COMPANY_MISMATCH")
+  })
+})
+
 describe("isMultiFileSession", () => {
   it("is true only once a file has been staged", () => {
     expect(isMultiFileSession({ sources: [{ chunkId: "masters", uploadId: "u1" }] })).toBe(true)
