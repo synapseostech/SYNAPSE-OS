@@ -15,11 +15,28 @@ const STATUS_BY_CODE: Record<string, number> = {
   TALLY_FILE_TYPE_UNSUPPORTED: 415,
   TALLY_FILE_MISSING: 404,
   TALLY_PLAN_MISSING: 409,
+  TALLY_PREVIEW_UNSTAGED: 409,
+  TALLY_DATE_INVALID: 400,
+  TALLY_PERIOD_INVALID: 400,
+  TALLY_CONSOLIDATION_EMPTY: 422,
+  TALLY_CONSOLIDATION_COMPANY_MISSING: 422,
+  TALLY_CONSOLIDATION_COMPANY_MISMATCH: 422,
+  TALLY_CONSOLIDATION_TOO_LARGE: 413,
 }
 
 const MESSAGE_BY_CODE: Record<string, string> = {
   MIGRATION_XML_INCOMPLETE:
     "The file ends before the export is complete, so it was cut short while downloading or copying. Export it again from Tally and upload the whole file.",
+  TALLY_PREVIEW_UNSTAGED:
+    "The preview lost track of which files belong to this import. Add the files again and preview once more.",
+  TALLY_CONSOLIDATION_EMPTY:
+    "None of the files added to this import contained any data. Check that the export was not empty and upload them again.",
+  TALLY_CONSOLIDATION_COMPANY_MISSING:
+    "The files do not say which Tally company they came from, so they cannot be merged into one import. Export them from Tally with the company name included.",
+  TALLY_CONSOLIDATION_COMPANY_MISMATCH:
+    "The files came from more than one Tally company. Import one company at a time — remove the files from the other company and preview again.",
+  TALLY_CONSOLIDATION_TOO_LARGE:
+    "The files together hold more vouchers than one import can carry. Split the export into shorter date ranges and import them in turn.",
 }
 
 /**
@@ -93,6 +110,9 @@ export function tallyErrorResponse(
     )
   }
 
+  // The code rides along even here. The fallback sentence tells the operator
+  // what to do; the code is what identifies the failure once the logs are gone.
   logTallyFailure("tally.request.failed", {}, error)
-  return NextResponse.json({ error: fallback }, { status: 500 })
+  const labelled = /^[A-Z0-9_]+$/.test(code)
+  return NextResponse.json(labelled ? { error: fallback, code } : { error: fallback }, { status: 500 })
 }
