@@ -281,24 +281,25 @@ async function runPharmacyAccessChecks(params: {
   }
 
   // Facility admins (is_admin) of hospital/laboratory tenants are not pharmacy staff;
-  // only control-plane roles skip the pharmacy-tenant check.
-  if (tenantId && !isPlatformAdmin(profile.role)) {
-    const tenant = await restGet<TenantRow>(
-      'tenants',
-      { id: `eq.${tenantId}` },
-      'is_active,facility_type'
-    )
+  // only control-plane roles skip the pharmacy-tenant check. The tenant and the
+  // user's own settings do not depend on each other, so they are read together:
+  // this is the hot path of every portal navigation.
+  const tenantCheck = tenantId && !isPlatformAdmin(profile.role)
+    ? restGet<TenantRow>('tenants', { id: `eq.${tenantId}` }, 'is_active,facility_type')
+    : null
 
-    if (!tenant || tenant.is_active === false || tenant.facility_type !== 'pharmacy') {
-      return NextResponse.redirect(new URL('/login?error=account_inactive', request.url))
-    }
+  const [tenant, userSettings] = await Promise.all([
+    tenantCheck ?? Promise.resolve(null),
+    restGet<PharmacyUserSettings>(
+      'pharmacy_user_settings',
+      { profile_id: `eq.${profile.id}` },
+      'pharmacy_role,two_factor_enabled'
+    ),
+  ])
+
+  if (tenantCheck && (!tenant || tenant.is_active === false || tenant.facility_type !== 'pharmacy')) {
+    return NextResponse.redirect(new URL('/login?error=account_inactive', request.url))
   }
-
-  const userSettings = await restGet<PharmacyUserSettings>(
-    'pharmacy_user_settings',
-    { profile_id: `eq.${profile.id}` },
-    'pharmacy_role,two_factor_enabled'
-  )
 
   const requiresMfa = roleRequiresMfa(userSettings)
 
@@ -467,6 +468,21 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(new URL('/portal/dashboard', request.url))
       }
 
+      // Healthcare degradation: unpaid tenants keep billing + read/safety portal pages.
+      // Elective commercial writes (POS, refunds, purchasing, user admin) stay locked.
+      // The entitlement read does not depend on the access checks, so it runs
+      // alongside them instead of after: one round trip saved per portal request.
+      const isPortalPath = pathname.startsWith('/portal')
+      const isBillingPage = pathname.startsWith('/portal/billing')
+      const entitlement =
+        isPortalPath && !isBillingPage && session.tenantId && !isPlatformAdmin(profile.role)
+          ? getTenantEntitlement(session.tenantId).catch(() => ({
+              entitled: true,
+              status: null,
+              reason: 'unavailable',
+            }))
+          : null
+
       const redirect = await runPharmacyAccessChecks({
         request,
         profile,
@@ -477,12 +493,8 @@ export async function middleware(request: NextRequest) {
       })
       if (redirect) return redirect
 
-      // Healthcare degradation: unpaid tenants keep billing + read/safety portal pages.
-      // Elective commercial writes (POS, refunds, purchasing, user admin) stay locked.
-      const isPortalPath = pathname.startsWith('/portal')
-      const isBillingPage = pathname.startsWith('/portal/billing')
-      if (isPortalPath && !isBillingPage && session.tenantId && !isPlatformAdmin(profile.role)) {
-        const ent = await getTenantEntitlement(session.tenantId)
+      if (entitlement) {
+        const ent = await entitlement
         if (!ent.entitled && isSubscriptionWriteBlocked(pathname, request.method)) {
           const url = new URL('/portal/billing', request.url)
           url.searchParams.set('billing', 'past_due')
