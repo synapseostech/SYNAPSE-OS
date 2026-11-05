@@ -508,6 +508,12 @@ export async function middleware(request: NextRequest) {
   return passThrough()
 }
 
+// The browser fetches the manifest, service worker and splash screen itself,
+// before any session exists. Letting them reach the auth redirect hands the
+// browser an HTML login page under a .json or .js name, which is why the
+// manifest reported a syntax error on line 1.
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.png$|.*\\.svg$|.*\\.ico$).*)'],
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|manifest\\.json$|sw\\.js$|splash\\.html$|.*\\.png$|.*\\.svg$|.*\\.ico$).*)',
+  ],
 }
