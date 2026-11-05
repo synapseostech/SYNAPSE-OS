@@ -50,11 +50,16 @@ async function uploadFailureTitle(response: Response): Promise<string> {
  * is the operator's fix list; the code is what identifies the failure when the
  * server log has already aged out.
  */
-function previewFailureDetail(data: { code?: unknown; problems?: unknown }): string | undefined {
+function previewFailureDetail(data: {
+  code?: unknown
+  detail?: unknown
+  problems?: unknown
+}): string | undefined {
   const parts: string[] = []
   if (Array.isArray(data.problems) && data.problems.length > 0) {
     parts.push(data.problems.map(String).join("\n"))
   }
+  if (typeof data.detail === "string" && data.detail) parts.push(data.detail)
   if (typeof data.code === "string" && data.code) parts.push(data.code)
   return parts.length > 0 ? parts.join("\n\n") : undefined
 }

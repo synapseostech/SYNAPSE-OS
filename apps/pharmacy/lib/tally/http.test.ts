@@ -25,5 +25,15 @@ describe("tallyErrorResponse", () => {
     const response = tallyErrorResponse(new Error("Something went wrong somewhere"))
     const body = await response.json()
     expect(body.code).toBeUndefined()
+    expect(body.detail).toBeUndefined()
+  })
+
+  it("keeps what the failure carried after its code", async () => {
+    const response = tallyErrorResponse(
+      new Error("TALLY_CHUNK_WRITE_FAILED: mime type application/json is not supported"),
+    )
+    const body = await response.json()
+    expect(body.code).toBe("TALLY_CHUNK_WRITE_FAILED")
+    expect(body.detail).toBe("mime type application/json is not supported")
   })
 })
