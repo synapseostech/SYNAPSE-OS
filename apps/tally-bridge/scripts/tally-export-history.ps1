@@ -110,6 +110,22 @@ function Read-HeadText([string]$path, [int]$count) {
     } finally { $stream.Close() }
 }
 
+# Tally names the company in most of its replies and leaves it out of some.
+# A file that does not name it cannot be added to a cut-over at all, because
+# nothing then says which company the migration is for. The record is written
+# in place, once, and only when the reply did not carry one.
+function Add-CompanyRecord([string]$path, [string]$record) {
+    $head = Read-HeadText $path 65536
+    if ($head -match '<COMPANY\b') { return $false }
+    $text = [System.IO.File]::ReadAllText($path)
+    $open = $text.IndexOf('<DATA')
+    if ($open -lt 0) { return $false }
+    $close = $text.IndexOf('>', $open)
+    if ($close -lt 0) { return $false }
+    [System.IO.File]::WriteAllText($path, $text.Insert($close + 1, $record), (New-Object System.Text.UTF8Encoding $false))
+    return $true
+}
+
 function Read-TailText([string]$path, [int]$count) {
     $stream = [System.IO.File]::OpenRead($path)
     try {
@@ -461,13 +477,18 @@ $emptySlices = New-Object System.Collections.Generic.List[string]
 
 Say "  Writing masters (one file, balances as at $To) ..."
 $mastersFile = Join-Path $OutDir "2-masters-$From-$To.xml"
+# The columns the importer reads, and what to ask for when this build does not
+# know one of the newer ones: Tally answers an unknown method with an empty
+# collection rather than an error, and losing bills is better than losing every
+# ledger. Bills carry what is still owed to a supplier or by a customer, and
+# batches carry the expiry the till needs, so both are asked for.
 $masterPlan = @(
-    @{ Type = "Ledger"; Methods = @("Name", "Parent", "OpeningBalance", "ClosingBalance") },
-    @{ Type = "Group"; Methods = @("Name", "Parent") },
-    @{ Type = "StockItem"; Methods = @("Name", "Parent", "BaseUnits", "OpeningBalance", "OpeningRate", "OpeningValue", "ClosingBalance", "ClosingValue") },
-    @{ Type = "StockGroup"; Methods = @("Name", "Parent") },
-    @{ Type = "Unit"; Methods = @("Name", "Symbol") },
-    @{ Type = "Godown"; Methods = @("Name", "Parent") }
+    @{ Type = "Ledger"; Methods = @("Name", "Parent", "OpeningBalance", "ClosingBalance", "BillWise", "BillAllocations", "Email", "Phone", "Mobile", "Address"); Fallback = @("Name", "Parent", "OpeningBalance", "ClosingBalance") },
+    @{ Type = "Group"; Methods = @("Name", "Parent"); Fallback = @("Name", "Parent") },
+    @{ Type = "StockItem"; Methods = @("Name", "Parent", "BaseUnits", "OpeningBalance", "OpeningRate", "OpeningValue", "ClosingBalance", "ClosingValue", "BatchWise", "BatchAllocations"); Fallback = @("Name", "Parent", "BaseUnits", "OpeningBalance", "OpeningRate", "OpeningValue", "ClosingBalance", "ClosingValue") },
+    @{ Type = "StockGroup"; Methods = @("Name", "Parent"); Fallback = @("Name", "Parent") },
+    @{ Type = "Unit"; Methods = @("Name", "Symbol"); Fallback = @("Name", "Symbol") },
+    @{ Type = "Godown"; Methods = @("Name", "Parent"); Fallback = @("Name", "Parent") }
 )
 
 $masterRecords = New-Object System.Collections.Generic.List[string]
@@ -475,6 +496,13 @@ $stockItemCount = 0
 foreach ($entry in $masterPlan) {
     try {
         $records = @(Get-MasterRecords $entry.Type $entry.Methods)
+        # Nothing at all means the build ignored a column it does not have, not
+        # that the company has no rows of this type. Ask again for the columns
+        # every build answering the company list knows.
+        if ($records.Count -eq 0 -and (($entry.Fallback -join ",") -ne ($entry.Methods -join ","))) {
+            Say ("    {0}: none with the newer columns, asking again without them" -f $entry.Type)
+            $records = @(Get-MasterRecords $entry.Type $entry.Fallback)
+        }
     } catch {
         Say ("    FAILED - Tally refused the {0} list: {1}" -f $entry.Type, ($_.Exception.Message)) -ForegroundColor Red
         $problems.Add("masters/$($entry.Type): " + $_.Exception.Message)
@@ -499,7 +527,14 @@ if ($masterRecords.Count -eq 0) {
     # A file left by an earlier run must not be mistaken for this one.
     Remove-Item -LiteralPath $mastersFile -Force -ErrorAction SilentlyContinue
 } else {
-    $document = '<ENVELOPE><BODY><DATA>' + $masterXml + '</DATA></BODY></ENVELOPE>'
+    # The company record is what tells the portal which company these records
+    # belong to and which period they cover. Each collection reply carries the
+    # records but not the company they came from, so it is written here from
+    # what Tally already reported. Without it the file cannot be staged at all:
+    # nothing in the folder would say which company the cut-over is for.
+    $companyRecord = '<COMPANY NAME="' + (Escape-Xml $Company) + '"><COMPANYNAME>' + (Escape-Xml $Company) +
+        '</COMPANYNAME><SVFROMDATE>' + $From + '</SVFROMDATE><SVTODATE>' + $To + '</SVTODATE></COMPANY>'
+    $document = '<ENVELOPE><BODY><DATA>' + $companyRecord + $masterXml + '</DATA></BODY></ENVELOPE>'
     [System.IO.File]::WriteAllText($mastersFile, $document, (New-Object System.Text.UTF8Encoding $false))
     $mastersBytes = (Get-Item -LiteralPath $mastersFile).Length
     Say ("    OK - {0}" -f (Format-Size $mastersBytes))
@@ -602,6 +637,12 @@ function Export-Vouchers([datetime]$sliceFrom, [datetime]$sliceTo, [int]$depth) 
         $script:problems.Add("$label is " + (Format-Size $result.Bytes) + ", over the 50 MB limit, even for a single day")
         return
     }
+
+    # The same company record the masters file carries, so a reply that leaves
+    # the company out can still be staged beside it.
+    $companyRecord = '<COMPANY NAME="' + (Escape-Xml $script:Company) + '"><COMPANYNAME>' + (Escape-Xml $script:Company) +
+        '</COMPANYNAME><SVFROMDATE>' + $from + '</SVFROMDATE><SVTODATE>' + $to + '</SVTODATE></COMPANY>'
+    [void](Add-CompanyRecord $file $companyRecord)
 
     $script:written.Add([pscustomobject]@{ File = $file; Bytes = $result.Bytes; From = $from; To = $to })
     if (Select-String -LiteralPath $file -Pattern '<VOUCHER' -SimpleMatch -Quiet) {
