@@ -365,7 +365,7 @@ export default function TallyImportPage() {
   const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "disabled" | "error">("checking")
   const [scriptPort, setScriptPort] = useState("")
   const [scriptCompany, setScriptCompany] = useState("")
-  const [companyFrom, setCompanyFrom] = useState("")
+const [companyFrom, setCompanyFrom] = useState("")
   const [companyTo, setCompanyTo] = useState("")
   // A refusal that outlives the toast, so a file that was not added says why.
   const [stageError, setStageError] = useState<{
@@ -418,6 +418,9 @@ export default function TallyImportPage() {
     busy === "idle" &&
     // The server judges a wider list than this screen; when it has spoken, its
     // answer wins. Before the session loads there is no verdict to defer to.
+    preflightView?.canApply !== false
+
+// answer wins. Before the session loads there is no verdict to defer to.
     preflightView?.canApply !== false
 
   // The dates the operator entered, used only for a file that states none.
@@ -601,7 +604,7 @@ export default function TallyImportPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...(conversionDate ? { conversionDate } : {}),
-          ...(period ? { period } : companyPeriod ? { period: companyPeriod } : {}),
+...(period ? { period } : companyPeriod ? { period: companyPeriod } : {}),
           ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
           mode,
         }),
@@ -689,7 +692,7 @@ export default function TallyImportPage() {
 
     rememberSession(start.sessionId as string)
 
-    // A slice names its own dates; the dates entered above are the fallback for
+// A slice names its own dates; the dates entered above are the fallback for
     // a file that does not, and name the one range a masters export covers.
     const period = periodFromFileName(selectedFile.name)
     const kind = kindFromFileName(selectedFile.name)
@@ -785,7 +788,7 @@ export default function TallyImportPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...(conversionDate ? { conversionDate } : {}),
-          ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
+...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
           mode,
         }),
       })
@@ -844,7 +847,7 @@ export default function TallyImportPage() {
       const previewResponse = await fetch(`/api/admin/tally/${sessionId}/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+body: JSON.stringify({
           conversionDate,
           mode,
           ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
@@ -990,7 +993,7 @@ export default function TallyImportPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Upload className="h-5 w-5 text-primary" />
-            Export from Tally, then add the files
+Export from Tally, then add the files
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
