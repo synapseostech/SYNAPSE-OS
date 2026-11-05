@@ -367,6 +367,13 @@ export default function TallyImportPage() {
   const [scriptCompany, setScriptCompany] = useState("")
   const [companyFrom, setCompanyFrom] = useState("")
   const [companyTo, setCompanyTo] = useState("")
+  // A refusal that outlives the toast, so a file that was not added says why.
+  const [stageError, setStageError] = useState<{
+    fileName: string
+    code?: string
+    message: string
+  } | null>(null)
+  const companyInput = useRef<HTMLInputElement>(null)
   const [editionInfo, setEditionInfo] = useState<TallyEditionDisclosure | null>(null)
   const [editionProblems, setEditionProblems] = useState<TallyEditionProblem[]>([])
   const [busy, setBusy] = useState<
@@ -704,9 +711,23 @@ export default function TallyImportPage() {
       if (staged.code === "TALLY_CHUNK_ALREADY_STAGED") {
         return { ok: false, replaceChunkId: String(staged.chunkId ?? "") }
       }
+      const code = typeof staged.code === "string" ? staged.code : undefined
+      setStageError({
+        fileName: selectedFile.name,
+        ...(code ? { code } : {}),
+        message: String(staged.error ?? "The file could not be added"),
+      })
+      // The company is the one field the operator can act on from here, so a
+      // file refused for want of it puts the cursor in it rather than only
+      // flashing a message.
+      if (code === "TALLY_COMPANY_MISSING" || code === "TALLY_COMPANY_MISMATCH") {
+        companyInput.current?.focus()
+        companyInput.current?.scrollIntoView({ block: "center", behavior: "smooth" })
+      }
       toast({ variant: "destructive", title: staged.error ?? "The file could not be added" })
       return { ok: false }
     }
+    setStageError(null)
     return {
       ok: true,
       session: start.sessionId as string,
@@ -969,7 +990,7 @@ export default function TallyImportPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Upload className="h-5 w-5 text-primary" />
-            Step 1 — Export and upload
+            Export from Tally, then add the files
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -985,11 +1006,18 @@ export default function TallyImportPage() {
                 <Label htmlFor="script-company">Tally company</Label>
                 <Input
                   id="script-company"
+                  ref={companyInput}
                   value={scriptCompany}
-                  onChange={(event) => setScriptCompany(event.target.value)}
+                  onChange={(event) => {
+                    setScriptCompany(event.target.value)
+                    // The company was the reason the last file was refused, so
+                    // typing it clears that message instead of leaving it stale.
+                    if (stageError?.code?.startsWith("TALLY_COMPANY")) setStageError(null)
+                  }}
                   placeholder="Company name, exactly as Tally shows it"
                   autoComplete="off"
                   disabled={cutoverAccess !== "ready"}
+                  aria-invalid={stageError?.code?.startsWith("TALLY_COMPANY") ? true : undefined}
                 />
               </div>
               <div className="space-y-1.5">
@@ -1105,6 +1133,15 @@ export default function TallyImportPage() {
             </p>
           </div>
 
+          <div className="space-y-2 rounded-lg border border-dashed p-4">
+            <p className="text-sm font-medium">2. Add the files here</p>
+            <p className="text-xs text-muted-foreground">
+              Choose the masters file and every day-book file together. Each one is read once and
+              mapped into Synapse&apos;s accounts, parties, stock and vouchers — the result is listed
+              below, and nothing is posted until you review it and apply.
+            </p>
+          </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="tally-file">
@@ -1144,6 +1181,18 @@ export default function TallyImportPage() {
                   <span className="font-mono">3-daybook-20250101-20251231.xml</span>, is placed by
                   those dates. The export script on the pharmacy computer writes them that way.
                 </p>
+              )}
+              {stageError && (
+                <div className="space-y-1 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs">
+                  <p className="font-medium">{stageError.message}</p>
+                  <p className="text-muted-foreground">
+                    {stageError.fileName}
+                    {stageError.code ? ` · ${stageError.code}` : ""}
+                    {stageError.code?.startsWith("TALLY_COMPANY")
+                      ? " — enter the Tally company in Company details above, then add the files again."
+                      : ""}
+                  </p>
+                </div>
               )}
             </div>
             <div className="space-y-1.5">
