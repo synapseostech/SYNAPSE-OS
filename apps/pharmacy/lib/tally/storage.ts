@@ -2,7 +2,7 @@
  * Private Storage for Tally cut-over files.
  *
  * Source exports and normalised chunks never go through a request body: Vercel
- * caps those near 4.5 MB while a Tally export can reach 25 MB. The browser
+ * caps those near 4.5 MB while a Tally export can reach 50 MB. The browser
  * uploads straight to this bucket with a server-signed URL, and preview/apply
  * read the object server-side with the service role.
  */
@@ -10,7 +10,13 @@
 import { PHARMACY_IMPORT_BUCKET } from "@/lib/pharmacy-storage"
 
 export const TALLY_BUCKET = PHARMACY_IMPORT_BUCKET
-export const TALLY_SOURCE_LIMIT = 25 * 1024 * 1024
+
+/**
+ * One source file's ceiling. The parser in @synapse/db caps a document at the
+ * same size and the bucket enforces it on every signed upload, so the three
+ * must move together or a file passes one gate and fails the next.
+ */
+export const TALLY_SOURCE_LIMIT = 50 * 1024 * 1024
 export const TALLY_JSON_LIMIT = 20 * 1024 * 1024
 
 export type TallySourceExtension = "xml" | "xlsx" | "xls" | "csv"
@@ -19,6 +25,10 @@ export type TallyStorageClient = {
   storage: {
     getBucket: (id: string) => PromiseLike<{ data: unknown; error: { message: string } | null }>
     createBucket: (
+      id: string,
+      options: Record<string, unknown>,
+    ) => PromiseLike<{ data: unknown; error: { message: string } | null }>
+    updateBucket: (
       id: string,
       options: Record<string, unknown>,
     ) => PromiseLike<{ data: unknown; error: { message: string } | null }>
@@ -59,7 +69,19 @@ function segment(value: string, label: string): string {
  */
 export async function ensureTallyBucket(db: TallyStorageClient): Promise<void> {
   const existing = await db.storage.getBucket(TALLY_BUCKET)
-  if (!existing.error) return
+  if (!existing.error) {
+    // Storage applies the bucket's own cap to every signed upload, so a bucket
+    // created under an older, smaller limit keeps refusing files this app now
+    // accepts. Raise it once rather than making the operator re-create it.
+    const current = (existing.data as { file_size_limit?: number | null } | null)?.file_size_limit
+    if (typeof current === "number" && current > 0 && current < TALLY_SOURCE_LIMIT) {
+      // A project-wide Storage limit can refuse the raise. That must not fail the
+      // upload outright: the file may still fit the old cap, and Storage's own
+      // error is what the browser surfaces when it does not.
+      await db.storage.updateBucket(TALLY_BUCKET, { fileSizeLimit: TALLY_SOURCE_LIMIT })
+    }
+    return
+  }
 
   const created = await db.storage.createBucket(TALLY_BUCKET, {
     public: false,

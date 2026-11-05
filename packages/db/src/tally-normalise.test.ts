@@ -559,8 +559,9 @@ describe("normaliseTallyDocument", () => {
     assert.match(truncated[0].detail ?? "", /reason=RECORD_LIMIT/)
   })
 
-  it("blocks a 250,001-record export end to end with the counts the parser saw", () => {
-    const records = '<GODOWN NAME="G"/>'.repeat(TALLY_XML_ROW_LIMITS.MAX_RECORDS + 1)
+  it("blocks an export one record over the limit with the counts the parser saw", () => {
+    const limit = TALLY_XML_ROW_LIMITS.MAX_RECORDS
+    const records = '<GODOWN NAME="G"/>'.repeat(limit + 1)
     const document = parseTallyXmlRows(tallyExport(records))
 
     const result = normaliseTallyDocument(document, { conversionDate: "2026-01-01" })
@@ -570,7 +571,7 @@ describe("normaliseTallyDocument", () => {
     assert.equal(truncated[0].severity, "blocking")
     assert.equal(
       truncated[0].detail,
-      "reason=RECORD_LIMIT; recordsProcessed=250000; limit=250000",
+      `reason=RECORD_LIMIT; recordsProcessed=${limit}; limit=${limit}`,
     )
   })
 })
