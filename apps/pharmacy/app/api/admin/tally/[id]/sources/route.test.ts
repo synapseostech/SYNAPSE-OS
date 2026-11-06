@@ -217,7 +217,7 @@ describe("POST /api/admin/tally/[id]/sources", () => {
     expect(filtersOf(update!)).toEqual({ id: "session-1", tenant_id: "tenant-1" })
   })
 
-  it("adds a later slice into the same session instead of failing on the gap", async () => {
+  it("lets the day book, not the masters file name, decide the period", async () => {
     setup(sessionRow({ manifest: mastersStaged() }))
     m.readDocument.mockReturnValue({ format: "xml", document: DAY_BOOK })
 
@@ -231,10 +231,16 @@ describe("POST /api/admin/tally/[id]/sources", () => {
       range: { from: "2025-01-01", to: "2025-03-31" },
       recordsRead: 2,
     })
-    // The period grows to the union of what has arrived so far.
-    expect(body.manifest.period).toEqual({ from: "2024-01-01", to: "2026-03-31" })
-    // A missing stretch is advice while files are still arriving, never a refusal.
-    expect(body.manifest.problems.length).toBeGreaterThan(0)
+    // The masters file name claimed 2024–2026, but what was actually exported
+    // is the day book's range. Promising the wider span would invent a gap.
+    expect(body.manifest.period).toEqual({ from: "2025-01-01", to: "2025-03-31" })
+    // The unfinished masters chunk is still a problem; the invented gap is not.
+    expect(
+      body.manifest.problems.filter(
+        (entry: string) =>
+          entry.includes("TALLY_CHUNK_GAP") || entry.includes("TALLY_CHUNK_OUT_OF_RANGE"),
+      ),
+    ).toEqual([])
   })
 
   it("takes a slice's range from the period the operator asked for", async () => {
@@ -332,7 +338,7 @@ describe("POST /api/admin/tally/[id]/sources", () => {
     const body = await res.json()
 
     expect(res.status).toBe(200)
-    expect(body.manifest.period).toEqual({ from: "2024-01-01", to: "2026-03-31" })
+    expect(body.manifest.period).toEqual({ from: "2025-01-01", to: "2025-03-31" })
 
     const update = lastUpdate()
     const mapping = (update?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping

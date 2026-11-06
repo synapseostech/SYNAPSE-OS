@@ -309,9 +309,25 @@ export function widenPeriod(
   manifest: TallyMigrationManifest,
   range: TallyDateRange,
   now = new Date().toISOString(),
+  kind?: "masters" | "vouchers",
 ): TallyMigrationManifest {
-  const start = Math.min(rangeStart(manifest.period), rangeStart(range))
-  const end = Math.max(rangeEnd(manifest.period), rangeEnd(range))
+  // A masters export is undated: the range its file name carries is the span
+  // Tally was asked for. The day books are what actually cover a period, so
+  // once one exists the promised period is the union of their ranges.
+  const voucherChunks = manifest.chunks.filter((chunk) => chunk.kind === "vouchers")
+  let start: number
+  let end: number
+  if (kind === "masters" && voucherChunks.length > 0) {
+    start = Math.min(...voucherChunks.map((chunk) => rangeStart(chunk.range)))
+    end = Math.max(...voucherChunks.map((chunk) => rangeEnd(chunk.range)))
+  } else if (kind === "vouchers") {
+    const ranges = [...voucherChunks.map((chunk) => chunk.range), range]
+    start = Math.min(...ranges.map(rangeStart))
+    end = Math.max(...ranges.map(rangeEnd))
+  } else {
+    start = Math.min(rangeStart(manifest.period), rangeStart(range))
+    end = Math.max(rangeEnd(manifest.period), rangeEnd(range))
+  }
   const period = { from: formatIsoDate(start), to: formatIsoDate(end) }
   if (sameRange(period, manifest.period)) return manifest
   return {

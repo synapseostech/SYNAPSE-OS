@@ -130,6 +130,20 @@ export async function GET(
     manifestReason: typeof mapping.manifestReason === "string" ? mapping.manifestReason : null,
     // The files staged one by one, so a reload lists what has arrived so far.
     sources: readStagedSources(mapping.sources),
+    // The batch expiries the operator supplied, when one is attached. The
+    // storage path stays on the server; the review only needs to name it.
+    stockSheet: (() => {
+      const sheet = mapping.stockSheet as
+        | { fileName?: unknown; rows?: unknown; stagedAt?: unknown }
+        | undefined
+      return sheet
+        ? {
+            fileName: typeof sheet.fileName === "string" ? sheet.fileName : null,
+            rows: typeof sheet.rows === "number" ? sheet.rows : null,
+            stagedAt: typeof sheet.stagedAt === "string" ? sheet.stagedAt : null,
+          }
+        : null
+    })(),
     // Chunk progress and the merge report, so a reload can resume and review.
     extraction: (mapping.extraction as TallyExtractionSummary | undefined) ?? null,
     consolidation: (mapping.consolidation as TallyConsolidationReport | undefined) ?? null,

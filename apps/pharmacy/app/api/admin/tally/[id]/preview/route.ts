@@ -7,6 +7,12 @@ import type { TallyAccountOverrides } from "@synapse/db/tally-map"
 import type { TallyXmlDocument } from "@synapse/db/tally-xml-rows"
 import { readTallySource, type TallyStorageClient } from "@/lib/tally/storage"
 import { readTallyDocument } from "@/lib/tally/source"
+import {
+  applyTallyStockSheet,
+  readTallyStockSheet,
+  type TallyStockSheet,
+  type TallyStockSheetMerge,
+} from "@/lib/tally/stock-sheet"
 import { writeTallyPlan } from "@/lib/tally/plan"
 import {
   buildManifestEvidence,
@@ -40,6 +46,7 @@ type MappingState = {
   edition?: unknown
   manifest?: unknown
   sources?: unknown
+  stockSheet?: { path?: string; fileName?: string; rows?: number }
 }
 
 /**
@@ -167,6 +174,12 @@ export async function POST(
     let format: "xml" | "xlsx" | "xls" | "csv"
     let plan
     let stagedManifest: TallyMigrationManifest | undefined
+    let stockSheet: TallyStockSheet | undefined
+    let stockSheetMerge: TallyStockSheetMerge | undefined
+
+    if (mapping.stockSheet?.path) {
+      stockSheet = readTallyStockSheet(await readTallySource(storage(), mapping.stockSheet.path))
+    }
 
     if (staged) {
       const stored = isManifestLike(mapping.manifest) ? mapping.manifest : undefined
@@ -196,8 +209,10 @@ export async function POST(
         conversionDate: body.conversionDate ?? mapping.conversionDate,
         accountOverrides: mapping.accountOverrides,
         productSkuOverrides: mapping.productSkuOverrides,
+        ...(stockSheet ? { stockSheet } : {}),
       })
       plan = consolidated.plan
+      stockSheetMerge = consolidated.stockSheet
       format = "xml"
       stagedManifest = prepared
       mapping.manifest = prepared
@@ -214,7 +229,12 @@ export async function POST(
         !document.company?.trim() && statedCompany
           ? { ...document, company: statedCompany }
           : document
-      plan = normaliseTallyDocument(planDocument, {
+      let sheetDocument = planDocument
+      if (stockSheet) {
+        stockSheetMerge = applyTallyStockSheet(planDocument, stockSheet)
+        sheetDocument = stockSheetMerge.document
+      }
+      plan = normaliseTallyDocument(sheetDocument, {
         conversionDate: body.conversionDate ?? mapping.conversionDate,
         mode: body.mode ?? mapping.mode,
         currency: document.currency,
@@ -309,6 +329,21 @@ export async function POST(
           }
         : { period: null, reason: manifest.reason, problems: manifest.problems },
       preview: buildTallyPreview(plan),
+      // What the attached stock sheet contributed, so the review can say
+      // whether every item got its batch.
+      stockSheet: mapping.stockSheet
+        ? {
+            attached: true,
+            fileName: mapping.stockSheet.fileName ?? null,
+            rows: mapping.stockSheet.rows ?? null,
+            applied: stockSheetMerge?.applied ?? 0,
+            unmatched: stockSheetMerge?.unmatched.slice(0, 20) ?? [],
+            unmatchedCount: stockSheetMerge?.unmatched.length ?? 0,
+            withoutExpiry: stockSheetMerge?.withoutExpiry ?? 0,
+            problems: stockSheet?.problems ?? [],
+            problemsOmitted: stockSheet?.problemsOmitted ?? 0,
+          }
+        : { attached: false },
     })
   } catch (error) {
     const response = tallyErrorResponse(error)

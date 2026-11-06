@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { ImportRejected } from "@/lib/import-guard"
 import { TallyTemplateError } from "./workbook"
 import { TallySourceError } from "./source"
+import { TallyStockSheetError } from "./stock-sheet"
 
 const STATUS_BY_CODE: Record<string, number> = {
   MIGRATION_EMPTY_FILE: 400,
@@ -98,6 +99,12 @@ export function tallyErrorResponse(
   }
   if (error instanceof TallySourceError) {
     return NextResponse.json({ error: error.message, code: error.code }, { status: 415 })
+  }
+  if (error instanceof TallyStockSheetError) {
+    return NextResponse.json(
+      { error: error.message, code: error.code },
+      { status: error.code === "TALLY_STOCK_SHEET_TOO_LARGE" ? 413 : 422 },
+    )
   }
 
   const message = error instanceof Error ? error.message : "Import failed"

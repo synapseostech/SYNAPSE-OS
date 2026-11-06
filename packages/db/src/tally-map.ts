@@ -254,6 +254,18 @@ function roleToParty(role: TallyAccountRole): "customer" | "supplier" | undefine
   return undefined
 }
 
+const PURCHASE_GROUPS = new Set(["PURCHASE ACCOUNTS", "PURCHASES"])
+
+function namesPurchaseAccount(key: string): boolean {
+  return (
+    key.includes("PURCHASE") ||
+    key.includes("COGS") ||
+    key.includes("COST OF GOODS") ||
+    key.includes("OPENING STOCK") ||
+    key.includes("CLOSING STOCK")
+  )
+}
+
 export function classifyTallyLedger(
   ledger: TallyLedger,
   groups: Map<string, TallyGroup>,
@@ -280,10 +292,21 @@ export function classifyTallyLedger(
         : "credit"
       : base.normalBalance)
 
+  // A pharmacy that files its suppliers under Tally's Purchase Accounts group
+  // has no Sundry Creditors ledger to read them from. A named ledger inside that
+  // group — the account a Purchase voucher credits — is the supplier; the
+  // ledger's own role stays cost of sales, so only a party record is added.
+  const purchaseGroupParty =
+    chain.matchedGroup !== undefined &&
+    PURCHASE_GROUPS.has(chain.matchedGroup) &&
+    !namesPurchaseAccount(key)
+      ? "supplier"
+      : undefined
+
   const partyType =
     override?.partyType === null
       ? undefined
-      : override?.partyType ?? roleToParty(role)
+      : override?.partyType ?? roleToParty(role) ?? purchaseGroupParty
 
   return {
     accountType,
@@ -364,7 +387,9 @@ export function classifyTallyVoucherType(raw: string): TallyVoucherKind {
       ? "stock_journal"
       : "inventory_note"
   }
-  if (key.includes("SALES")) return "sales"
+  // Tally's default sale voucher is "Sales", but pharmacies commonly rename it
+  // "Cash Sale" / "Credit Sale" — singular, so a match on "SALES" misses them.
+  if (key.includes("SALE")) return "sales"
   if (key.includes("PURCHASE")) return "purchase"
   if (key.includes("RECEIPT")) return "receipt"
   if (key.includes("PAYMENT")) return "payment"
