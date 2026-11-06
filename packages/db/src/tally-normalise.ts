@@ -50,7 +50,7 @@ export type TallyExceptionCode =
   | "CLOSING_STOCK_BATCHES_UNAVAILABLE"
   | "CLOSING_PERIOD_MISMATCH"
   | "CLOSING_PERIOD_UNKNOWN"
-  | "CLOSING_MODE_VOUCHERS_IGNORED"
+  | "CLOSING_MODE_HISTORY_ONLY"
   | "STOCK_CLOSING_VALUE_MISSING"
   | "NON_INTEGER_QUANTITY"
   | "PARTY_OPENING_OPPOSITE_SIDE"
@@ -303,6 +303,31 @@ function voucherLabel(voucher: TallyVoucher): string {
   return trimText(voucher.number) ?? trimText(voucher.guid) ?? trimText(voucher.remoteId) ?? "without a number"
 }
 
+/**
+ * Tally's own ledger export writes a debit balance as a negative amount — the
+ * day book agrees, where a debit line carries a negative AMOUNT with
+ * ISDEEMEDPOSITIVE "Yes". Hand-written and third-party files sometimes use the
+ * opposite sign, so the export is asked to vote with the ledgers whose Tally
+ * group fixes their natural side. A document with no evidence keeps Tally's.
+ */
+function inferBalanceSign(
+  accounts: TallyMappedAccount[],
+  ledgerByKey: Map<string, TallyLedger>,
+): 1 | -1 {
+  let debitPositive = 0
+  let debitNegative = 0
+  for (const account of accounts) {
+    if (account.unclassified) continue
+    const ledger = ledgerByKey.get(normaliseTallyKey(account.sourceName))
+    const value = ledger?.closingBalance ?? ledger?.openingBalance
+    if (value === undefined || value === 0) continue
+    const positiveIsDebit = (value > 0) === (account.normalBalance === "debit")
+    if (positiveIsDebit) debitPositive += 1
+    else debitNegative += 1
+  }
+  return debitNegative >= debitPositive ? -1 : 1
+}
+
 function paymentMethodFromLine(
   line: TallyLedgerLine,
   accountFor: (name: string) => TallyMappedAccount,
@@ -430,8 +455,8 @@ export function normaliseTallyDocument(
     }
     if (document.vouchers.length > 0) {
       addException(
-        "CLOSING_MODE_VOUCHERS_IGNORED",
-        `${document.vouchers.length} Day Book voucher${document.vouchers.length === 1 ? "" : "s"} were exported but not imported. A balances-only cut-over starts from the closing balances; use full history to post the vouchers.`,
+        "CLOSING_MODE_HISTORY_ONLY",
+        `${document.vouchers.length} Day Book voucher${document.vouchers.length === 1 ? "" : "s"} are imported as sales and purchase history only. The ledger and the stock start from the closing position, so the vouchers are neither posted nor used to move stock.`,
       )
     }
   }
@@ -451,6 +476,9 @@ export function normaliseTallyDocument(
     }
     ledgerByKey.set(key, ledger)
   }
+  // Everything below treats a positive amount as a debit, the same way the
+  // voucher lines do; the masters' own sign is converted once, here.
+  const balanceSign = inferBalanceSign(mapped, ledgerByKey)
 
   const accountsByKey = new Map<string, TallyMappedAccount>()
   for (const account of mapped) accountsByKey.set(normaliseTallyKey(account.sourceName), account)
@@ -497,10 +525,12 @@ export function normaliseTallyDocument(
 
   const vouchers: TallyCutoverVoucher[] = []
   const acceptedVouchers: Array<{ voucher: TallyVoucher; sourceId: string; kind: TallyVoucherKind }> = []
-  // A balances-only cut-over takes the closing position, so the Day Book is
-  // reported as skipped rather than posted.
-  const sourceVouchers = mode === "closing" ? [] : document.vouchers
-  let skippedVouchers = mode === "closing" ? document.vouchers.length : 0
+  // A balances-only cut-over takes the closing position for the ledger and the
+  // stock, so its vouchers are never posted. They are still read, because the
+  // sales and purchases they carry are history the reports need; only the
+  // ledger payload is withheld below.
+  const sourceVouchers = document.vouchers
+  let skippedVouchers = 0
   const usedSourceIds = new Set<string>()
 
   for (const voucher of sourceVouchers) {
@@ -530,7 +560,9 @@ export function normaliseTallyDocument(
       )
       continue
     }
-    if (voucher.date < conversionDate) {
+    // Closing mode posts no movements, so an earlier date is only a posting
+    // hazard, not a history one.
+    if (mode !== "closing" && voucher.date < conversionDate) {
       skippedVouchers += 1
       addException(
         "VOUCHER_BEFORE_CONVERSION",
@@ -619,33 +651,42 @@ export function normaliseTallyDocument(
     for (const line of lines) addMovement(line.account.sourceName, line.debit, line.credit)
 
     acceptedVouchers.push({ voucher, sourceId, kind })
-    vouchers.push({
-      sourceId,
-      sourceType,
-      kind,
-      date: voucher.date,
-      number: trimText(voucher.number, 80),
-      description:
-        trimText(
-          `${voucher.type}${voucher.number ? ` ${voucher.number}` : ""}${voucher.narration ? ` — ${voucher.narration}` : ""}`,
-          500,
-        ) ?? voucher.type,
-      currency,
-      partyName: trimText(voucher.partyLedgerName, 200),
-      lines: lines.map((line) => ({
-        accountCode: line.account.code,
-        accountName: line.account.name,
-        debit: line.debit,
-        credit: line.credit,
-        description: line.description,
-      })),
-    })
+    if (mode !== "closing") {
+      vouchers.push({
+        sourceId,
+        sourceType,
+        kind,
+        date: voucher.date,
+        number: trimText(voucher.number, 80),
+        description:
+          trimText(
+            `${voucher.type}${voucher.number ? ` ${voucher.number}` : ""}${voucher.narration ? ` — ${voucher.narration}` : ""}`,
+            500,
+          ) ?? voucher.type,
+        currency,
+        partyName: trimText(voucher.partyLedgerName, 200),
+        lines: lines.map((line) => ({
+          accountCode: line.account.code,
+          accountName: line.account.name,
+          debit: line.debit,
+          credit: line.credit,
+          description: line.description,
+        })),
+      })
+    }
   }
 
   const allAccounts = [...mapped, ...extraAccounts]
   const cutoverAccounts: TallyCutoverAccount[] = allAccounts.map((account) => {
     const sourceLedger = ledgerByKey.get(normaliseTallyKey(account.sourceName))
-    const closing = sourceLedger?.closingBalance
+    const closing =
+      sourceLedger?.closingBalance === undefined
+        ? undefined
+        : sourceLedger.closingBalance * balanceSign
+    const exportedOpening =
+      sourceLedger?.openingBalance === undefined
+        ? undefined
+        : sourceLedger.openingBalance * balanceSign
     let opening: number | undefined
     let openingMethod: "exported" | "derived" | "closing" | "none" = "none"
 
@@ -660,8 +701,8 @@ export function normaliseTallyDocument(
           account.sourceName,
         )
       }
-    } else if (sourceLedger?.openingBalance !== undefined) {
-      opening = sourceLedger.openingBalance
+    } else if (exportedOpening !== undefined) {
+      opening = exportedOpening
       openingMethod = "exported"
     } else if (
       closing !== undefined &&
@@ -757,17 +798,23 @@ export function normaliseTallyDocument(
     if (!key || seenStock.has(key)) continue
     seenStock.add(key)
 
-    if (item.openingValue !== undefined) {
-      exportedOpeningValue += item.openingValue
+    // Stock values carry the same ledger sign as the balances, so the export's
+    // convention applies to them too.
+    const openingValue =
+      item.openingValue === undefined ? undefined : item.openingValue * balanceSign
+    const closingValue =
+      item.closingValue === undefined ? undefined : item.closingValue * balanceSign
+    if (openingValue !== undefined) {
+      exportedOpeningValue += openingValue
       itemsWithOpeningValue += 1
     }
-    if (item.closingValue !== undefined) {
-      exportedClosingValue += item.closingValue
+    if (closingValue !== undefined) {
+      exportedClosingValue += closingValue
       itemsWithClosingValue += 1
     }
 
     const quantity = mode === "closing" ? item.closingQuantity : item.openingQuantity
-    const value = mode === "closing" ? item.closingValue : item.openingValue
+    const value = mode === "closing" ? closingValue : openingValue
     const rate =
       (mode === "closing" ? undefined : item.openingRate) ??
       (quantity && quantity !== 0 && value !== undefined ? round2(value / quantity) : undefined)
@@ -864,7 +911,7 @@ export function normaliseTallyDocument(
       rate: rate === undefined ? undefined : round2(rate),
       value: value === undefined ? undefined : round2(value),
       closingQuantity: item.closingQuantity,
-      closingValue: item.closingValue === undefined ? undefined : round2(item.closingValue),
+      closingValue: closingValue === undefined ? undefined : round2(closingValue),
       batches,
     })
   }
@@ -916,9 +963,14 @@ export function normaliseTallyDocument(
 
     const partyLine = voucher.ledgerLines.find((line) => {
       const account = accountFor(line.ledgerName)
-      return kind === "sales" ? account.role === "receivable" : account.role === "payable"
+      return kind === "sales"
+        ? account.role === "receivable" || account.partyType === "customer"
+        : account.role === "payable" || account.partyType === "supplier"
     })
-    const partyName = trimText(voucher.partyLedgerName, 200) ?? trimText(partyLine?.ledgerName, 200)
+    // Tally's own PARTYLEDGERNAME can name the cash ledger on a cash sale or a
+    // cash purchase; the line classified as the party is the better name.
+    const partyName =
+      trimText(partyLine?.ledgerName, 200) ?? trimText(voucher.partyLedgerName, 200)
 
     const itemLines = inventoryLines.map((line) => {
       const quantity = Math.trunc(line.quantity ?? 0)

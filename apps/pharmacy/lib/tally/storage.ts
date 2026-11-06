@@ -138,14 +138,24 @@ export function tallyChunkSourcePath(tenantId: string, sessionId: string, chunkI
   return `tenants/${segment(tenantId, "tenant")}/imports/${segment(sessionId, "session")}/chunks/${name}.xml`
 }
 
+/**
+ * Where the operator's filled stock sheet is kept. It sits beside the chunks
+ * but is not one of them: it adds batch expiries to the masters, and never
+ * counts towards the migration's coverage.
+ */
+export function tallyStockSheetPath(tenantId: string, sessionId: string): string {
+  return `tenants/${segment(tenantId, "tenant")}/imports/${segment(sessionId, "session")}/stock-sheet.xlsx`
+}
+
 export async function writeTallySourceBytes(
   db: TallyStorageClient,
   path: string,
   bytes: Uint8Array,
+  contentType = "application/xml",
 ): Promise<number> {
   if (bytes.byteLength > TALLY_SOURCE_LIMIT) throw new Error("TALLY_CHUNK_TOO_LARGE")
   const { error } = await db.storage.from(TALLY_BUCKET).upload(path, bytes, {
-    contentType: "application/xml",
+    contentType,
     upsert: true,
   })
   if (error) throw new Error(`TALLY_CHUNK_WRITE_FAILED: ${error.message}`)

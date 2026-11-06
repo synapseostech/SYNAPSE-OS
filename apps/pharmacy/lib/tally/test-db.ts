@@ -106,7 +106,17 @@ export function fakeSupabase(resolve: (operation: FakeOperation) => FakeResult) 
     return chain
   }
 
-  return { client: { from }, operations }
+  return {
+    client: {
+      from,
+      storage: {
+        from: () => ({
+          remove: () => Promise.resolve({ data: null, error: null }),
+        }),
+      },
+    },
+    operations,
+  }
 }
 
 /** The filters a route applied, as a plain object a test can compare. */

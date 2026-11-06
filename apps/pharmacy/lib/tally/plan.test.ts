@@ -116,4 +116,35 @@ describe("tally plan persistence", () => {
     // exceptions, so a gate that reads plan.exceptions would see nothing.
     expect(loaded.plan.exceptions).toEqual([])
   })
+
+  it("chunks a closing cut-over's sales even though it posts no vouchers", async () => {
+    const { client } = memoryStorage()
+    const plan = {
+      ...truncatedPlan(),
+      mode: "closing" as const,
+      vouchers: [],
+      sales: [
+        {
+          sourceId: "test-pharmacy:sale-guid",
+          date: "2026-01-15",
+          transactionNumber: "TALLY-S-001",
+          paymentMethod: "CASH",
+          total: 200,
+          tax: 0,
+          discount: 0,
+          items: [
+            { stockItemName: "Test Item A", quantity: 2, unitPrice: 100, lineTotal: 200 },
+          ],
+        },
+      ],
+      counts: { ...truncatedPlan().counts, sales: 1, vouchers: 1 },
+    }
+
+    const summary = await writeTallyPlan(client, TENANT, SESSION, plan, "xml")
+    const loaded = await loadStagePlan(client, TENANT, SESSION, "journals", 0)
+
+    expect(summary.chunkCount).toBe(1)
+    expect(loaded.chunk?.vouchers).toEqual([])
+    expect(loaded.chunk?.sales.map((sale) => sale.sourceId)).toEqual(["test-pharmacy:sale-guid"])
+  })
 })
