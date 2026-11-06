@@ -660,6 +660,16 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
   }
 
   const text = stripDelimited(withoutComments, "<?", "?>")
+
+  // Extract company name from SVCURRENTCOMPANY in STATICVARIABLES (common in daybook exports)
+  let extractedCompany: string | undefined
+  const staticVarsMatch = text.match(/<STATICVARIABLES[^>]*>([\s\S]*?)<\/STATICVARIABLES>/i)
+  if (staticVarsMatch) {
+    const svContent = staticVarsMatch[1]
+    const companyMatch = svContent.match(/<SVCURRENTCOMPANY>([^<]+)<\/SVCURRENTCOMPANY>/i)
+    if (companyMatch) extractedCompany = companyMatch[1].trim()
+  }
+
   const warnings: TallyXmlRowWarning[] = []
   const document: TallyXmlDocument = {
     financialPeriod: {},
@@ -671,6 +681,7 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
     godowns: [],
     vouchers: [],
     warnings,
+    company: extractedCompany,
   }
 
   let depth = 0
