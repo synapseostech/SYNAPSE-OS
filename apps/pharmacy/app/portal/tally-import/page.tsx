@@ -237,6 +237,13 @@ function kindFromFileName(name: string): "masters" | "vouchers" | undefined {
   return undefined
 }
 
+/** The batch expiry sheet attached to this cut-over, as the server lists it. */
+type StockSheetView = {
+  fileName: string | null
+  rows: number | null
+  stagedAt: string | null
+}
+
 /** One file already staged into the session, as the server lists it back. */
 type StagedFile = {
   uploadId: string
@@ -351,6 +358,9 @@ export default function TallyImportPage() {
   const [files, setFiles] = useState<File[]>([])
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([])
   const [stagedProblems, setStagedProblems] = useState<string[]>([])
+  const [stockSheet, setStockSheet] = useState<StockSheetView | null>(null)
+  const [stockSheetBusy, setStockSheetBusy] = useState(false)
+  const stockSheetInput = useRef<HTMLInputElement>(null)
   const [replacePrompt, setReplacePrompt] = useState<{ file: File; chunkId: string } | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [summary, setSummary] = useState<Summary | null>(null)
@@ -495,6 +505,9 @@ const [companyFrom, setCompanyFrom] = useState("")
       if (data.progress) setProgress(data.progress as Progress)
       if (data.reconcile) setReconcile(data.reconcile as ReconcileCheck[])
       if (Array.isArray(data.sources)) setStagedFiles(data.sources as StagedFile[])
+      if (data.stockSheet !== undefined) {
+        setStockSheet((data.stockSheet as StockSheetView | null) ?? null)
+      }
       if (data.conversionDate) setConversionDate(data.conversionDate as string)
       if (data.mode === "closing" || data.mode === "opening") setMode(data.mode)
     },
@@ -776,6 +789,85 @@ const [companyFrom, setCompanyFrom] = useState("")
 
     if (!session) return
     await previewStaged(session)
+  }
+
+  /**
+   * Uploads the filled stock sheet and re-reads the cut-over with it, because
+   * the batches it carries only reach the plan through a fresh preview.
+   */
+  async function attachStockSheet(sheetFile: File) {
+    if (!sessionId) {
+      toast({
+        variant: "destructive",
+        title: "Add the masters file first",
+        description: "The stock sheet lists the items the masters hold, so stage those first.",
+      })
+      return
+    }
+    if (sheetFile.size > TALLY_SOURCE_LIMIT) {
+      toast({ variant: "destructive", title: `File is larger than ${MAX_UPLOAD_MB} MB` })
+      return
+    }
+
+    setStockSheetBusy(true)
+    try {
+      const startResponse = await fetch("/api/admin/tally/upload-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: sheetFile.name,
+          fileSize: sheetFile.size,
+          sessionId,
+        }),
+      })
+      const start = await startResponse.json()
+      if (!startResponse.ok || typeof start.signedUrl !== "string") {
+        toast({
+          variant: "destructive",
+          title: start.error ?? "The stock sheet could not be uploaded",
+        })
+        return
+      }
+
+      const put = await fetch(start.signedUrl as string, {
+        method: "PUT",
+        headers: { "Content-Type": sheetFile.type || "application/octet-stream" },
+        body: sheetFile,
+      })
+      if (!put.ok) {
+        toast({ variant: "destructive", title: await uploadFailureTitle(put) })
+        return
+      }
+
+      const response = await fetch(`/api/admin/tally/${sessionId}/stock-sheet`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uploadId: start.uploadId, fileName: sheetFile.name }),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        toast({
+          variant: "destructive",
+          title: data.error ?? "The stock sheet could not be read",
+          ...(Array.isArray(data.problems) && data.problems[0]
+            ? { description: String(data.problems[0]) }
+            : {}),
+        })
+        return
+      }
+
+      setStockSheet((data.stockSheet as StockSheetView | null) ?? null)
+      const count = Number(data.stockSheet?.rows ?? 0)
+      toast({
+        title: `Stock sheet attached — ${count.toLocaleString()} row${count === 1 ? "" : "s"}`,
+        ...(Array.isArray(data.problems) && data.problems[0]
+          ? { description: String(data.problems[0]) }
+          : {}),
+      })
+      await previewStaged(sessionId)
+    } finally {
+      setStockSheetBusy(false)
+    }
   }
 
   /** Reads every staged file as one migration, once they have all arrived. */
@@ -1242,6 +1334,58 @@ Export from Tally, then add the files
                   {stagedVoucherTotal === 1 ? "" : "s"}
                 </p>
               )}
+
+              <div className="space-y-2 rounded-lg border border-dashed p-3">
+                <p className="text-sm font-medium">Stock sheet — batch and expiry</p>
+                <p className="text-xs text-muted-foreground">
+                  Tally&apos;s export names no batch or expiry, so opening stock cannot become
+                  sellable batches without them. Download the sheet — it already lists every item
+                  and the quantity it opens with — type the expiry, and the batch name if Tally
+                  uses one, then attach it here. A row left blank simply creates no batch.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" asChild>
+                    <a href={`/api/admin/tally/${sessionId}/stock-sheet`} download>
+                      <Download className="h-4 w-4" /> Download stock sheet
+                    </a>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => stockSheetInput.current?.click()}
+                    disabled={busy !== "idle" || stockSheetBusy}
+                  >
+                    {stockSheetBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileSpreadsheet className="h-4 w-4" />
+                    )}
+                    Attach filled sheet
+                  </Button>
+                  <input
+                    ref={stockSheetInput}
+                    type="file"
+                    accept=".xlsx,.xls"
+                    className="hidden"
+                    onChange={(event) => {
+                      const chosen = event.target.files?.[0]
+                      // Clear the input so choosing the same corrected file again
+                      // still fires onChange.
+                      event.target.value = ""
+                      if (chosen) void attachStockSheet(chosen)
+                    }}
+                  />
+                </div>
+                {stockSheet && (
+                  <p className="text-xs text-muted-foreground">
+                    Attached: {stockSheet.fileName ?? "stock sheet"} ·{" "}
+                    {(stockSheet.rows ?? 0).toLocaleString()} row
+                    {stockSheet.rows === 1 ? "" : "s"}. The files are read again with it after
+                    each attach.
+                  </p>
+                )}
+              </div>
 
               {stagedProblems.length > 0 && (
                 <div className="rounded-lg border border-[#E8B84B]/50 bg-[#E8B84B]/10 p-3 text-xs">

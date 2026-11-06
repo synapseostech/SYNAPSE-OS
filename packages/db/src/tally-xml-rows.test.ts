@@ -181,6 +181,79 @@ describe("parseTallyXmlRows", () => {
     )
   })
 
+  it("reads a sale line whose posting is the ACCOUNTINGALLOCATIONS record itself", () => {
+    const document = parseTallyXmlRows(
+      tallyExport(`
+        <VOUCHER VCHTYPE="Cash Sale">
+          <GUID>cash-sale-guid</GUID>
+          <DATE>20251017</DATE>
+          <LEDGERENTRIES.LIST>
+            <LEDGERNAME>Cash</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+            <AMOUNT>42000.00</AMOUNT>
+          </LEDGERENTRIES.LIST>
+          <ALLINVENTORYENTRIES.LIST>
+            <STOCKITEMNAME>Test Item A</STOCKITEMNAME>
+            <ACTUALQTY>28 ea</ACTUALQTY>
+            <RATE>1500.00/ea</RATE>
+            <AMOUNT>42000.00</AMOUNT>
+            <ACCOUNTINGALLOCATIONS.LIST>
+              <LEDGERNAME>SALES A/C</LEDGERNAME>
+              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+              <AMOUNT>42000.00</AMOUNT>
+            </ACCOUNTINGALLOCATIONS.LIST>
+          </ALLINVENTORYENTRIES.LIST>
+        </VOUCHER>
+      `),
+      "tally.xml",
+    )
+
+    // This build writes the posting straight into the allocation record; the
+    // nested LEDGERENTRIES.LIST form is only some builds' shape.
+    assert.deepEqual(
+      document.vouchers[0]?.inventoryLines[0]?.ledgers.map((line) => [
+        line.ledgerName,
+        line.side,
+        line.amount,
+      ]),
+      [["SALES A/C", "credit", 42000]],
+    )
+  })
+
+  it("reads a purchase's stock lines from the ledger entry they post to", () => {
+    const document = parseTallyXmlRows(
+      tallyExport(`
+        <VOUCHER VCHTYPE="Purchase">
+          <GUID>purchase-guid</GUID>
+          <DATE>20251021</DATE>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>Cash</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>492816.00</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>Guardian Pharmacy Hoima</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+            <AMOUNT>-492816.00</AMOUNT>
+            <INVENTORYALLOCATIONS.LIST>
+              <STOCKITEMNAME>Test Item A</STOCKITEMNAME>
+              <ACTUALQTY>280 ea</ACTUALQTY>
+              <RATE>161.00/ea</RATE>
+              <AMOUNT>-45080.00</AMOUNT>
+            </INVENTORYALLOCATIONS.LIST>
+          </ALLLEDGERENTRIES.LIST>
+        </VOUCHER>
+      `),
+      "tally.xml",
+    )
+
+    const voucher = document.vouchers[0]
+    assert.equal(voucher?.inventoryLines.length, 1)
+    assert.equal(voucher?.inventoryLines[0]?.stockItemName, "Test Item A")
+    assert.equal(voucher?.inventoryLines[0]?.quantity, 280)
+    assert.equal(voucher?.inventoryLines[0]?.amount, 45080)
+  })
+
   it("records the linkage tags a voucher carries, in vocabulary order", () => {
     const document = parseTallyXmlRows(
       tallyExport(`
@@ -263,6 +336,33 @@ describe("parseTallyXmlRows", () => {
     assert.deepEqual(document.ledgers[0].bills, [
       { name: "INV-1", billType: "New Ref", amount: 700, creditPeriodDays: 30 },
     ])
+  })
+
+  it("reads an empty balance element as zero, not as a balance the export left out", () => {
+    const document = parseTallyXmlRows(
+      tallyExport(`
+        <LEDGER NAME="Zarin Pharmacy">
+          <PARENT>Capital Account</PARENT>
+          <OPENINGBALANCE TYPE="Amount"></OPENINGBALANCE>
+          <CLOSINGBALANCE TYPE="Amount"></CLOSINGBALANCE>
+        </LEDGER>
+        <LEDGER NAME="Untouched Ledger"><PARENT>Capital Account</PARENT></LEDGER>
+        <STOCKITEM NAME="Test Item A">
+          <BASEUNITS>Strip</BASEUNITS>
+          <OPENINGBALANCE></OPENINGBALANCE>
+          <CLOSINGBALANCE></CLOSINGBALANCE>
+          <CLOSINGVALUE></CLOSINGVALUE>
+        </STOCKITEM>
+      `),
+    )
+
+    assert.equal(document.ledgers[0].openingBalance, 0)
+    assert.equal(document.ledgers[0].closingBalance, 0)
+    // A tag that is absent is still unknown: the export has not answered.
+    assert.equal(document.ledgers[1].closingBalance, undefined)
+    assert.equal(document.stockItems[0].openingQuantity, 0)
+    assert.equal(document.stockItems[0].closingQuantity, 0)
+    assert.equal(document.stockItems[0].closingValue, 0)
   })
 
   it("marks cancelled vouchers without dropping their data", () => {

@@ -94,6 +94,27 @@ function reconciliationOf(plan: TallyCutoverPlan): NonNullable<TallyPlanSummary[
   }
 }
 
+/**
+ * Every source the journals stage must visit. A posted voucher is one; a sale
+ * or purchase a closing cut-over mirrors without posting has no voucher, so it
+ * is added on its own or its history would never be written.
+ */
+function journalSources(plan: TallyCutoverPlan): string[] {
+  const seen = new Set<string>()
+  const sources: string[] = []
+  for (const voucher of plan.vouchers) {
+    if (seen.has(voucher.sourceId)) continue
+    seen.add(voucher.sourceId)
+    sources.push(voucher.sourceId)
+  }
+  for (const entry of [...plan.sales, ...plan.purchases]) {
+    if (seen.has(entry.sourceId)) continue
+    seen.add(entry.sourceId)
+    sources.push(entry.sourceId)
+  }
+  return sources
+}
+
 export function summarisePlan(
   plan: TallyCutoverPlan,
   format: "xml" | "xlsx" | "xls" | "csv",
@@ -121,7 +142,7 @@ export function summarisePlan(
       detail: entry.detail,
       severity: entry.severity,
     })),
-    chunkCount: Math.max(1, Math.ceil(plan.vouchers.length / chunkSize)),
+    chunkCount: Math.max(1, Math.ceil(journalSources(plan).length / chunkSize)),
     chunkSize,
     warnings: plan.warnings,
     preparedAt: new Date().toISOString(),
@@ -158,15 +179,21 @@ export async function writeTallyPlan(
 
   const saleBySource = new Map(plan.sales.map((sale) => [sale.sourceId, sale]))
   const purchaseBySource = new Map(plan.purchases.map((entry) => [entry.sourceId, entry]))
+  const voucherBySource = new Map(plan.vouchers.map((voucher) => [voucher.sourceId, voucher]))
+  const sources = journalSources(plan)
 
   for (let index = 0; index < summary.chunkCount; index += 1) {
     const start = index * summary.chunkSize
-    const vouchers = plan.vouchers.slice(start, start + summary.chunkSize)
+    const slice = sources.slice(start, start + summary.chunkSize)
     const chunk: PlanChunk = {
-      vouchers,
-      sales: vouchers.map((voucher) => saleBySource.get(voucher.sourceId)).filter((sale): sale is TallyCutoverSale => Boolean(sale)),
-      purchases: vouchers
-        .map((voucher) => purchaseBySource.get(voucher.sourceId))
+      vouchers: slice
+        .map((sourceId) => voucherBySource.get(sourceId))
+        .filter((voucher): voucher is TallyCutoverVoucher => Boolean(voucher)),
+      sales: slice
+        .map((sourceId) => saleBySource.get(sourceId))
+        .filter((sale): sale is TallyCutoverSale => Boolean(sale)),
+      purchases: slice
+        .map((sourceId) => purchaseBySource.get(sourceId))
         .filter((entry): entry is TallyCutoverPurchase => Boolean(entry)),
     }
     await writeTallyJson(db, tallyChunkPath(tenantId, sessionId, CHUNK, index), chunk)

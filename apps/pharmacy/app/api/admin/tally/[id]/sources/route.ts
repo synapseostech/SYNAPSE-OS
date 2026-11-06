@@ -248,12 +248,14 @@ export async function POST(
       manifest = { ...manifest, companySource: "file", updatedAt: now }
     }
 
-    manifest = widenPeriod(manifest, described.range, now)
+    // The chunk is added first: the period is the union of the day books staged
+    // so far, so the one being added has to be one of them.
     manifest = ensureChunk(
       manifest,
       { kind: described.kind, id: described.chunkId, range: described.range },
       now,
     )
+    manifest = widenPeriod(manifest, described.range, now, described.kind)
 
     const target = manifest.chunks.find((chunk) => chunk.id === described.chunkId)
     if (!target) throw new Error("TALLY_CHUNK_UNKNOWN")

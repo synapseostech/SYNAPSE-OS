@@ -340,6 +340,26 @@ function textOf(node: XmlNode, name: string): string | undefined {
   return value ? value : undefined
 }
 
+/**
+ * Tally writes a balance element for every master row and leaves it blank when
+ * the balance is nil, so an empty element is zero — not "the export left it
+ * out". A missing element stays undefined.
+ */
+function elementValue<T>(
+  node: XmlNode,
+  names: string[],
+  parse: (raw: string) => T | undefined,
+  zero: T,
+): T | undefined {
+  for (const name of names) {
+    const found = child(node, name)
+    if (!found) continue
+    const raw = found.text.trim()
+    return raw ? parse(raw) : zero
+  }
+  return undefined
+}
+
 function attrOf(node: XmlNode, name: string): string | undefined {
   const value = node.attrs[name.toUpperCase()]
   return value?.trim() ? value.trim() : undefined
@@ -445,10 +465,15 @@ function readInventoryLine(node: XmlNode, warnings: TallyXmlRowWarning[]): Tally
   const ledgers = [
     ...childrenNamed(node, "LEDGERENTRIES.LIST"),
     ...childrenNamed(node, "ALLLEDGERENTRIES.LIST"),
-    ...childrenNamed(node, "ACCOUNTINGALLOCATIONS.LIST").flatMap((allocation) => [
-      ...childrenNamed(allocation, "LEDGERENTRIES.LIST"),
-      ...childrenNamed(allocation, "ALLLEDGERENTRIES.LIST"),
-    ]),
+    // Tally writes a sale line's posting as the allocation record itself; only
+    // some builds wrap it in another ledger-entry list.
+    ...childrenNamed(node, "ACCOUNTINGALLOCATIONS.LIST").flatMap((allocation) => {
+      const nested = [
+        ...childrenNamed(allocation, "LEDGERENTRIES.LIST"),
+        ...childrenNamed(allocation, "ALLLEDGERENTRIES.LIST"),
+      ]
+      return nested.length > 0 ? nested : [allocation]
+    }),
   ]
     .map((entry) => readLedgerLine(entry, warnings))
     .filter((entry): entry is TallyLedgerLine => entry !== undefined)
@@ -475,10 +500,11 @@ function readVoucher(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyVouche
   const date = dateRaw ? parseTallyRowDate(dateRaw) : undefined
   if (dateRaw && !date) addWarning(warnings, "DATE_UNREADABLE")
 
-  const ledgerLines = [
+  const ledgerEntries = [
     ...childrenNamed(node, "LEDGERENTRIES.LIST"),
     ...childrenNamed(node, "ALLLEDGERENTRIES.LIST"),
   ]
+  const ledgerLines = ledgerEntries
     .map((entry) => readLedgerLine(entry, warnings))
     .filter((entry): entry is TallyLedgerLine => entry !== undefined)
 
@@ -496,6 +522,14 @@ function readVoucher(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyVouche
     inventoryLines: [
       ...childrenNamed(node, "ALLINVENTORYENTRIES.LIST"),
       ...childrenNamed(node, "INVENTORYENTRIES.LIST"),
+      ...childrenNamed(node, "INVENTORYALLOCATIONS.LIST"),
+      // A purchase writes its stock lines under the ledger entry they post to,
+      // not at the top of the voucher.
+      ...ledgerEntries.flatMap((entry) => [
+        ...childrenNamed(entry, "INVENTORYALLOCATIONS.LIST"),
+        ...childrenNamed(entry, "ALLINVENTORYENTRIES.LIST"),
+        ...childrenNamed(entry, "INVENTORYENTRIES.LIST"),
+      ]),
     ]
       .map((entry) => readInventoryLine(entry, warnings))
       .filter((entry): entry is TallyInventoryLine => entry !== undefined),
@@ -513,9 +547,16 @@ function readGroup(node: XmlNode): TallyGroup {
 
 function readLedger(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyLedger {
   const openingRaw = textOf(node, "OPENINGBALANCE")
-  const closingRaw = textOf(node, "CLOSEBALANCE")
-  const openingBalance = parseTallyAmount(openingRaw)
-  const closingBalance = parseTallyAmount(closingRaw)
+  // Tally's native export writes CLOSINGBALANCE; CLOSEBALANCE is what some
+  // older hand-written templates use.
+  const closingRaw = textOf(node, "CLOSINGBALANCE") ?? textOf(node, "CLOSEBALANCE")
+  const openingBalance = elementValue(node, ["OPENINGBALANCE"], parseTallyAmount, 0)
+  const closingBalance = elementValue(
+    node,
+    ["CLOSINGBALANCE", "CLOSEBALANCE"],
+    parseTallyAmount,
+    0,
+  )
   if (openingRaw !== undefined && openingBalance === undefined) addWarning(warnings, "AMOUNT_UNREADABLE")
   if (closingRaw !== undefined && closingBalance === undefined) addWarning(warnings, "AMOUNT_UNREADABLE")
   return {
@@ -547,7 +588,7 @@ function readLedger(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyLedger 
 
 function readStockItem(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyStockItem {
   const openingQuantityRaw = textOf(node, "OPENINGBALANCE")
-  const openingQuantity = parseLeadingNumber(openingQuantityRaw)
+  const openingQuantity = elementValue(node, ["OPENINGBALANCE"], parseLeadingNumber, 0)
   if (openingQuantityRaw !== undefined && openingQuantity === undefined) {
     addWarning(warnings, "QUANTITY_UNREADABLE")
   }
@@ -557,10 +598,16 @@ function readStockItem(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyStoc
     parent: textOf(node, "PARENT"),
     baseUnit: textOf(node, "BASEUNITS"),
     openingQuantity,
-    openingRate: parseTallyAmount(textOf(node, "OPENINGRATE")),
-    openingValue: parseTallyAmount(textOf(node, "OPENINGVALUE")),
-    closingQuantity: parseLeadingNumber(textOf(node, "CLOSEBALANCE")),
-    closingValue: parseTallyAmount(textOf(node, "CLOSINGVALUE")),
+    // Tally writes a stock rate with its unit attached ("2500.00/ea").
+    openingRate: parseLeadingNumber(textOf(node, "OPENINGRATE")),
+    openingValue: elementValue(node, ["OPENINGVALUE"], parseTallyAmount, 0),
+    closingQuantity: elementValue(
+      node,
+      ["CLOSINGBALANCE", "CLOSEBALANCE"],
+      parseLeadingNumber,
+      0,
+    ),
+    closingValue: elementValue(node, ["CLOSINGVALUE"], parseTallyAmount, 0),
     batchWise: (textOf(node, "ISBATCHWISEON") ?? "").toLowerCase() === "yes",
     batches: childrenNamed(node, "BATCHALLOCATIONS.LIST").map((batch) => readBatch(batch, warnings)),
   }

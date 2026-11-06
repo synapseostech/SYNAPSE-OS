@@ -135,6 +135,42 @@ describe("widenPeriod", () => {
 
     expect(widenPeriod(wide, TEN_DAYS, AT)).toBe(wide)
   })
+
+  it("lets the day books, not an undated masters file name, decide the period", () => {
+    const open = createOpenManifest({
+      sessionId: "session-1",
+      company: "Demo Pharma",
+      mode: "opening",
+      // The span Tally was asked for, wider than anything the export holds.
+      period: { from: "2025-10-01", to: "2026-11-30" },
+      updatedAt: AT,
+    })
+
+    // Staged the way the sources route does it: add the chunk, then widen.
+    const firstRange = { from: "2026-01-01", to: "2026-01-10" }
+    const first = widenPeriod(
+      ensureChunk(open, { kind: "vouchers", id: "vouchers:a", range: firstRange }, AT),
+      firstRange,
+      AT,
+      "vouchers",
+    )
+    expect(first.period).toEqual(firstRange)
+    expect(first.chunks.find((chunk) => chunk.kind === "masters")?.range).toEqual(firstRange)
+
+    const laterRange = { from: "2026-01-05", to: "2026-01-20" }
+    const later = widenPeriod(
+      ensureChunk(first, { kind: "vouchers", id: "vouchers:b", range: laterRange }, AT),
+      laterRange,
+      AT,
+      "vouchers",
+    )
+    expect(later.period).toEqual({ from: "2026-01-01", to: "2026-01-20" })
+
+    // A masters file added afterwards cannot stretch the period again.
+    expect(widenPeriod(later, { from: "2025-01-01", to: "2026-12-31" }, AT, "masters").period).toEqual(
+      { from: "2026-01-01", to: "2026-01-20" },
+    )
+  })
 })
 
 describe("replaceChunkResult", () => {

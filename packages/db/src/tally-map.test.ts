@@ -56,6 +56,23 @@ describe("classifyTallyLedger", () => {
     })
   })
 
+  it("reads a named ledger under Purchase Accounts as the supplier it credits", () => {
+    const purchaseGroups: TallyGroup[] = [
+      { name: "Purchase Accounts", parent: "Current Assets" },
+      { name: "Current Assets", parent: "Assets" },
+    ]
+    const groupMap = new Map(
+      purchaseGroups.map((group) => [normaliseTallyKey(group.name), group]),
+    )
+
+    const supplier = classifyTallyLedger(ledger("Guardian Pharmacy Hoima", "Purchase Accounts"), groupMap)
+    assert.equal(supplier.partyType, "supplier")
+    assert.equal(supplier.role, "cogs")
+
+    const account = classifyTallyLedger(ledger("Local Purchases", "Purchase Accounts"), groupMap)
+    assert.equal(account.partyType, undefined)
+  })
+
   it("classifies a supplier under a nested Sundry Creditors group", () => {
     const groupMap = new Map(groups.map((group) => [normaliseTallyKey(group.name), group]))
     const result = classifyTallyLedger(ledger("Test Supplier A", "Sundry Creditors"), groupMap)
@@ -154,6 +171,8 @@ describe("voucher classification", () => {
   it("recognises Tally voucher types and their posting source types", () => {
     const cases: Array<[string, string, string | undefined]> = [
       ["Sales", "sales", "tally_sale"],
+      ["Cash Sale", "sales", "tally_sale"],
+      ["Credit Sale", "sales", "tally_sale"],
       ["Purchase", "purchase", "tally_purchase"],
       ["Receipt", "receipt", "tally_receipt"],
       ["Payment", "payment", "tally_payment"],

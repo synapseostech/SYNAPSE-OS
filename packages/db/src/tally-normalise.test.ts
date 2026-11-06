@@ -120,6 +120,88 @@ describe("normaliseTallyDocument", () => {
     assert.equal(result.stockItems[0].batches[0].expiryDate, "2027-02-28")
   })
 
+  it("mirrors the cash sales and cash purchases a small pharmacy actually exports", () => {
+    const result = plan(`
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><OPENINGBALANCE>0</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="Loan"><PARENT>Capital Account</PARENT><OPENINGBALANCE>0</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="SALES A/C"><PARENT>Sales Accounts</PARENT></LEDGER>
+      <LEDGER NAME="Guardian Pharmacy Hoima"><PARENT>Purchase Accounts</PARENT></LEDGER>
+      <VOUCHER VCHTYPE="Cash Sale" ACTION="Create">
+        <GUID>cash-sale-guid</GUID>
+        <DATE>20260115</DATE>
+        <VOUCHERNUMBER>1</VOUCHERNUMBER>
+        <PARTYLEDGERNAME>Cash</PARTYLEDGERNAME>
+        <LEDGERENTRIES.LIST>
+          <LEDGERNAME>Cash</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+          <AMOUNT>60984.00</AMOUNT>
+        </LEDGERENTRIES.LIST>
+        <ALLINVENTORYENTRIES.LIST>
+          <STOCKITEMNAME>Test Item A</STOCKITEMNAME>
+          <ACTUALQTY>28 ea</ACTUALQTY>
+          <RATE>1500.00/ea</RATE>
+          <AMOUNT>42000.00</AMOUNT>
+          <ACCOUNTINGALLOCATIONS.LIST>
+            <LEDGERNAME>SALES A/C</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>42000.00</AMOUNT>
+          </ACCOUNTINGALLOCATIONS.LIST>
+        </ALLINVENTORYENTRIES.LIST>
+        <ALLINVENTORYENTRIES.LIST>
+          <STOCKITEMNAME>Test Item B</STOCKITEMNAME>
+          <ACTUALQTY>28 ea</ACTUALQTY>
+          <RATE>678.00/ea</RATE>
+          <AMOUNT>18984.00</AMOUNT>
+          <ACCOUNTINGALLOCATIONS.LIST>
+            <LEDGERNAME>SALES A/C</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>18984.00</AMOUNT>
+          </ACCOUNTINGALLOCATIONS.LIST>
+        </ALLINVENTORYENTRIES.LIST>
+      </VOUCHER>
+      <VOUCHER VCHTYPE="Purchase" ACTION="Create">
+        <GUID>purchase-guid</GUID>
+        <DATE>20260120</DATE>
+        <VOUCHERNUMBER>1</VOUCHERNUMBER>
+        <PARTYLEDGERNAME>Cash</PARTYLEDGERNAME>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Cash</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+          <AMOUNT>45080.00</AMOUNT>
+        </ALLLEDGERENTRIES.LIST>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Guardian Pharmacy Hoima</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+          <AMOUNT>-45080.00</AMOUNT>
+          <INVENTORYALLOCATIONS.LIST>
+            <STOCKITEMNAME>Test Item A</STOCKITEMNAME>
+            <ACTUALQTY>280 ea</ACTUALQTY>
+            <RATE>161.00/ea</RATE>
+            <AMOUNT>-45080.00</AMOUNT>
+          </INVENTORYALLOCATIONS.LIST>
+        </ALLLEDGERENTRIES.LIST>
+      </VOUCHER>
+    `)
+
+    assert.equal(result.counts.skippedVouchers, 0)
+    assert.equal(result.counts.postedVouchers, 2)
+
+    assert.equal(result.sales.length, 1)
+    assert.equal(result.sales[0].paymentMethod, "CASH")
+    assert.equal(result.sales[0].total, 60984)
+    assert.equal(result.sales[0].items.length, 2)
+
+    // Tally writes PARTYLEDGERNAME "Cash" on both vouchers; the ledger line
+    // classified as the supplier is the name the purchase belongs to.
+    assert.equal(result.purchases.length, 1)
+    assert.equal(result.purchases[0].partyName, "Guardian Pharmacy Hoima")
+    assert.equal(result.purchases[0].paymentMethod, "CASH")
+    assert.equal(result.purchases[0].total, 45080)
+
+    const suppliers = result.parties.filter((party) => party.kind === "supplier")
+    assert.deepEqual(suppliers.map((party) => party.name), ["Guardian Pharmacy Hoima"])
+  })
+
   it("never plugs an unbalanced opening", () => {
     const result = plan(`
       <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><OPENINGBALANCE>100.00</OPENINGBALANCE></LEDGER>
@@ -242,6 +324,68 @@ describe("normaliseTallyDocument", () => {
     assert.equal(capital.openingBalance, 1000)
     assert.equal(capital.openingSide, "credit")
     assert.equal(result.opening.difference, 0)
+  })
+
+  it("posts Tally's own sign, where a debit balance is negative", () => {
+    const result = plan(
+      `
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><CLOSINGBALANCE>-1200.00</CLOSINGBALANCE></LEDGER>
+      <LEDGER NAME="Sales"><PARENT>Sales Accounts</PARENT><CLOSINGBALANCE>1200.00</CLOSINGBALANCE></LEDGER>
+    `,
+      { mode: "closing", conversionDate: "2026-12-31" },
+    )
+
+    const cash = result.accounts.find((account) => account.sourceName === "Cash")!
+    const sales = result.accounts.find((account) => account.sourceName === "Sales")!
+    assert.equal(cash.openingSide, "debit")
+    assert.equal(cash.openingBalance, 1200)
+    assert.equal(sales.openingSide, "credit")
+    assert.equal(sales.openingBalance, 1200)
+    assert.equal(result.opening.difference, 0)
+    assert.ok(!result.exceptions.some((entry) => entry.code === "OPENING_DIFFERENCE"))
+  })
+
+  it("reads a stock value and its unit-suffixed rate from Tally's own sign", () => {
+    const result = plan(`
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><OPENINGBALANCE>-5000.00</OPENINGBALANCE></LEDGER>
+      <LEDGER NAME="Capital"><PARENT>Capital Account</PARENT><OPENINGBALANCE>5000.00</OPENINGBALANCE></LEDGER>
+      <STOCKITEM NAME="Test Item A">
+        <BASEUNITS>ea</BASEUNITS>
+        <OPENINGBALANCE>2.00 ea</OPENINGBALANCE>
+        <OPENINGRATE>2500.00/ea</OPENINGRATE>
+        <OPENINGVALUE>-5000.00</OPENINGVALUE>
+        <CLOSINGBALANCE>4.00 ea</CLOSINGBALANCE>
+        <CLOSINGVALUE>-10000.00</CLOSINGVALUE>
+      </STOCKITEM>
+    `)
+
+    const item = result.stockItems[0]
+    assert.equal(item.quantity, 2)
+    assert.equal(item.value, 5000)
+    assert.equal(item.rate, 2500)
+    assert.equal(item.closingValue, 10000)
+    assert.equal(result.stock.openingValue, 5000)
+    assert.equal(result.stock.closingValue, 10000)
+    assert.equal(result.opening.difference, 0)
+  })
+
+  it("treats a ledger Tally leaves at nil as zero, not as an unexported balance", () => {
+    const result = plan(
+      `
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><CLOSINGBALANCE></CLOSINGBALANCE></LEDGER>
+      <LEDGER NAME="Untouched"><PARENT>Cash-in-hand</PARENT></LEDGER>
+    `,
+      { mode: "closing", conversionDate: "2026-12-31" },
+    )
+
+    const cash = result.accounts.find((account) => account.sourceName === "Cash")!
+    assert.equal(cash.openingMethod, "closing")
+    assert.equal(cash.openingBalance, 0)
+    // The empty tag was answered; the missing one was not.
+    const unavailable = result.exceptions.filter(
+      (entry) => entry.code === "OPENING_BALANCE_UNAVAILABLE",
+    )
+    assert.deepEqual(unavailable.map((entry) => entry.detail), ["Untouched"])
   })
 
   it("flags opening stock without an expiry and never creates an expiring batch for it", () => {
@@ -401,7 +545,7 @@ describe("normaliseTallyDocument", () => {
     assert.equal(result.conversionDate, "2026-12-31")
     assert.equal(result.vouchers.length, 0)
     assert.equal(result.counts.postedVouchers, 0)
-    assert.equal(result.counts.skippedVouchers, 1)
+    assert.equal(result.counts.skippedVouchers, 0)
     assert.equal(result.opening.difference, 0)
 
     const cash = result.accounts.find((account) => account.sourceName === "Cash")
@@ -411,9 +555,67 @@ describe("normaliseTallyDocument", () => {
     assert.equal(result.opening.lines[0]?.description, "Tally closing balance")
 
     const codes = result.exceptions.map((entry) => entry.code)
-    assert.ok(codes.includes("CLOSING_MODE_VOUCHERS_IGNORED"))
+    assert.ok(codes.includes("CLOSING_MODE_HISTORY_ONLY"))
     assert.ok(codes.includes("OPENING_BALANCE_UNAVAILABLE"))
     assert.ok(!codes.includes("CLOSING_PERIOD_MISMATCH"))
+  })
+
+  it("keeps a closing cut-over's sales as history without posting their vouchers", () => {
+    const result = plan(
+      `
+      <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><CLOSEBALANCE>1200.00</CLOSEBALANCE></LEDGER>
+      <LEDGER NAME="Capital"><PARENT>Capital Account</PARENT><CLOSEBALANCE>-1200.00</CLOSEBALANCE></LEDGER>
+      <LEDGER NAME="Sales"><PARENT>Sales Accounts</PARENT></LEDGER>
+      <STOCKITEM NAME="Test Item A">
+        <BASEUNITS>Strip</BASEUNITS>
+        <OPENINGBALANCE>12 Strip</OPENINGBALANCE>
+        <CLOSEBALANCE>10 Strip</CLOSEBALANCE>
+        <CLOSINGVALUE>900.00</CLOSINGVALUE>
+        <BATCHALLOCATIONS.LIST>
+          <BATCHNAME>B-001</BATCHNAME>
+          <EXPIRYDATE>20270228</EXPIRYDATE>
+          <ACTUALQTY>10 Strip</ACTUALQTY>
+          <AMOUNT>900.00</AMOUNT>
+        </BATCHALLOCATIONS.LIST>
+      </STOCKITEM>
+      <VOUCHER VCHTYPE="Cash Sale" ACTION="Create">
+        <GUID>sale-guid</GUID>
+        <DATE>20260115</DATE>
+        <VOUCHERNUMBER>S-001</VOUCHERNUMBER>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Cash</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+          <AMOUNT>200.00</AMOUNT>
+        </ALLLEDGERENTRIES.LIST>
+        <ALLINVENTORYENTRIES.LIST>
+          <STOCKITEMNAME>Test Item A</STOCKITEMNAME>
+          <ACTUALQTY>2 Strip</ACTUALQTY>
+          <RATE>100.00/Strip</RATE>
+          <AMOUNT>200.00</AMOUNT>
+          <ACCOUNTINGALLOCATIONS.LIST>
+            <LEDGERENTRIES.LIST>
+              <LEDGERNAME>Sales</LEDGERNAME>
+              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+              <AMOUNT>-200.00</AMOUNT>
+            </LEDGERENTRIES.LIST>
+          </ACCOUNTINGALLOCATIONS.LIST>
+        </ALLINVENTORYENTRIES.LIST>
+      </VOUCHER>
+    `,
+      { mode: "closing", conversionDate: "2026-12-31" },
+    )
+
+    // The ledger starts from the closing position, so the voucher is not posted…
+    assert.equal(result.vouchers.length, 0)
+    assert.equal(result.counts.postedVouchers, 0)
+    // …but the sale it records is kept for the reports, and the stock position
+    // stays the closing one.
+    assert.equal(result.sales.length, 1)
+    assert.equal(result.sales[0]?.total, 200)
+    assert.equal(result.sales[0]?.paymentMethod, "CASH")
+    assert.equal(result.counts.sales, 1)
+    assert.equal(result.stockItems[0]?.quantity, 10)
+    assert.equal(result.counts.skippedVouchers, 0)
   })
 
   it("blocks a closing cut-over when the export closes on another date", () => {
