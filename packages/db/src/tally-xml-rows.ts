@@ -761,9 +761,10 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
   let extractedCompany: string | undefined
   const staticVarsMatch = text.match(/<STATICVARIABLES[^>]*>([\s\S]*?)<\/STATICVARIABLES>/i)
   if (staticVarsMatch) {
-    const svContent = staticVarsMatch[1]
+    const svContent = staticVarsMatch[1] ?? ""
     const companyMatch = svContent.match(/<SVCURRENTCOMPANY>([^<]+)<\/SVCURRENTCOMPANY>/i)
-    if (companyMatch) extractedCompany = companyMatch[1].trim()
+    const company = companyMatch?.[1]?.trim()
+    if (company) extractedCompany = company
   }
 
   const warnings: TallyXmlRowWarning[] = []
