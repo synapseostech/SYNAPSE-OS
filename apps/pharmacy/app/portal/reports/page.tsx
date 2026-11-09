@@ -1,7 +1,7 @@
 ﻿"use client"
 
 import { csvCell } from "@/lib/csv"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -211,12 +211,17 @@ export default function ReportsPage() {
   const [report, setReport] = useState<Report | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const { toast } = useToast()
+  // A slower, superseded request must not overwrite the report the operator
+  // asked for last — switching period and then applying a custom range can
+  // leave the first answer in flight.
+  const requestSeq = useRef(0)
 
   useEffect(() => {
     fetchReport()
   }, [reportType, period])
 
   const fetchReport = async () => {
+    const seq = ++requestSeq.current
     setIsLoading(true)
     try {
       const params = new URLSearchParams({
@@ -225,19 +230,21 @@ export default function ReportsPage() {
         ...(period === "custom" && startDate && { startDate }),
         ...(period === "custom" && endDate && { endDate }),
       })
-      
+
       const response = await fetch(`/api/admin/reports?${params}`)
       if (!response.ok) throw new Error("Failed to fetch report")
       const data = await response.json()
+      if (seq !== requestSeq.current) return
       setReport(data)
     } catch (error) {
+      if (seq !== requestSeq.current) return
       toast({
         title: "Error",
         description: "Failed to load report",
         variant: "destructive",
       })
     } finally {
-      setIsLoading(false)
+      if (seq === requestSeq.current) setIsLoading(false)
     }
   }
 

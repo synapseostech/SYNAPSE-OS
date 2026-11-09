@@ -17,6 +17,10 @@ import {
   buildFixtureWorkbook,
   buildFixtureXml,
 } from "../../apps/pharmacy/lib/tally/fixtures.ts"
+import {
+  FULL_HISTORY_COMPANY,
+  buildFullHistoryXml,
+} from "../../apps/pharmacy/lib/tally/full-history-fixture.ts"
 
 const outDir = resolve(process.argv[2] ?? join(import.meta.dirname, "out"))
 mkdirSync(outDir, { recursive: true })
@@ -25,6 +29,7 @@ const files: Array<[string, string | Uint8Array]> = [
   ["test-pharmacy-tally.xml", buildFixtureXml()],
   ["test-pharmacy-tally.xlsx", buildFixtureWorkbook()],
   ["test-pharmacy-tally.csv", buildFixtureCsv()],
+  ["test-pharmacy-full-history.xml", buildFullHistoryXml()],
 ]
 
 for (const [name, contents] of files) {
@@ -35,3 +40,7 @@ for (const [name, contents] of files) {
 }
 
 console.log(`Fixtures written for "${FIXTURE_COMPANY}" — synthetic data only.`)
+console.log(
+  `Full-history replay fixture written for "${FULL_HISTORY_COMPANY}" — synthetic data only; ` +
+    "it carries one batch name with two expiries, a stock journal and a physical count.",
+)

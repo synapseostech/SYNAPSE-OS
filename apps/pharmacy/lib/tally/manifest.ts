@@ -28,9 +28,10 @@ import {
   type TallyDateRange,
   type TallyMigrationManifest,
 } from "./chunks"
+import type { TallyImportMode } from "./types"
 
 /** Formats the Tally cut-over flow accepts; a session with one of these is a cut-over. */
-export const TALLY_SOURCE_FORMATS = ["xml", "xlsx", "xls", "csv"] as const
+export const TALLY_SOURCE_FORMATS = ["xml", "xlsx", "xls", "csv", "zip"] as const
 
 /**
  * Whether a session belongs to the Tally cut-over flow.
@@ -386,7 +387,7 @@ export function buildSourceManifest(
   document: TallyXmlDocument,
   input: {
     sessionId: string
-    mode: "opening" | "closing"
+    mode: TallyImportMode
     now: string
     requestedPeriod?: TallyDateRange
     company?: string

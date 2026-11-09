@@ -18,6 +18,7 @@
  */
 
 import type { TallyEdition } from "./editions"
+import type { TallyImportMode } from "./types"
 
 export const TALLY_MANIFEST_VERSION = 2
 
@@ -73,7 +74,7 @@ export type TallyMigrationManifest = {
   version: typeof TALLY_MANIFEST_VERSION
   sessionId: string
   company: string
-  mode: "opening" | "closing"
+  mode: TallyImportMode
   /**
    * Where the company name came from: the export itself, or the operator's
    * entry. Absent on manifests written before the operator could supply one.
@@ -227,7 +228,7 @@ function emptyChunk(
 export function createOpenManifest(input: {
   sessionId: string
   company: string
-  mode: "opening" | "closing"
+  mode: TallyImportMode
   period: TallyDateRange
   updatedAt: string
   periodSource?: TallyPeriodSource
@@ -260,7 +261,7 @@ export function createOpenManifest(input: {
 export function createManifest(input: {
   sessionId: string
   company: string
-  mode: "opening" | "closing"
+  mode: TallyImportMode
   period: TallyDateRange
   updatedAt: string
   parts?: number
@@ -560,7 +561,10 @@ export function isManifestLike(value: unknown): value is TallyMigrationManifest 
   if (typeof value.version !== "number") return false
   if (typeof value.sessionId !== "string") return false
   if (typeof value.company !== "string") return false
-  if (value.mode !== "opening" && value.mode !== "closing") return false
+  // A replay is planned and saved by the same preview that writes the opening
+  // and closing ones. Refusing its manifest here drops the only statement of
+  // its company and period, and the cut-over then reads as unapplyable.
+  if (value.mode !== "opening" && value.mode !== "closing" && value.mode !== "replay") return false
   if (!isRangeLike(value.period)) return false
   if (value.periodSource !== "source" && value.periodSource !== "requested") return false
   if (value.declaredPeriod !== undefined && !isRangeLike(value.declaredPeriod)) return false

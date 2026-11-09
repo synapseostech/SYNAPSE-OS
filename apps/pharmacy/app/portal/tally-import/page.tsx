@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Download,
   FileSpreadsheet,
+  History,
   Loader2,
   RefreshCw,
   Terminal,
@@ -22,13 +23,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useToast } from "@/hooks/use-toast"
 import { diagnosticFrom, reportTallyFailure } from "@/lib/tally/diagnostics"
 import type { TallyEditionDisclosure, TallyEditionProblem } from "@/lib/tally/editions"
+import { REPLAY_REASON_MAX, REPLAY_REASON_MIN } from "@/lib/tally/replay-gate"
 import { TALLY_SOURCE_LIMIT } from "@/lib/tally/storage"
 import { cutoverBlockReason, track } from "@/lib/telemetry/events"
 
 export const dynamic = "force-dynamic"
 
 const MAX_UPLOAD_MB = TALLY_SOURCE_LIMIT / 1024 / 1024
-const ACCEPTED = ".xml,.xlsx,.xls,.csv"
+const ACCEPTED = ".xml,.xlsx,.xls,.csv,.zip"
 
 /**
  * A refused upload is answered by Storage, not by this app: its message is the
@@ -81,7 +83,7 @@ type Summary = {
   companyKey: string
   currency: string
   conversionDate: string
-  mode?: "opening" | "closing"
+  mode?: "opening" | "closing" | "replay"
   format: string
   counts: Counts
   opening: { date: string; totalDebit: number; totalCredit: number; difference: number }
@@ -92,11 +94,73 @@ type Summary = {
     itemsWithClosingValue: number
     itemCount: number
   }
+  /** Replay only: the sequence it rebuilds and where it diverges from Tally. */
+  replay?: {
+    cutoffDate: string
+    ordering: "date-then-export-order"
+    eventCount: number
+    movementCount: number
+    movementChunkCount: number
+    perDay: ReplayDayCount[]
+    reconciliation: ReplayRow[]
+    blocking: number
+    warnings: number
+  }
   exceptions: Array<{ code: string; message: string; detail?: string; severity: string }>
   chunkCount: number
   chunkSize: number
   warnings: string[]
   preparedAt: string
+}
+
+type ReplayDayCount = {
+  date: string
+  events: number
+  movements: number
+  kinds: Record<string, number>
+}
+
+type ReplayRow = {
+  scope: "stock_item" | "stock_total" | "account"
+  key: string
+  expected: number | null
+  actual: number | null
+  difference: number | null
+  status: "match" | "difference" | "not-available"
+  tolerance: number
+  firstDivergence?: { date: string; sourceId: string; movementId?: string }
+  sourceIds: string[]
+}
+
+/** One thing the replay differs on, or the simulation refuses to accept. */
+type ReplayBlocker = {
+  key: string
+  kind: "difference" | "finding"
+  label: string
+  expected: number | null
+  actual: number | null
+  difference: number | null
+  message: string
+  firstDivergence?: { date: string; sourceId: string; movementId?: string }
+}
+
+/** The gate the session reload returns for a replay: what Apply will check. */
+type ReplayView = {
+  preparedAt: string
+  conversionDate: string
+  cutoffDate: string
+  ordering: string
+  eventCount: number
+  movementCount: number
+  totals: { match: number; difference: number; notAvailable: number }
+  blocking: number
+  warnings: number
+  sequenceConfirmed: boolean
+  canApply: boolean
+  acknowledged: Array<{ key: string; reason: string }>
+  unknown: string[]
+  blockers: ReplayBlocker[]
+  missing: ReplayBlocker[]
 }
 
 type PreviewAccount = {
@@ -164,6 +228,8 @@ type Progress = {
     products: number
     openingJournal: number
     openingStock: number
+    stockMovements: number
+    movementsReplayed: number
     journals: number
     sales: number
     purchases: number
@@ -282,7 +348,9 @@ const STAGE_LABEL: Record<string, string> = {
   products: "Products",
   "opening-journal": "Opening trial balance",
   "opening-stock": "Opening stock batches",
+  "stock-history": "Stock history",
   journals: "Historical vouchers",
+  "replay-closing": "Closing check",
   complete: "Complete",
 }
 
@@ -290,6 +358,12 @@ const money = (value: number | undefined | null, currency: string) =>
   value === undefined || value === null
     ? "—"
     : `${currency} ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+/** A reconciliation figure: quantities and money share a column, so no currency. */
+const figure = (value: number | undefined | null) =>
+  value === undefined || value === null
+    ? "—"
+    : value.toLocaleString(undefined, { maximumFractionDigits: 2 })
 
 /** One group of staged files — masters, or one slice of the day book each. */
 function StagedGroup({
@@ -370,8 +444,17 @@ export default function TallyImportPage() {
   const [reconcile, setReconcile] = useState<ReconcileCheck[] | null>(null)
   const [manifestView, setManifestView] = useState<ManifestView | null>(null)
   const [acknowledged, setAcknowledged] = useState(false)
+  // The replay's review: the gate the server computed from the saved target,
+  // and the operator's own answers to it before they are saved.
+  const [replayView, setReplayView] = useState<ReplayView | null>(null)
+  const [replayReasons, setReplayReasons] = useState<Record<string, string>>({})
+  const [sequenceConfirmed, setSequenceConfirmed] = useState(false)
+  const [replayEnabled, setReplayEnabled] = useState(false)
   const [conversionDate, setConversionDate] = useState("")
-  const [mode, setMode] = useState<"opening" | "closing">("opening")
+  const [mode, setMode] = useState<"opening" | "closing" | "replay">("opening")
+  // Replay only: the operator's explicit decision that the export states no
+  // batch expiry. It is never inferred from the file.
+  const [batchExpiry, setBatchExpiry] = useState<"source" | "not-supplied">("source")
   const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "disabled" | "error">("checking")
   const [scriptPort, setScriptPort] = useState("")
   const [scriptCompany, setScriptCompany] = useState("")
@@ -414,24 +497,50 @@ const [companyFrom, setCompanyFrom] = useState("")
     [summary],
   )
   const balanced = summary ? summary.opening.difference === 0 : false
+  const replaySummary = summary?.mode === "replay" ? (summary.replay ?? null) : null
+  // The rows a reviewer has to look at: anything the replay did not reach.
+  const replayOpenRows = useMemo(
+    () => (replaySummary?.reconciliation ?? []).filter((row) => row.status !== "match"),
+    [replaySummary],
+  )
   const evidence = manifestView?.evidence ?? null
   const unverifiedCoverage = manifestView?.coverage === "unverified"
   // Unverified coverage is the operator's call, and only theirs: the checkbox
   // records it, and Apply repeats it so the server can hold the same line.
   const needsAcknowledgement = unverifiedCoverage && !acknowledged
+  // A reason shorter than the server's floor is the same as none at all.
+  const replayAnswered = (key: string) => {
+    const reason = (replayReasons[key] ?? "").trim()
+    return reason.length >= REPLAY_REASON_MIN && reason.length <= REPLAY_REASON_MAX
+  }
+  const replayUnanswered = replayView
+    ? replayView.blockers.filter((blocker) => !replayAnswered(blocker.key)).length
+    : 0
+  // Apply re-checks this on the server; the screen shows it so the operator
+  // never presses a button that will be refused.
+  const replayNeedsReview =
+    summary?.mode === "replay" && (!sequenceConfirmed || !replayView || replayUnanswered > 0)
+  // Apply re-checks this on the server; the screen shows it so the operator
+  // never presses a button that will be refused. The server reads the sequence
+  // acknowledgement only from what Apply submits, so its own replay-sequence
+  // verdict predates this checkbox and cannot flip here. Defer to it for every
+  // other blocking check, and let this screen's confirmation decide that one.
+  const failingBlocks = (preflightView?.checks ?? []).filter(
+    (check) => check.blocksApply && check.status !== "pass",
+  )
+  const onlySequenceBlocks =
+    preflightView?.canApply === false &&
+    failingBlocks.length > 0 &&
+    failingBlocks.every((check) => check.id === "replay-sequence")
   const canApply =
     cutoverAccess === "ready" &&
     Boolean(summary) &&
     balanced &&
     blocking.length === 0 &&
     !needsAcknowledgement &&
+    !replayNeedsReview &&
     busy === "idle" &&
-    // The server judges a wider list than this screen; when it has spoken, its
-    // answer wins. Before the session loads there is no verdict to defer to.
-    preflightView?.canApply !== false
-
-// answer wins. Before the session loads there is no verdict to defer to.
-    preflightView?.canApply !== false
+    (preflightView?.canApply !== false || onlySequenceBlocks)
 
   // The dates the operator entered, used only for a file that states none.
   const companyPeriod = useMemo<TallyPeriod | undefined>(() => {
@@ -467,6 +576,7 @@ const [companyFrom, setCompanyFrom] = useState("")
           setCutoverAccess(response.status === 403 ? "denied" : "error")
           return
         }
+        setReplayEnabled(Boolean(data.replayEnabled))
         setCutoverAccess(
           !data.isAdmin ? "denied" : data.cutoverComplete ? "complete" : "ready",
         )
@@ -509,7 +619,22 @@ const [companyFrom, setCompanyFrom] = useState("")
         setStockSheet((data.stockSheet as StockSheetView | null) ?? null)
       }
       if (data.conversionDate) setConversionDate(data.conversionDate as string)
-      if (data.mode === "closing" || data.mode === "opening") setMode(data.mode)
+      if (data.mode === "closing" || data.mode === "opening" || data.mode === "replay") {
+        setMode(data.mode)
+      }
+      // The replay gate is computed from the saved target, not carried in the
+      // preview response, so the review card always shows what Apply will see.
+      const replay = (data.replay as ReplayView | null | undefined) ?? null
+      setReplayView(replay)
+      if (replay) {
+        setSequenceConfirmed(replay.sequenceConfirmed)
+        setReplayReasons(
+          Object.fromEntries(replay.acknowledged.map((item) => [item.key, item.reason])),
+        )
+      } else {
+        setSequenceConfirmed(false)
+        setReplayReasons({})
+      }
     },
     [forgetSession],
   )
@@ -538,26 +663,38 @@ const [companyFrom, setCompanyFrom] = useState("")
     setEditionInfo(null)
     setEditionProblems([])
     setAcknowledged(false)
+    setReplayView(null)
+    setReplayReasons({})
+    setSequenceConfirmed(false)
   }
 
   /** Shows a preview the server accepted, whichever path produced it. */
-  function showPreview(data: {
-    summary?: unknown
-    preview?: unknown
-    manifest?: unknown
-    edition?: unknown
-    editionProblems?: unknown
-  }) {
+  function showPreview(
+    data: {
+      summary?: unknown
+      preview?: unknown
+      manifest?: unknown
+      edition?: unknown
+      editionProblems?: unknown
+    },
+    session?: string | null,
+  ) {
     const next = (data.summary as Summary | undefined) ?? null
     setSummary(next)
     setPreview((data.preview as Preview | undefined) ?? null)
     setManifestView((data.manifest as ManifestView | null | undefined) ?? null)
     setEditionInfo((data.edition as TallyEditionDisclosure | undefined) ?? null)
     setEditionProblems((data.editionProblems as TallyEditionProblem[] | undefined) ?? [])
-    // A fresh preview is a fresh decision: the acknowledgement never carries
-    // over from the file it was given for.
+    // A fresh preview is a fresh decision: neither acknowledgement carries over
+    // from the file it was given for.
     setAcknowledged(false)
+    setReplayView(null)
+    setReplayReasons({})
+    setSequenceConfirmed(false)
     if (!conversionDate && next?.conversionDate) setConversionDate(next.conversionDate)
+    // The preview answers with a summary, but the replay's gate is computed on
+    // the session read; pull it so the review card opens already judged.
+    if (next?.mode === "replay" && session) void loadSession(session)
   }
 
   async function uploadAndPreview(
@@ -620,6 +757,7 @@ const [companyFrom, setCompanyFrom] = useState("")
 ...(period ? { period } : companyPeriod ? { period: companyPeriod } : {}),
           ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
           mode,
+          ...(mode === "replay" ? { batchExpiry } : {}),
         }),
       })
       const data = await previewResponse.json()
@@ -639,7 +777,7 @@ const [companyFrom, setCompanyFrom] = useState("")
         })
         return
       }
-      showPreview(data)
+      showPreview(data, start.sessionId as string)
       toast({ title: "File read — review the mapping before applying" })
     } finally {
       setBusy("idle")
@@ -882,6 +1020,7 @@ const [companyFrom, setCompanyFrom] = useState("")
           ...(conversionDate ? { conversionDate } : {}),
 ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
           mode,
+          ...(mode === "replay" ? { batchExpiry } : {}),
         }),
       })
       const data = await response.json()
@@ -896,7 +1035,7 @@ const [companyFrom, setCompanyFrom] = useState("")
         })
         return
       }
-      showPreview(data)
+      showPreview(data, session)
       toast({ title: "Files read — review the mapping before applying" })
     } finally {
       setBusy("idle")
@@ -943,6 +1082,7 @@ body: JSON.stringify({
           conversionDate,
           mode,
           ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
+          ...(mode === "replay" ? { batchExpiry } : {}),
         }),
       })
       const previewData = await previewResponse.json()
@@ -950,12 +1090,7 @@ body: JSON.stringify({
         toast({ variant: "destructive", title: previewData.error ?? "Re-preview failed" })
         return
       }
-      setSummary(previewData.summary as Summary)
-      setPreview(previewData.preview as Preview)
-      setManifestView((previewData.manifest as ManifestView | null) ?? null)
-      setEditionInfo((previewData.edition as TallyEditionDisclosure | undefined) ?? null)
-      setEditionProblems((previewData.editionProblems as TallyEditionProblem[] | undefined) ?? [])
-      setAcknowledged(false)
+      showPreview(previewData, sessionId)
       toast({ title: "Cut-over date applied" })
     } finally {
       setBusy("idle")
@@ -975,7 +1110,21 @@ body: JSON.stringify({
         const response = await fetch(`/api/admin/tally/${sessionId}/apply`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ acknowledgeUnverified: acknowledged }),
+          body: JSON.stringify({
+            acknowledgeUnverified: acknowledged,
+            // A replay carries its own decision: the confirmed sequence and a
+            // written reason for every difference the review still shows.
+            ...(summary?.mode === "replay"
+              ? {
+                  acknowledgeReplay: {
+                    sequenceConfirmed,
+                    items: Object.entries(replayReasons)
+                      .map(([key, reason]) => ({ key, reason: reason.trim() }))
+                      .filter((item) => item.reason.length >= REPLAY_REASON_MIN),
+                  },
+                }
+              : {}),
+          }),
         })
         const data = await response.json()
         if (!response.ok) {
@@ -1220,27 +1369,63 @@ Export from Tally, then add the files
               >
                 Closing balances only
               </Button>
+              {replayEnabled && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={mode === "replay" ? "default" : "outline"}
+                  onClick={() => setMode("replay")}
+                  disabled={cutoverAccess !== "ready" || busy !== "idle"}
+                >
+                  Full history — replay
+                </Button>
+              )}
             </div>
             <p className="text-xs text-muted-foreground">
-              {mode === "opening"
-                ? "Tally's opening balances are posted, then the Day Book vouchers are replayed on top."
-                : "The balances the export closes on become the opening in Synapse, and no voucher is posted. Use this when you are starting Synapse from Tally's closing position rather than rebuilding the history."}
+              {mode === "replay"
+                ? "Every stock movement in the export is rebuilt in date order — purchases, sales, returns, stock journals — and the closing position it reaches is compared with Tally's own figures before anything is applied. A difference must be answered before Apply."
+                : mode === "opening"
+                  ? "Tally's opening balances are posted, then the Day Book vouchers are replayed on top."
+                  : "The balances the export closes on become the opening in Synapse, and no voucher is posted. Use this when you are starting Synapse from Tally's closing position rather than rebuilding the history."}
             </p>
+            {mode === "replay" && (
+              <label className="flex items-start gap-2 rounded-md border border-dashed p-3 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={batchExpiry === "not-supplied"}
+                  onChange={(event) =>
+                    setBatchExpiry(event.target.checked ? "not-supplied" : "source")
+                  }
+                  disabled={cutoverAccess !== "ready" || busy !== "idle"}
+                />
+                <span>
+                  This export carries no batch expiry dates
+                  <span className="block text-xs text-muted-foreground">
+                    Imported stock keeps Tally&apos;s batch names but is stored with no expiry,
+                    so it cannot be expiry-tracked, allocated by expiry or recalled by batch
+                    expiry. Stock received after the cut-over is unaffected. Leave this off if
+                    the export states expiries — the import then refuses a receipt without one.
+                  </span>
+                </span>
+              </label>
+            )}
           </div>
 
           <div className="space-y-2 rounded-lg border border-dashed p-4">
             <p className="text-sm font-medium">2. Add the files here</p>
             <p className="text-xs text-muted-foreground">
-              Choose the masters file and every day-book file together. Each one is read once and
-              mapped into Synapse&apos;s accounts, parties, stock and vouchers — the result is listed
-              below, and nothing is posted until you review it and apply.
+              A zipped export package is unpacked and each monthly export inside it is read in
+              turn. Choosing loose files works the same way. Each file is read once and mapped into
+              Synapse&apos;s accounts, parties, stock and vouchers — the result is listed below, and
+              nothing is posted until you review it and apply.
             </p>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="tally-file">
-                Tally XML, workbook or CSV (max {MAX_UPLOAD_MB} MB each; choose several to build the history in slices)
+                Tally XML, a zipped export package, a workbook or CSV (max {MAX_UPLOAD_MB} MB each; choose several to build the history in slices)
               </Label>
               <Input
                 id="tally-file"
@@ -1292,7 +1477,11 @@ Export from Tally, then add the files
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="cutover-date">
-                {mode === "closing" ? "Balances as at" : "Cut-over date"}
+                {mode === "closing"
+                  ? "Balances as at"
+                  : mode === "replay"
+                    ? "History opens on"
+                    : "Cut-over date"}
               </Label>
               <Input
                 id="cutover-date"
@@ -1303,7 +1492,9 @@ Export from Tally, then add the files
               <p className="text-xs text-muted-foreground">
                 {mode === "closing"
                   ? "The export's closing balances are taken as at this date and become the opening in Synapse."
-                  : "Balances are read as at this date. Vouchers before it are flagged, never double-posted."}
+                  : mode === "replay"
+                    ? "The day the replay starts from. It runs to the last date the export itself covers, which is where Tally's closing figures are taken from."
+                    : "Balances are read as at this date. Vouchers before it are flagged, never double-posted."}
               </p>
             </div>
           </div>
@@ -1482,7 +1673,13 @@ Export from Tally, then add the files
               <p className="text-xs text-muted-foreground">
                 {summary.mode === "closing"
                   ? `Balances as at ${summary.conversionDate} — no Tally voucher is posted.`
-                  : `Opening balances as at ${summary.conversionDate}, then ${summary.counts.postedVouchers} vouchers replayed.`}
+                  : summary.mode === "replay"
+                    ? `History rebuilt from ${summary.conversionDate}${
+                        replaySummary ? ` to ${replaySummary.cutoffDate}` : ""
+                      } — ${summary.counts.postedVouchers} vouchers and ${
+                        replaySummary?.movementCount ?? 0
+                      } stock movements.`
+                    : `Opening balances as at ${summary.conversionDate}, then ${summary.counts.postedVouchers} vouchers replayed.`}
               </p>
 
               {editionInfo && (
@@ -1713,10 +1910,222 @@ Export from Tally, then add the files
                 </div>
               )}
 
+              {summary.mode === "replay" && (
+                <div className="space-y-4 rounded-lg border p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="flex items-center gap-2 text-sm font-semibold">
+                      <History className="h-4 w-4" />
+                      Replay — the closing position this rebuilds
+                    </p>
+                    <span
+                      className={`text-xs font-medium ${
+                        sequenceConfirmed && replayUnanswered === 0
+                          ? "text-[#22C55E]"
+                          : "text-[#E8B84B]"
+                      }`}
+                    >
+                      {sequenceConfirmed && replayUnanswered === 0
+                        ? "Every difference answered — ready to apply"
+                        : `${replayUnanswered} unanswered · sequence ${
+                            sequenceConfirmed ? "confirmed" : "not confirmed"
+                          }`}
+                    </span>
+                  </div>
+
+                  <p className="text-xs">
+                    Vouchers are applied in date order, and vouchers on the same day keep the order
+                    Tally exported them. Tally records no time, so no finer order is claimed.
+                    {replaySummary
+                      ? ` ${replaySummary.eventCount.toLocaleString()} events carry ${replaySummary.movementCount.toLocaleString()} stock movements, from ${replaySummary.perDay[0]?.date ?? "—"} to ${replaySummary.cutoffDate}.`
+                      : " The figures this preview reached were not saved with it."}
+                  </p>
+
+                  {!replayView && replaySummary && (
+                    <p className="text-xs text-muted-foreground">
+                      Reading the replay gate from the saved session…
+                    </p>
+                  )}
+
+                  {replaySummary && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Against Tally —{" "}
+                        {(
+                          replaySummary.reconciliation.length - replayOpenRows.length
+                        ).toLocaleString()}{" "}
+                        of {replaySummary.reconciliation.length.toLocaleString()} rows match
+                      </p>
+                      {replayOpenRows.length === 0 ? (
+                        <p className="text-xs">
+                          Every figure the export carries was reached exactly.
+                        </p>
+                      ) : (
+                        <div className="max-h-72 overflow-y-auto">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Row</TableHead>
+                                <TableHead className="text-right">Tally</TableHead>
+                                <TableHead className="text-right">Replay</TableHead>
+                                <TableHead className="text-right">Difference</TableHead>
+                                <TableHead>First divergence</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {replayOpenRows.map((entry) => (
+                                <TableRow key={`${entry.scope}:${entry.key}`}>
+                                  <TableCell className="text-xs">
+                                    {entry.key}
+                                    <span className="ml-1 text-[10px] uppercase text-muted-foreground">
+                                      {entry.scope.replace("_", " ")}
+                                    </span>
+                                    {entry.status === "not-available" && (
+                                      <span className="ml-1 text-[10px] text-[#E8B84B]">
+                                        not in the export
+                                      </span>
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="text-right text-xs">
+                                    {figure(entry.expected)}
+                                  </TableCell>
+                                  <TableCell className="text-right text-xs">
+                                    {figure(entry.actual)}
+                                  </TableCell>
+                                  <TableCell className="text-right text-xs">
+                                    {figure(entry.difference)}
+                                  </TableCell>
+                                  <TableCell className="text-[11px] text-muted-foreground">
+                                    {entry.firstDivergence
+                                      ? `${entry.firstDivergence.date} · ${entry.firstDivergence.sourceId}`
+                                      : "—"}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {replaySummary && replaySummary.perDay.length > 0 && (
+                    <details className="rounded-md border p-3">
+                      <summary className="cursor-pointer text-xs font-medium">
+                        Day by day — {replaySummary.perDay.length} day
+                        {replaySummary.perDay.length === 1 ? "" : "s"} with activity
+                      </summary>
+                      <div className="mt-2 max-h-64 overflow-y-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Date</TableHead>
+                              <TableHead className="text-right">Events</TableHead>
+                              <TableHead className="text-right">Movements</TableHead>
+                              <TableHead>Kinds</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {replaySummary.perDay.map((day) => (
+                              <TableRow key={day.date}>
+                                <TableCell className="text-xs">{day.date}</TableCell>
+                                <TableCell className="text-right text-xs">{day.events}</TableCell>
+                                <TableCell className="text-right text-xs">{day.movements}</TableCell>
+                                <TableCell className="text-xs text-muted-foreground">
+                                  {Object.entries(day.kinds)
+                                    .map(([kind, count]) => `${kind.replace(/_/g, " ")} ${count}`)
+                                    .join(" · ")}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </details>
+                  )}
+
+                  {replayView && replayView.blockers.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Differences to answer — {replayView.blockers.length}
+                      </p>
+                      <div className="max-h-96 space-y-2 overflow-y-auto">
+                        {replayView.blockers.map((blocker) => (
+                          <div
+                            key={blocker.key}
+                            className="space-y-1.5 rounded-md border bg-background/60 p-3"
+                          >
+                            <p className="text-xs font-medium">
+                              {blocker.label}
+                              <span className="ml-1 font-mono text-[10px] uppercase text-muted-foreground">
+                                {blocker.kind}
+                              </span>
+                            </p>
+                            <p className="text-xs text-muted-foreground">{blocker.message}</p>
+                            <Input
+                              value={replayReasons[blocker.key] ?? ""}
+                              onChange={(event) =>
+                                setReplayReasons((current) => ({
+                                  ...current,
+                                  [blocker.key]: event.target.value,
+                                }))
+                              }
+                              placeholder={`Why this is accepted — at least ${REPLAY_REASON_MIN} characters, kept with the cut-over`}
+                              maxLength={REPLAY_REASON_MAX}
+                              disabled={cutoverAccess !== "ready" || busy !== "idle"}
+                              aria-label={`Reason for ${blocker.label}`}
+                            />
+                            {(replayReasons[blocker.key] ?? "").trim().length > 0 &&
+                              !replayAnswered(blocker.key) && (
+                                <p className="text-[11px] text-destructive">
+                                  A reason needs at least {REPLAY_REASON_MIN} characters.
+                                </p>
+                              )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <label className="flex cursor-pointer items-start gap-2">
+                    <input
+                      id="tally-replay-sequence"
+                      type="checkbox"
+                      checked={sequenceConfirmed}
+                      onChange={(event) => setSequenceConfirmed(event.target.checked)}
+                      disabled={cutoverAccess !== "ready" || busy !== "idle"}
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-sm">
+                      I confirm this sequence — Tally date order, same-day vouchers in export
+                      order — is the order this history should be rebuilt in.
+                    </span>
+                  </label>
+
+                  {sessionId && (
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="outline" size="sm" asChild>
+                        <a href={`/api/admin/tally/${sessionId}/replay-report`} download>
+                          <Download className="h-4 w-4" /> Replay report (CSV)
+                        </a>
+                      </Button>
+                      <Button variant="outline" size="sm" asChild>
+                        <a href={`/api/admin/tally/${sessionId}/replay-report?format=json`} download>
+                          <Download className="h-4 w-4" /> Everything (JSON)
+                        </a>
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="flex flex-wrap items-end gap-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="cutover-date-2">
-                    {mode === "closing" ? "Balances as at" : "Cut-over date"}
+                    {mode === "closing"
+                      ? "Balances as at"
+                      : mode === "replay"
+                        ? "History opens on"
+                        : "Cut-over date"}
                   </Label>
                   <Input
                     id="cutover-date-2"
@@ -1960,6 +2369,12 @@ Export from Tally, then add the files
                     Tick the completeness acknowledgement in Step 2 before applying.
                   </span>
                 )}
+                {replayNeedsReview && (
+                  <span className="self-center text-xs text-[#E8B84B]">
+                    Confirm the replay sequence and answer every difference in Step 2 before
+                    applying.
+                  </span>
+                )}
               </div>
 
               {progress && (
@@ -1968,6 +2383,8 @@ Export from Tally, then add the files
                     <p className="text-sm font-medium">
                       {STAGE_LABEL[progress.stage] ?? progress.stage}
                       {progress.stage === "journals" && ` · chunk ${progress.offset + 1} of ${summary.chunkCount}`}
+                      {progress.stage === "stock-history" &&
+                        ` · chunk ${progress.offset + 1} of ${summary.replay?.movementChunkCount ?? 0}`}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       Updated {new Date(progress.updatedAt).toLocaleString()}
@@ -1981,6 +2398,12 @@ Export from Tally, then add the files
                     <Stat label="Sales" value={String(progress.counts.sales)} />
                     <Stat label="Purchases" value={String(progress.counts.purchases)} />
                   </div>
+                  {summary.mode === "replay" && (
+                    <div className="mt-3 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                      <Stat label="Stock movements" value={String(progress.counts.stockMovements ?? 0)} />
+                      <Stat label="Already applied" value={String(progress.counts.movementsReplayed ?? 0)} />
+                    </div>
+                  )}
                   {progress.failures.length > 0 && (
                     <div className="mt-3">
                       <p className="text-sm font-medium text-[#E8B84B]">

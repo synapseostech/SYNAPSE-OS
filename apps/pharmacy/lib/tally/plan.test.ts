@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest"
 
 import type { TallyCutoverPlan } from "@synapse/db/tally-normalise"
-import { loadStagePlan, readTallyPlanSummary, writeTallyPlan } from "./plan"
+import {
+  loadStagePlan,
+  readTallyPlanSummary,
+  readTallyReplayTarget,
+  writeTallyPlan,
+} from "./plan"
 import type { TallyStorageClient } from "./storage"
 
 const TENANT = "11111111-1111-1111-1111-111111111111"
@@ -117,6 +122,21 @@ describe("tally plan persistence", () => {
     expect(loaded.plan.exceptions).toEqual([])
   })
 
+  it("hands the journals stage the replay cost each sale line moved at", async () => {
+    const { client } = memoryStorage()
+
+    await writeTallyPlan(client, TENANT, SESSION, { ...truncatedPlan(), mode: "replay" }, "xml")
+    const target = await readTallyReplayTarget(client, TENANT, SESSION)
+    expect(target).not.toBeNull()
+
+    // The sale mirror writes the cost the replay derived, and that figure
+    // lives only in the saved target, so the stage that posts sale lines has
+    // to be given it.
+    const loaded = await loadStagePlan(client, TENANT, SESSION, "journals", 0)
+    expect(loaded.replay?.preparedAt).toBe(target?.preparedAt)
+    expect(loaded.replay?.costs).toEqual(target?.costs)
+  })
+
   it("chunks a closing cut-over's sales even though it posts no vouchers", async () => {
     const { client } = memoryStorage()
     const plan = {
@@ -146,5 +166,109 @@ describe("tally plan persistence", () => {
     expect(summary.chunkCount).toBe(1)
     expect(loaded.chunk?.vouchers).toEqual([])
     expect(loaded.chunk?.sales.map((sale) => sale.sourceId)).toEqual(["test-pharmacy:sale-guid"])
+  })
+})
+
+describe("tally replay plan persistence", () => {
+  function replayPlan(): TallyCutoverPlan {
+    const base = truncatedPlan()
+    return {
+      ...base,
+      mode: "replay",
+      cutoffDate: "2026-12-31",
+      ordering: "date-then-export-order",
+      stockItems: [
+        {
+          sourceName: "Test Item A",
+          sku: "TEST-A",
+          name: "Test Item A",
+          unit: "Strip",
+          closingQuantity: 29,
+          closingValue: 2900,
+          batches: [],
+        },
+      ],
+      stock: {
+        openingValue: null,
+        closingValue: 2900,
+        itemsWithOpeningValue: 0,
+        itemsWithClosingValue: 1,
+        itemCount: 1,
+      },
+      movements: [
+        {
+          movementId: "purchase",
+          sourceId: "purchase",
+          kind: "purchase",
+          movementKind: "purchase_in",
+          date: "2026-01-10",
+          sourceOrder: 0,
+          lineIndex: 0,
+          batchIndex: 0,
+          stockItemName: "Test Item A",
+          quantityDelta: 20,
+          batchNumber: "B-002",
+          expiryDate: "2027-03-31",
+          rate: 100,
+          amount: 2000,
+          allocation: "explicit",
+        },
+        {
+          movementId: "physical",
+          sourceId: "physical",
+          kind: "stock_journal",
+          movementKind: "physical_adjust",
+          date: "2026-01-25",
+          sourceOrder: 1,
+          lineIndex: 0,
+          batchIndex: 0,
+          stockItemName: "Test Item A",
+          quantityDelta: 29,
+          batchNumber: "B-001",
+          expiryDate: "2027-02-28",
+          rate: 100,
+          amount: 2900,
+          allocation: "explicit",
+        },
+      ],
+    }
+  }
+
+  it("stores the movements and the closing target a replay apply reads", async () => {
+    const { client, objects } = memoryStorage()
+
+    const summary = await writeTallyPlan(client, TENANT, SESSION, replayPlan(), "xml")
+
+    expect(summary.replay).toMatchObject({
+      cutoffDate: "2026-12-31",
+      ordering: "date-then-export-order",
+      movementCount: 2,
+      movementChunkCount: 1,
+    })
+    expect([...objects.keys()].some((path) => path.endsWith("plan-movement-chunk-000.json"))).toBe(
+      true,
+    )
+    expect([...objects.keys()].some((path) => path.endsWith("plan-replay-target.json"))).toBe(true)
+
+    const history = await loadStagePlan(client, TENANT, SESSION, "stock-history", 0)
+    expect(history.plan.movements?.map((entry) => entry.movementId)).toEqual([
+      "purchase",
+      "physical",
+    ])
+
+    const closing = await loadStagePlan(client, TENANT, SESSION, "replay-closing", 0)
+    expect(closing.replay?.cutoffDate).toBe("2026-12-31")
+    expect(
+      closing.replay?.simulated.items.find((item) => item.stockItemName === "Test Item A")
+        ?.quantity,
+    ).toBe(29)
+  })
+
+  it("adds no replay block to an opening plan", async () => {
+    const { client } = memoryStorage()
+
+    const summary = await writeTallyPlan(client, TENANT, SESSION, truncatedPlan(), "xml")
+
+    expect(summary.replay).toBeUndefined()
   })
 })

@@ -287,6 +287,32 @@ describe("GET /api/admin/reports?type=profit", () => {
     expect(r.body.summary.totalCost).toBe(700)
   })
 
+  it("costs a mirrored Tally sale at the batch rate it moved at, not today's product cost", async () => {
+    m.ledgerSales = [
+      {
+        id: "tx-1",
+        status: "COMPLETED",
+        items: [
+          {
+            id: "li-1",
+            quantity: 5,
+            unitPrice: 400,
+            costPrice: 120,
+            totalPrice: 2000,
+            product: { id: "p-1", name: "Amoxicillin", sku: "AMX", category: "Antibiotics", cost_price: 380 },
+            batch: null,
+          },
+        ],
+      },
+    ]
+
+    const r = await getReport("type=profit&period=today")
+    expect(r.status).toBe(200)
+    expect(r.body.summary.totalRevenue).toBe(2000)
+    expect(r.body.summary.totalCost).toBe(600)
+    expect(r.body.summary.grossProfit).toBe(1400)
+  })
+
   it("leaves a product with no category in Uncategorized", async () => {
     m.ledgerSales = [
       {

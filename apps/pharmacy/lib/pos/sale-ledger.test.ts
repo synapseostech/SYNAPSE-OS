@@ -10,11 +10,14 @@ const TX_COLUMNS = new Set([
 const selects: Record<string, string> = {}
 const ilikeCalls: Array<{ table: string; column: string; pattern: string }> = []
 let posRows: Record<string, unknown>[] = []
+let txRows: Record<string, unknown>[] = [
+  { id: "t1", transaction_no: "TX-1", status: "COMPLETED", total_amount: 1200, discount: 200, tax: 0, net_amount: 1000, created_at: "2026-10-02T10:00:00Z", items: [] },
+]
 
 function chain(table: string) {
   const rows =
     table === "pharmacy_transactions"
-      ? [{ id: "t1", transaction_no: "TX-1", status: "COMPLETED", total_amount: 1200, discount: 200, tax: 0, net_amount: 1000, created_at: "2026-10-02T10:00:00Z", items: [] }]
+      ? txRows
       : table === "pharmacy_pos_sales"
         ? posRows
         : []
@@ -44,6 +47,38 @@ describe("listLedgerSalesForHistory", () => {
     const order = rows.filter((r) => r.source === "order")
     expect(order).toHaveLength(1)
     expect(order[0]).toMatchObject({ transactionNo: "TX-1", netAmount: 1000, subtotal: 1200, discount: 200 })
+  })
+
+  it("carries the cost frozen on a mirrored line, so history reports its own cost", async () => {
+    txRows = [
+      {
+        id: "t1",
+        transaction_no: "TX-TALLY-1",
+        status: "COMPLETED",
+        total_amount: 2000,
+        discount: 0,
+        tax: 0,
+        net_amount: 2000,
+        created_at: "2026-02-01T10:00:00Z",
+        items: [
+          {
+            id: "li-1",
+            quantity: 5,
+            unit_price: 400,
+            cost_price: 120,
+            total_price: 2000,
+            product: { id: "p-1", name: "Amoxicillin", sku: "AMX", cost_price: 380 },
+            batch: null,
+          },
+        ],
+      },
+    ]
+
+    const rows = await listLedgerSalesForHistory({ tenantId: "tenant-1" })
+    expect(rows[0].items[0]).toMatchObject({ costPrice: 120, quantity: 5, totalPrice: 2000 })
+    txRows = [
+      { id: "t1", transaction_no: "TX-1", status: "COMPLETED", total_amount: 1200, discount: 200, tax: 0, net_amount: 1000, created_at: "2026-10-02T10:00:00Z", items: [] },
+    ]
   })
 })
 

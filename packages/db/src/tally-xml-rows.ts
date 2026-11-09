@@ -49,6 +49,16 @@ const NAMED_ENTITIES: Record<string, string> = {
   apos: "'",
 }
 
+/** What the parser had to change to make the source text storable. */
+export type TallyXmlParseStats = {
+  /**
+   * Control characters written as entities (`&#4;` and the like) and replaced
+   * with a space. Non-zero means some stored text is not byte-for-byte what
+   * Tally wrote, and the review screen says so.
+   */
+  controlCharactersStripped: number
+}
+
 export type TallyXmlRowWarning =
   | "TAG_DEPTH_EXCEEDED"
   | "RECORD_NODE_LIMIT"
@@ -143,6 +153,10 @@ export type TallyInventoryLine = {
   rate?: number
   amount: number
   godown?: string
+  /** Tally's own per-line direction: `true` is a debit, so stock moved in. */
+  deemedPositive?: boolean
+  /** Which list the line came from; stock journals are the only vouchers that set it. */
+  listSide?: "in" | "out"
   batches: TallyBatchAllocation[]
   ledgers: TallyLedgerLine[]
 }
@@ -177,13 +191,27 @@ export type TallyVoucher = {
   remoteId?: string
   type: string
   number?: string
+  /** The date the voucher is posted on. */
   date?: string
+  /**
+   * The date the transaction takes legal effect, which Tally keeps apart from
+   * the posting date. Absent when the export does not state one; callers then
+   * use `date`.
+   */
+  effectiveDate?: string
   narration?: string
   partyLedgerName?: string
   currency?: string
+  /** The Tally user who entered the voucher. */
+  enteredBy?: string
+  /** The cost centre the voucher is posted to, when it states one. */
+  costCentre?: string
   isCancelled: boolean
   ledgerLines: TallyLedgerLine[]
   inventoryLines: TallyInventoryLine[]
+  /** A stock journal's two sides, when the export states them. */
+  sourceGodown?: string
+  destinationGodown?: string
   /** Which of TALLY_LINKAGE_TAGS this voucher carried, in that order. */
   linkage?: string[]
 }
@@ -208,6 +236,8 @@ export type TallyXmlDocument = {
   godowns: TallyGodown[]
   vouchers: TallyVoucher[]
   warnings: TallyXmlRowWarning[]
+  /** Absent only on documents assembled by callers rather than parsed. */
+  stats?: TallyXmlParseStats
   /** Set when the parser stopped early; the document is what it managed to read. */
   truncated?: TallyXmlTruncation
 }
@@ -232,19 +262,45 @@ function addWarning(warnings: TallyXmlRowWarning[], warning: TallyXmlRowWarning)
   if (warnings.length < MAX_WARNINGS && !warnings.includes(warning)) warnings.push(warning)
 }
 
-function decodeEntities(raw: string, warnings: TallyXmlRowWarning[]): string {
+/**
+ * Tally separates some composite fields with `&#4;`, a control character that
+ * would otherwise reach the database inside a ledger name or an address. It is
+ * replaced with a space and counted, because a value that was rewritten must be
+ * visible to whoever reviews the import rather than quietly cleaned.
+ */
+function isStrippedControl(code: number): boolean {
+  return code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d
+}
+
+function decodeEntities(
+  raw: string,
+  warnings: TallyXmlRowWarning[],
+  stats: TallyXmlParseStats,
+): string {
   return raw.replace(/&(#x?[0-9A-Fa-f]+|[A-Za-z][\w.-]*);/g, (match, body: string) => {
     if (body.startsWith("#x") || body.startsWith("#X")) {
       const code = Number.parseInt(body.slice(2), 16)
-      return Number.isFinite(code) && code > 0 && code <= 0x10ffff
-        ? String.fromCodePoint(code)
-        : (addWarning(warnings, "UNKNOWN_ENTITY"), match)
+      if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) {
+        addWarning(warnings, "UNKNOWN_ENTITY")
+        return match
+      }
+      if (isStrippedControl(code)) {
+        stats.controlCharactersStripped += 1
+        return " "
+      }
+      return String.fromCodePoint(code)
     }
     if (body.startsWith("#")) {
       const code = Number.parseInt(body.slice(1), 10)
-      return Number.isFinite(code) && code > 0 && code <= 0x10ffff
-        ? String.fromCodePoint(code)
-        : (addWarning(warnings, "UNKNOWN_ENTITY"), match)
+      if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) {
+        addWarning(warnings, "UNKNOWN_ENTITY")
+        return match
+      }
+      if (isStrippedControl(code)) {
+        stats.controlCharactersStripped += 1
+        return " "
+      }
+      return String.fromCodePoint(code)
     }
     const named = NAMED_ENTITIES[body]
     if (named !== undefined) return named
@@ -253,7 +309,11 @@ function decodeEntities(raw: string, warnings: TallyXmlRowWarning[]): string {
   })
 }
 
-function parseAttributes(raw: string, warnings: TallyXmlRowWarning[]): Record<string, string> {
+function parseAttributes(
+  raw: string,
+  warnings: TallyXmlRowWarning[],
+  stats: TallyXmlParseStats,
+): Record<string, string> {
   const attrs: Record<string, string> = {}
   let match: RegExpExecArray | null
   ATTR_RE.lastIndex = 0
@@ -261,7 +321,7 @@ function parseAttributes(raw: string, warnings: TallyXmlRowWarning[]): Record<st
     const attrName = match[1]
     if (!attrName) continue
     const value = match[2] ?? match[3] ?? ""
-    attrs[attrName.toUpperCase()] = decodeEntities(value, warnings).slice(0, MAX_TEXT)
+    attrs[attrName.toUpperCase()] = decodeEntities(value, warnings, stats).slice(0, MAX_TEXT)
   }
   if (raw.trim().length > 0 && Object.keys(attrs).length === 0) {
     addWarning(warnings, "MALFORMED_ATTRIBUTE")
@@ -449,7 +509,11 @@ function readBatch(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyBatchAll
   }
 }
 
-function readInventoryLine(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyInventoryLine | undefined {
+function readInventoryLine(
+  node: XmlNode,
+  warnings: TallyXmlRowWarning[],
+  listSide?: "in" | "out",
+): TallyInventoryLine | undefined {
   const stockItemName =
     textOf(node, "STOCKITEMNAME") ?? textOf(node, "STOCKITEM") ?? attrOf(node, "STOCKITEMNAME")
   if (!stockItemName) return undefined
@@ -461,6 +525,10 @@ function readInventoryLine(node: XmlNode, warnings: TallyXmlRowWarning[]): Tally
   const rateRaw = textOf(node, "RATE")
   const rate = parseLeadingNumber(rateRaw)
   const amount = parseTallyAmount(textOf(node, "AMOUNT")) ?? 0
+
+  const deemedRaw = textOf(node, "ISDEEMEDPOSITIVE")?.toLowerCase()
+  const deemedPositive =
+    deemedRaw === "yes" ? true : deemedRaw === "no" ? false : undefined
 
   const ledgers = [
     ...childrenNamed(node, "LEDGERENTRIES.LIST"),
@@ -485,6 +553,8 @@ function readInventoryLine(node: XmlNode, warnings: TallyXmlRowWarning[]): Tally
     rate,
     amount: Math.abs(amount),
     godown: textOf(node, "GODOWNNAME"),
+    deemedPositive,
+    listSide,
     batches: childrenNamed(node, "BATCHALLOCATIONS.LIST").map((batch) => readBatch(batch, warnings)),
     ledgers,
   }
@@ -499,6 +569,9 @@ function readVoucher(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyVouche
   const dateRaw = textOf(node, "DATE")
   const date = dateRaw ? parseTallyRowDate(dateRaw) : undefined
   if (dateRaw && !date) addWarning(warnings, "DATE_UNREADABLE")
+  const effectiveRaw = textOf(node, "EFFECTIVEDATE")
+  const effectiveDate = effectiveRaw ? parseTallyRowDate(effectiveRaw) : undefined
+  if (effectiveRaw && !effectiveDate) addWarning(warnings, "DATE_UNREADABLE")
 
   const ledgerEntries = [
     ...childrenNamed(node, "LEDGERENTRIES.LIST"),
@@ -508,31 +581,47 @@ function readVoucher(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyVouche
     .map((entry) => readLedgerLine(entry, warnings))
     .filter((entry): entry is TallyLedgerLine => entry !== undefined)
 
+  const inventorySources: Array<{ node: XmlNode; side?: "in" | "out" }> = [
+    ...childrenNamed(node, "ALLINVENTORYENTRIES.LIST").map((entry) => ({ node: entry })),
+    ...childrenNamed(node, "INVENTORYENTRIES.LIST").map((entry) => ({ node: entry })),
+    ...childrenNamed(node, "INVENTORYALLOCATIONS.LIST").map((entry) => ({ node: entry })),
+    // A stock journal states each side through the list that holds the line.
+    // Builds differ on the tag, so both spellings are read.
+    ...childrenNamed(node, "INVENTORYENTRIESOUT.LIST").map((entry) => ({ node: entry, side: "out" as const })),
+    ...childrenNamed(node, "INVENTORYENTRIESOUTLIST.LIST").map((entry) => ({ node: entry, side: "out" as const })),
+    ...childrenNamed(node, "INVENTORYENTRIESIN.LIST").map((entry) => ({ node: entry, side: "in" as const })),
+    ...childrenNamed(node, "INVENTORYENTRIESINLIST.LIST").map((entry) => ({ node: entry, side: "in" as const })),
+    // A purchase writes its stock lines under the ledger entry they post to,
+    // not at the top of the voucher.
+    ...ledgerEntries.flatMap((entry) => [
+      ...childrenNamed(entry, "INVENTORYALLOCATIONS.LIST"),
+      ...childrenNamed(entry, "ALLINVENTORYENTRIES.LIST"),
+      ...childrenNamed(entry, "INVENTORYENTRIES.LIST"),
+    ]).map((entry) => ({ node: entry })),
+  ]
+
   return {
     guid: textOf(node, "GUID") ?? attrOf(node, "GUID"),
     remoteId: textOf(node, "REMOTEID") ?? attrOf(node, "REMOTEID") ?? textOf(node, "MASTERID"),
     type,
     number: textOf(node, "VOUCHERNUMBER") ?? textOf(node, "VCHNO"),
     date,
+    effectiveDate,
     narration: textOf(node, "NARRATION"),
     partyLedgerName: textOf(node, "PARTYLEDGERNAME") ?? textOf(node, "PARTYNAME"),
     currency: textOf(node, "CURRENCYNAME"),
+    enteredBy: textOf(node, "ENTEREDBY"),
+    costCentre:
+      (textOf(node, "ISCOSTCENTRE") ?? "").toLowerCase() === "yes"
+        ? textOf(node, "COSTCENTRENAME")
+        : undefined,
     isCancelled: (textOf(node, "ISCANCELLED") ?? "").toLowerCase() === "yes",
     ledgerLines,
-    inventoryLines: [
-      ...childrenNamed(node, "ALLINVENTORYENTRIES.LIST"),
-      ...childrenNamed(node, "INVENTORYENTRIES.LIST"),
-      ...childrenNamed(node, "INVENTORYALLOCATIONS.LIST"),
-      // A purchase writes its stock lines under the ledger entry they post to,
-      // not at the top of the voucher.
-      ...ledgerEntries.flatMap((entry) => [
-        ...childrenNamed(entry, "INVENTORYALLOCATIONS.LIST"),
-        ...childrenNamed(entry, "ALLINVENTORYENTRIES.LIST"),
-        ...childrenNamed(entry, "INVENTORYENTRIES.LIST"),
-      ]),
-    ]
-      .map((entry) => readInventoryLine(entry, warnings))
+    inventoryLines: inventorySources
+      .map((entry) => readInventoryLine(entry.node, warnings, entry.side))
       .filter((entry): entry is TallyInventoryLine => entry !== undefined),
+    sourceGodown: textOf(node, "SOURCEGODOWNNAME"),
+    destinationGodown: textOf(node, "DESTINATIONGODOWNNAME"),
     linkage: collectLinkageTags(node),
   }
 }
@@ -661,6 +750,13 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
 
   const text = stripDelimited(withoutComments, "<?", "?>")
 
+  // Tally answers every request with a status. A status other than 1 is the
+  // exporter saying it failed; its body may still look like a well-formed
+  // envelope, so it must be refused rather than read as an empty export.
+  const header = /<HEADER[\s\S]*?<\/HEADER>/i.exec(text)
+  const status = header ? /<STATUS>\s*([^<]*?)\s*<\/STATUS>/i.exec(header[0]) : null
+  if (status && status[1] !== "1") throw new Error("MIGRATION_XML_STATUS_FAILED")
+
   // Extract company name from SVCURRENTCOMPANY in STATICVARIABLES (common in daybook exports)
   let extractedCompany: string | undefined
   const staticVarsMatch = text.match(/<STATICVARIABLES[^>]*>([\s\S]*?)<\/STATICVARIABLES>/i)
@@ -671,6 +767,7 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
   }
 
   const warnings: TallyXmlRowWarning[] = []
+  const stats: TallyXmlParseStats = { controlCharactersStripped: 0 }
   const document: TallyXmlDocument = {
     financialPeriod: {},
     groups: [],
@@ -681,6 +778,7 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
     godowns: [],
     vouchers: [],
     warnings,
+    stats,
     company: extractedCompany,
   }
 
@@ -741,7 +839,7 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
     if (capturing && gap.trim()) {
       const current = nodeStack[nodeStack.length - 1]
       if (current && current.text.length < MAX_TEXT) {
-        current.text += decodeEntities(gap, warnings).slice(0, MAX_TEXT - current.text.length)
+        current.text += decodeEntities(gap, warnings, stats).slice(0, MAX_TEXT - current.text.length)
       }
     }
     lastIndex = TAG_RE.lastIndex
@@ -792,7 +890,7 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
       }
       const node: XmlNode = {
         name,
-        attrs: parseAttributes(match[3] ?? "", warnings),
+        attrs: parseAttributes(match[3] ?? "", warnings, stats),
         text: "",
         children: [],
       }

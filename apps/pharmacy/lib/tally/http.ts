@@ -23,6 +23,8 @@ const STATUS_BY_CODE: Record<string, number> = {
   TALLY_CONSOLIDATION_COMPANY_MISSING: 422,
   TALLY_CONSOLIDATION_COMPANY_MISMATCH: 422,
   TALLY_CONSOLIDATION_TOO_LARGE: 413,
+  TALLY_REPLAY_CLOSING_MISMATCH: 409,
+  TALLY_REPLAY_CLOSING_READ_FAILED: 500,
 }
 
 const MESSAGE_BY_CODE: Record<string, string> = {
@@ -38,6 +40,10 @@ const MESSAGE_BY_CODE: Record<string, string> = {
     "The files came from more than one Tally company. Import one company at a time — remove the files from the other company and preview again.",
   TALLY_CONSOLIDATION_TOO_LARGE:
     "The files together hold more vouchers than one import can carry. Split the export into shorter date ranges and import them in turn.",
+  TALLY_REPLAY_CLOSING_MISMATCH:
+    "The imported figures do not match the position the review showed, so this import is not finished. The differences listed name each figure; correct the source or start a new import rather than completing this one.",
+  TALLY_REPLAY_CLOSING_READ_FAILED:
+    "The applied position could not be read back, so the closing check could not run. Apply again once the database is reachable.",
 }
 
 /**

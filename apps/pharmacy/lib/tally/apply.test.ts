@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest"
 import type {
   TallyCutoverAccount,
+  TallyCutoverMovement,
   TallyCutoverPlan,
   TallyCutoverPurchase,
   TallyCutoverSale,
   TallyCutoverVoucher,
 } from "@synapse/db/tally-normalise"
+import type { TallyReplayCheckpoint } from "@synapse/db/tally-replay-rpc"
 import { __test__, applyTallyChunk, emptyProgress, type TallyApplyProgress } from "./apply"
-import { isTallyMirrorNote, type TallyApplyDb } from "./types"
+import { isTallyMirrorNote, type TallyApplyDb, type TallyReplayTarget } from "./types"
 
 type Operation = {
   table: string
@@ -26,6 +28,7 @@ type Chain = {
   update: (payload: unknown) => Chain
   delete: () => Chain
   eq: (column: string, value: unknown) => Chain
+  is: (column: string, value: unknown) => Chain
   ilike: (column: string, value: unknown) => Chain
   limit: (count?: number) => Chain
   maybeSingle: () => Promise<Result>
@@ -66,6 +69,10 @@ function fakeDb(handler: (operation: Operation) => Result | undefined = () => un
         return chain
       },
       eq: (column: string, value: unknown) => {
+        operation.filters.push([column, value])
+        return chain
+      },
+      is: (column: string, value: unknown) => {
         operation.filters.push([column, value])
         return chain
       },
@@ -425,6 +432,66 @@ describe("reporting mirrors", () => {
       expect.objectContaining({ transaction_id: "transaction-1", product_id: "product-1" }),
     ])
     expect(result.progress.counts.sales).toBe(1)
+  })
+
+  it("writes the cost the replay derived for each sale line", async () => {
+    const { db, operations } = mirrorDb({ upsertData: [{ id: "transaction-1" }] })
+    const line = {
+      stockItemName: "Test Item A",
+      quantity: 2,
+      unitPrice: 50,
+      lineTotal: 100,
+      lineIndex: 0,
+    }
+    await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ mode: "replay", sales: [sale({ items: [line] })] }),
+      progress: journalsProgress(),
+      chunk: { vouchers: [], sales: [sale({ items: [line] })], purchases: [] },
+      totalChunks: 2,
+      sessionId: "session-1",
+      replay: true,
+      replayTarget: {
+        costs: { "company-guid:voucher-1:L0": { amount: 50, complete: true } },
+      } as TallyReplayTarget,
+    })
+
+    const items = operations.find(
+      (operation) =>
+        operation.table === "pharmacy_transaction_items" && operation.action === "insert",
+    )
+    expect(items?.payload).toEqual([expect.objectContaining({ cost_price: 25 })])
+  })
+
+  it("leaves the cost unknown when the replay could not cost the line", async () => {
+    const { db, operations } = mirrorDb({ upsertData: [{ id: "transaction-1" }] })
+    const line = {
+      stockItemName: "Test Item A",
+      quantity: 2,
+      unitPrice: 50,
+      lineTotal: 100,
+      lineIndex: 0,
+    }
+    await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ mode: "replay", sales: [sale({ items: [line] })] }),
+      progress: journalsProgress(),
+      chunk: { vouchers: [], sales: [sale({ items: [line] })], purchases: [] },
+      totalChunks: 2,
+      sessionId: "session-1",
+      replay: true,
+      replayTarget: {
+        costs: { "company-guid:voucher-1:L0": { amount: 50, complete: false } },
+      } as TallyReplayTarget,
+    })
+
+    const items = operations.find(
+      (operation) =>
+        operation.table === "pharmacy_transaction_items" && operation.action === "insert",
+    )
+    expect(items?.payload).toEqual([expect.objectContaining({ cost_price: null })])
   })
 
   it("leaves a complete sale mirror alone on replay", async () => {
@@ -827,6 +894,834 @@ describe("reporting mirrors", () => {
           operation.table === "pharmacy_transactions" && operation.action === "upsert",
       ),
     ).toBe(true)
+  })
+})
+
+function stockItem(overrides: Partial<TallyCutoverPlan["stockItems"][number]> = {}) {
+  return {
+    sourceName: "Test Item A",
+    sku: "TALLY-1",
+    name: "Test Item A",
+    batches: [],
+    ...overrides,
+  }
+}
+
+function movement(overrides: Partial<TallyCutoverMovement> = {}): TallyCutoverMovement {
+  return {
+    movementId: "company-guid:voucher-2:L0:B0",
+    sourceId: "company-guid:voucher-2",
+    kind: "purchase",
+    movementKind: "purchase_in",
+    date: "2026-04-02",
+    sourceOrder: 1,
+    lineIndex: 0,
+    batchIndex: 0,
+    stockItemName: "Test Item A",
+    quantityDelta: 5,
+    batchNumber: "B-1",
+    expiryDate: "2026-12-31",
+    rate: 10,
+    amount: 50,
+    allocation: "explicit",
+    ...overrides,
+  }
+}
+
+function replayTarget(overrides: Partial<TallyReplayTarget> = {}): TallyReplayTarget {
+  return {
+    preparedAt: "2026-04-01T00:00:00.000Z",
+    conversionDate: "2026-04-01",
+    cutoffDate: "2026-09-30",
+    ordering: "date-then-export-order",
+    eventCount: 0,
+    movementCount: 0,
+    perDay: [],
+    reconciliation: [],
+    totals: { match: 0, difference: 0, notAvailable: 0 },
+    blocking: 0,
+    warnings: 0,
+    findings: [],
+    simulated: {
+      accounts: {},
+      items: [],
+      sourceIdsByItem: {},
+      sourceIdsByAccount: {},
+      eventCount: 0,
+    },
+    ...overrides,
+  }
+}
+
+/** A replay plan always carries the stock items the movements name. */
+function replayPlan(movements: TallyCutoverMovement[], overrides: Partial<TallyCutoverPlan> = {}) {
+  return plan({ stockItems: [stockItem()], movements, ...overrides })
+}
+
+type StoredBatch = { quantity: number; expiryDate: string | null; receivedDate: string }
+
+/**
+ * A stand-in for `apply_pharmacy_tally_replay_movement` that keeps the one
+ * promise the write path depends on: a movement whose provenance is already
+ * recorded moves no stock. The real function does this inside one transaction;
+ * this fake validates every allocation first and only then mutates, so a
+ * refusal leaves the state untouched in the same way.
+ */
+function replayDb(seed?: {
+  batches?: Array<[string, StoredBatch]>
+  quantity?: number
+  accounts?: Array<{ code: string; debit: number; credit: number }>
+  /** Makes the checkpoint RPC refuse, to prove a close cannot outrun it. */
+  checkpointError?: string
+}) {
+  const state = {
+    products: new Map<string, number>([["product-1", seed?.quantity ?? 0]]),
+    batches: new Map<string, StoredBatch>(seed?.batches ?? []),
+    seen: new Set<string>(),
+    calls: [] as Array<Record<string, unknown>>,
+    audits: [] as Array<Record<string, unknown>>,
+    /** Keyed like the RPC: one checkpoint per company and cutoff. */
+    checkpoints: new Map<string, Record<string, unknown>>(),
+    checkpointCalls: [] as Array<Record<string, unknown>>,
+  }
+
+  const { db, operations } = fakeDb((operation) => {
+    if (operation.action === "rpc" && operation.table === "rpc:apply_pharmacy_tally_replay_movement") {
+      const args = operation.payload as Record<string, any>
+      const allocations = (args.p_allocations ?? []) as Array<Record<string, any>>
+      // Keyed like the migration: a voucher line with several batch
+      // allocations is several movements, so the barrier names the movement's
+      // first allocation rather than the whole line.
+      const firstBatchIndex = Number(allocations[0]?.batch_index ?? 0)
+      const key = `${args.p_source_type}|${args.p_source_id}|${args.p_line_index}|${firstBatchIndex}`
+      const productId = String(args.p_product_id)
+
+      if (state.seen.has(key)) {
+        return {
+          data: {
+            replayed: true,
+            movement_id: args.p_movement_id,
+            allocations: [],
+            product_quantity_after: null,
+          },
+          error: null,
+        }
+      }
+
+      state.calls.push(args)
+
+      const drafts = allocations.map((allocation) => {
+        const batchKey = `${productId}|${allocation.batch_number}`
+        const existing = state.batches.get(batchKey)
+        return {
+          allocation,
+          batchKey,
+          existing,
+          delta: Number(allocation.quantity_delta),
+          quantity: (existing?.quantity ?? 0) + Number(allocation.quantity_delta),
+        }
+      })
+
+      const refused = drafts.find((draft) => draft.quantity < 0 && args.p_allow_negative !== true)
+      if (refused) {
+        return {
+          data: null,
+          error: {
+            message: `REPLAY_NEGATIVE_STOCK: batch ${refused.allocation.batch_number} would fall to ${refused.quantity}.`,
+          },
+        }
+      }
+
+      const applied = drafts.map((draft) => {
+        state.batches.set(draft.batchKey, {
+          quantity: draft.quantity,
+          expiryDate: (draft.allocation.expiry_date as string | null) ?? null,
+          receivedDate: draft.existing?.receivedDate ?? String(args.p_movement_date),
+        })
+        return {
+          batch_id: `batch:${draft.batchKey}`,
+          batch_number: draft.allocation.batch_number,
+          batch_index: draft.allocation.batch_index,
+          quantity_delta: draft.delta,
+          quantity_after: draft.quantity,
+        }
+      })
+      const total = drafts.reduce((sum, draft) => sum + draft.delta, 0)
+      state.products.set(productId, (state.products.get(productId) ?? 0) + total)
+      state.seen.add(key)
+
+      return {
+        data: {
+          replayed: false,
+          movement_id: args.p_movement_id,
+          allocations: applied,
+          product_quantity_after: state.products.get(productId),
+        },
+        error: null,
+      }
+    }
+
+    if (
+      operation.action === "rpc" &&
+      operation.table === "rpc:record_pharmacy_tally_replay_checkpoint"
+    ) {
+      const args = operation.payload as Record<string, any>
+      state.checkpointCalls.push(args)
+      if (seed?.checkpointError) {
+        return { data: null, error: { message: seed.checkpointError } }
+      }
+      const key = `${String(args.p_company_key)}|${String(args.p_through_date)}`
+      const existing = state.checkpoints.get(key)
+      if (existing) return { data: { ...existing, created: false }, error: null }
+      const row = {
+        id: `checkpoint-${state.checkpoints.size + 1}`,
+        previous_id: null,
+        through_date: args.p_through_date,
+        company_key: args.p_company_key,
+      }
+      state.checkpoints.set(key, row)
+      return { data: { ...row, created: true }, error: null }
+    }
+
+    if (operation.action === "rpc" && operation.table === "rpc:pharmacy_tally_replay_actuals") {
+      const products = [...state.products.entries()].map(([productId, quantity]) => ({
+        product_id: productId,
+        name: "Test Item A",
+        quantity,
+      }))
+      const batches = [...state.batches.entries()].map(([key, batch]) => {
+        const [productId, batchNumber] = key.split("|")
+        return {
+          product_id: productId,
+          batch_number: batchNumber,
+          expiry_date: batch.expiryDate,
+          quantity: batch.quantity,
+        }
+      })
+      const accounts = (seed?.accounts ?? []).map((account) => ({
+        account_id: `account-${account.code}`,
+        code: account.code,
+        name: `Ledger ${account.code}`,
+        normal_balance: "credit",
+        debit: account.debit,
+        credit: account.credit,
+      }))
+      return { data: { products, batches, accounts, parties: [] }, error: null }
+    }
+
+    if (operation.action === "select" && operation.table === "pharmacy_products") {
+      const id = operation.filters.find(([column]) => column === "id")?.[1]
+      if (typeof id === "string") {
+        return { data: [{ quantity: state.products.get(id) ?? 0 }], error: null }
+      }
+      return { data: [PRODUCT], error: null }
+    }
+
+    if (operation.action === "select" && operation.table === "pharmacy_product_batches") {
+      const productId = operation.filters.find(([column]) => column === "product_id")?.[1]
+      const rows = [...state.batches.entries()]
+        .filter(([key]) => key.startsWith(`${String(productId)}|`))
+        .map(([key, batch]) => ({
+          batch_number: key.split("|")[1],
+          expiry_date: batch.expiryDate,
+          received_date: batch.receivedDate,
+          quantity: batch.quantity,
+        }))
+      return { data: rows, error: null }
+    }
+
+    if (operation.table === "pharmacy_audit_logs") {
+      if (operation.action === "insert") {
+        state.audits.push(operation.payload as Record<string, unknown>)
+        return { data: null, error: null }
+      }
+      return { data: [], error: null }
+    }
+
+    return undefined
+  })
+
+  return { db, operations, state }
+}
+
+function stockHistoryProgress(): TallyApplyProgress {
+  return { ...emptyProgress(), stage: "stock-history" }
+}
+
+describe("replay write path", () => {
+  it("applies a movement once and treats a second send as already replayed", async () => {
+    const { db, state } = replayDb()
+    const input = {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      plan: replayPlan([movement()]),
+      movementTotalChunks: 1,
+      replayTarget: replayTarget(),
+    }
+
+    const first = await applyTallyChunk(db, { ...input, progress: stockHistoryProgress() })
+    expect(first.progress.counts.stockMovements).toBe(1)
+    expect(first.progress.stage).toBe("journals")
+    expect(state.products.get("product-1")).toBe(5)
+    expect(state.batches.size).toBe(1)
+
+    // The crash landed between the RPC and the checkpoint save, so the session
+    // still resumes at the same chunk and the movement is not applied twice.
+    const second = await applyTallyChunk(db, { ...input, progress: stockHistoryProgress() })
+    expect(second.progress.counts.movementsReplayed).toBe(1)
+    expect(second.progress.counts.stockMovements).toBe(0)
+    expect(state.products.get("product-1")).toBe(5)
+    expect(state.batches.size).toBe(1)
+    expect(state.batches.get("product-1|B-1")).toMatchObject({ quantity: 5 })
+  })
+
+  it("resumes at the next movement chunk", async () => {
+    const { db, state } = replayDb()
+    const movements = [
+      movement({ movementId: "m-1", sourceId: "v-1", sourceOrder: 1, batchNumber: "B-1" }),
+      movement({
+        movementId: "m-2",
+        sourceId: "v-2",
+        sourceOrder: 2,
+        date: "2026-04-03",
+        batchNumber: "B-2",
+      }),
+    ]
+    const base = {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      movementTotalChunks: 2,
+      replayTarget: replayTarget(),
+    }
+
+    const first = await applyTallyChunk(db, {
+      ...base,
+      progress: stockHistoryProgress(),
+      plan: replayPlan([movements[0]!]),
+    })
+    expect(first.progress).toMatchObject({ stage: "stock-history", offset: 1 })
+    expect(first.done).toBe(false)
+
+    const second = await applyTallyChunk(db, {
+      ...base,
+      progress: first.progress,
+      plan: replayPlan([movements[1]!]),
+    })
+    expect(second.progress).toMatchObject({ stage: "journals", offset: 0 })
+    expect(state.products.get("product-1")).toBe(10)
+    expect(state.batches.size).toBe(2)
+  })
+
+  it("refuses a sale that would take stock below zero and records it against the movement", async () => {
+    const { db, state } = replayDb()
+    const out = movement({
+      movementId: "company-guid:voucher-9:L0:B0",
+      sourceId: "company-guid:voucher-9",
+      kind: "sales",
+      movementKind: "sale_out",
+      quantityDelta: -4,
+      batchNumber: undefined,
+      expiryDate: undefined,
+      allocation: "fefo",
+    })
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      plan: replayPlan([out]),
+      progress: stockHistoryProgress(),
+      movementTotalChunks: 1,
+      replayTarget: replayTarget(),
+    })
+
+    expect(result.progress.failures).toEqual([
+      expect.objectContaining({
+        stage: "stock-history",
+        key: out.movementId,
+        code: "REPLAY_NEGATIVE_STOCK",
+      }),
+    ])
+    expect(result.progress.counts.stockMovements).toBe(0)
+    expect(state.products.get("product-1")).toBe(0)
+    expect(state.batches.size).toBe(0)
+  })
+
+  it("writes the shortage only where the review acknowledged it", async () => {
+    const { db, state } = replayDb()
+    const out = movement({
+      movementId: "company-guid:voucher-9:L0:B0",
+      sourceId: "company-guid:voucher-9",
+      kind: "sales",
+      movementKind: "sale_out",
+      quantityDelta: -4,
+      batchNumber: undefined,
+      expiryDate: undefined,
+      allocation: "fefo",
+    })
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      plan: replayPlan([out]),
+      progress: stockHistoryProgress(),
+      movementTotalChunks: 1,
+      replayTarget: replayTarget({
+        findings: [
+          {
+            code: "REPLAY_NEGATIVE_STOCK",
+            severity: "blocking",
+            date: out.date,
+            sourceId: out.sourceId,
+            movementId: out.movementId,
+            stockItemName: out.stockItemName,
+            quantityBefore: 0,
+            quantityAfter: -4,
+            message: "short by 4",
+          },
+        ],
+      }),
+    })
+
+    expect(result.progress.failures).toEqual([])
+    expect(result.progress.counts.stockMovements).toBe(1)
+    expect(state.batches.get("product-1|TALLY-RPL-NEGATIVE")).toMatchObject({ quantity: -4 })
+    expect(state.products.get("product-1")).toBe(-4)
+  })
+
+  it("takes a physical count down against the batches that hold the stock", async () => {
+    const { db, state } = replayDb({
+      quantity: 135,
+      batches: [
+        ["product-1|B-1", { quantity: 100, expiryDate: "2026-06-30", receivedDate: "2025-12-01" }],
+        ["product-1|B-2", { quantity: 35, expiryDate: "2027-01-31", receivedDate: "2026-01-01" }],
+      ],
+    })
+    const count = movement({
+      movementId: "company-guid:voucher-30:L0:B0",
+      sourceId: "company-guid:voucher-30",
+      kind: "stock-journal",
+      movementKind: "physical_adjust",
+      quantityDelta: 120,
+      batchNumber: undefined,
+      expiryDate: undefined,
+      allocation: "fefo",
+    })
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      plan: replayPlan([count]),
+      progress: stockHistoryProgress(),
+      movementTotalChunks: 1,
+      replayTarget: replayTarget(),
+    })
+
+    expect(result.progress.failures).toEqual([])
+    // The line states the count, so 15 units leave the batch a sale would have
+    // taken them from, and no batch is invented for the shortfall.
+    expect(state.products.get("product-1")).toBe(120)
+    expect(state.batches.get("product-1|B-1")).toMatchObject({ quantity: 85 })
+    expect(state.batches.get("product-1|B-2")).toMatchObject({ quantity: 35 })
+    expect(state.batches.has("product-1|TALLY-RPL-PHYSICAL")).toBe(false)
+  })
+
+  it("books a physical count above the books into the physical-count bucket", async () => {
+    const { db, state } = replayDb({
+      quantity: 5,
+      batches: [
+        ["product-1|B-1", { quantity: 5, expiryDate: "2026-06-30", receivedDate: "2025-12-01" }],
+      ],
+    })
+    const count = movement({
+      movementId: "company-guid:voucher-31:L0:B0",
+      sourceId: "company-guid:voucher-31",
+      kind: "stock-journal",
+      movementKind: "physical_adjust",
+      quantityDelta: 9,
+      batchNumber: undefined,
+      expiryDate: undefined,
+      allocation: "fefo",
+    })
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      plan: replayPlan([count]),
+      progress: stockHistoryProgress(),
+      movementTotalChunks: 1,
+      replayTarget: replayTarget(),
+    })
+
+    expect(result.progress.failures).toEqual([])
+    expect(state.products.get("product-1")).toBe(9)
+    expect(state.batches.get("product-1|B-1")).toMatchObject({ quantity: 5 })
+    expect(state.batches.get("product-1|TALLY-RPL-PHYSICAL")).toMatchObject({ quantity: 4 })
+  })
+
+  it("does not take a sale off a batch that had already expired on its day", async () => {
+    const { db, state } = replayDb({
+      quantity: 10,
+      batches: [
+        ["product-1|B-OLD", { quantity: 5, expiryDate: "2026-01-31", receivedDate: "2026-01-01" }],
+        ["product-1|B-NEW", { quantity: 5, expiryDate: "2026-12-31", receivedDate: "2026-02-01" }],
+      ],
+    })
+    await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      plan: replayPlan([
+        movement({
+          kind: "sales",
+          movementKind: "sale_out",
+          date: "2026-03-01",
+          quantityDelta: -3,
+          batchNumber: undefined,
+          expiryDate: undefined,
+          allocation: "fefo",
+        }),
+      ]),
+      progress: stockHistoryProgress(),
+      movementTotalChunks: 1,
+      replayTarget: replayTarget(),
+    })
+
+    expect(state.batches.get("product-1|B-OLD")).toMatchObject({ quantity: 5 })
+    expect(state.batches.get("product-1|B-NEW")).toMatchObject({ quantity: 2 })
+  })
+
+  it("splits one sale across batches in a single call, earliest expiry first", async () => {
+    const { db, state } = replayDb({
+      quantity: 7,
+      batches: [
+        ["product-1|B-JUN", { quantity: 2, expiryDate: "2026-06-30", receivedDate: "2026-02-01" }],
+        ["product-1|B-SEP", { quantity: 5, expiryDate: "2026-09-30", receivedDate: "2026-03-01" }],
+      ],
+    })
+    await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      plan: replayPlan([
+        movement({
+          kind: "sales",
+          movementKind: "sale_out",
+          date: "2026-03-15",
+          quantityDelta: -4,
+          batchNumber: undefined,
+          expiryDate: undefined,
+          allocation: "fefo",
+        }),
+      ]),
+      progress: stockHistoryProgress(),
+      movementTotalChunks: 1,
+      replayTarget: replayTarget(),
+    })
+
+    const call = state.calls.at(-1)!
+    expect((call.p_allocations as Array<Record<string, unknown>>).map((entry) => [
+      entry.batch_number,
+      entry.quantity_delta,
+    ])).toEqual([
+      ["B-JUN", -2],
+      ["B-SEP", -2],
+    ])
+    expect(state.batches.get("product-1|B-JUN")).toMatchObject({ quantity: 0 })
+    expect(state.batches.get("product-1|B-SEP")).toMatchObject({ quantity: 3 })
+  })
+
+  it("writes every batch allocation of one voucher line", async () => {
+    // Two allocations on one line share (source_id, line_index); the second is
+    // a movement of its own and must not read as already applied.
+    const { db, state } = replayDb()
+    await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      plan: replayPlan([
+        movement({
+          movementId: "company-guid:voucher-2:L0:B0",
+          lineIndex: 0,
+          batchIndex: 0,
+          batchNumber: "B-1",
+          quantityDelta: 4,
+          amount: 40,
+        }),
+        movement({
+          movementId: "company-guid:voucher-2:L0:B1",
+          lineIndex: 0,
+          batchIndex: 1,
+          batchNumber: "B-2",
+          quantityDelta: 2,
+          amount: 20,
+        }),
+      ]),
+      progress: stockHistoryProgress(),
+      movementTotalChunks: 1,
+      replayTarget: replayTarget(),
+    })
+
+    expect(state.products.get("product-1")).toBe(6)
+    expect(state.batches.get("product-1|B-1")).toMatchObject({ quantity: 4 })
+    expect(state.batches.get("product-1|B-2")).toMatchObject({ quantity: 2 })
+  })
+
+  it("refuses to close when the ledger is short, as a closed period leaves it", async () => {
+    const { db, state } = replayDb()
+    const target = replayTarget({
+      simulated: {
+        accounts: { "4000": -250 },
+        items: [],
+        sourceIdsByItem: {},
+        sourceIdsByAccount: {},
+        eventCount: 1,
+      },
+    })
+
+    await expect(
+      applyTallyChunk(db, {
+        tenantId: "tenant-1",
+        actorId: "user-1",
+        sessionId: "session-1",
+        replay: true,
+        plan: plan(),
+        progress: { ...emptyProgress(), stage: "replay-closing" },
+        replayTarget: target,
+      }),
+    ).rejects.toThrow(/TALLY_REPLAY_CLOSING_MISMATCH.*4000/)
+    expect(state.audits).toHaveLength(0)
+  })
+
+  it("completes once the stock and ledger match the reviewed position", async () => {
+    const { db, state } = replayDb({
+      quantity: 5,
+      batches: [["product-1|B-1", { quantity: 5, expiryDate: "2026-12-31", receivedDate: "2026-04-02" }]],
+      accounts: [{ code: "4000", debit: 0, credit: 250 }],
+    })
+    const target = replayTarget({
+      simulated: {
+        accounts: { "4000": -250 },
+        items: [{ stockItemName: "Test Item A", quantity: 5, value: 50, batches: [] }],
+        sourceIdsByItem: {},
+        sourceIdsByAccount: {},
+        eventCount: 1,
+      },
+    })
+
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      plan: plan({ stockItems: [stockItem()] }),
+      progress: { ...emptyProgress(), stage: "replay-closing" },
+      replayTarget: target,
+    })
+
+    expect(result.done).toBe(true)
+    expect(result.progress.stage).toBe("complete")
+    expect(state.audits).toHaveLength(1)
+    expect(state.audits[0]).toMatchObject({
+      action: "IMPORT_TALLY_REPLAY",
+      entity: "IMPORT_SESSION",
+      entity_id: "session-1",
+    })
+  })
+
+  it("records the closing checkpoint once, however often the stage is retried", async () => {
+    const { db, state } = replayDb({
+      quantity: 5,
+      batches: [["product-1|B-1", { quantity: 5, expiryDate: "2026-12-31", receivedDate: "2026-04-02" }]],
+      accounts: [{ code: "4000", debit: 0, credit: 250 }],
+    })
+    const target = replayTarget({
+      simulated: {
+        accounts: { "4000": -250 },
+        items: [{ stockItemName: "Test Item A", quantity: 5, value: 50, batches: [] }],
+        sourceIdsByItem: {},
+        sourceIdsByAccount: {},
+        eventCount: 1,
+      },
+    })
+    // A crash before the checkpoint advanced retries the same stage, which is
+    // what a resumed apply request does.
+    const retry = () =>
+      applyTallyChunk(db, {
+        tenantId: "tenant-1",
+        actorId: "user-1",
+        sessionId: "session-1",
+        replay: true,
+        plan: plan({ stockItems: [stockItem()] }),
+        progress: { ...emptyProgress(), stage: "replay-closing" },
+        replayTarget: target,
+      })
+
+    await retry()
+    await retry()
+
+    expect(state.checkpointCalls).toHaveLength(2)
+    expect(state.checkpoints.size).toBe(1)
+    expect([...state.checkpoints.keys()]).toEqual(["company-guid|2026-09-30"])
+    expect(state.checkpoints.get("company-guid|2026-09-30")).toMatchObject({
+      through_date: "2026-09-30",
+      company_key: "company-guid",
+    })
+  })
+
+  it("does not close when the checkpoint cannot be recorded", async () => {
+    const { db } = replayDb({
+      quantity: 5,
+      batches: [["product-1|B-1", { quantity: 5, expiryDate: "2026-12-31", receivedDate: "2026-04-02" }]],
+      accounts: [{ code: "4000", debit: 0, credit: 250 }],
+      checkpointError: "TALLY_CHECKPOINT_TAKEN: another session already closed this period",
+    })
+    const target = replayTarget({
+      simulated: {
+        accounts: { "4000": -250 },
+        items: [{ stockItemName: "Test Item A", quantity: 5, value: 50, batches: [] }],
+        sourceIdsByItem: {},
+        sourceIdsByAccount: {},
+        eventCount: 1,
+      },
+    })
+
+    await expect(
+      applyTallyChunk(db, {
+        tenantId: "tenant-1",
+        actorId: "user-1",
+        sessionId: "session-1",
+        replay: true,
+        plan: plan({ stockItems: [stockItem()] }),
+        progress: { ...emptyProgress(), stage: "replay-closing" },
+        replayTarget: target,
+      }),
+    ).rejects.toThrow(/TALLY_CHECKPOINT_FAILED.*another session already closed/)
+  })
+})
+
+describe("continuation opening stages", () => {
+  function checkpoint(overrides: Partial<TallyReplayCheckpoint> = {}): TallyReplayCheckpoint {
+    return {
+      id: "checkpoint-1",
+      companyKey: "company-guid",
+      sessionId: "session-0",
+      previousId: null,
+      throughDate: "2026-03-31",
+      closingState: {
+        accounts: {},
+        items: [],
+        sourceIdsByItem: {},
+        sourceIdsByAccount: {},
+        eventCount: 0,
+      },
+      createdAt: "2026-04-01T00:00:00.000Z",
+      ...overrides,
+    }
+  }
+
+  it("verifies the ledger instead of posting the opening journal again", async () => {
+    const { db, operations } = replayDb({ accounts: [{ code: "4000", debit: 0, credit: 250 }] })
+
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-2",
+      replay: true,
+      plan: plan(),
+      progress: { ...emptyProgress(), stage: "opening-journal" },
+      continuation: checkpoint({ closingState: {
+        accounts: { "4000": -250 },
+        items: [],
+        sourceIdsByItem: {},
+        sourceIdsByAccount: {},
+        eventCount: 1,
+      } }),
+    })
+
+    expect(result.progress.stage).toBe("opening-stock")
+    expect(operations.some((entry) => entry.table === "rpc:post_pharmacy_accounting_journal")).toBe(false)
+  })
+
+  it("verifies stock instead of replaying the opening batches", async () => {
+    const { db, operations } = replayDb({
+      quantity: 5,
+      batches: [["product-1|B-1", { quantity: 5, expiryDate: "2026-12-31", receivedDate: "2026-04-02" }]],
+    })
+
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-2",
+      replay: true,
+      plan: plan({ stockItems: [stockItem()] }),
+      progress: { ...emptyProgress(), stage: "opening-stock" },
+      continuation: checkpoint({ closingState: {
+        accounts: {},
+        items: [{ stockItemName: "Test Item A", quantity: 5, value: 50, batches: [] }],
+        sourceIdsByItem: {},
+        sourceIdsByAccount: {},
+        eventCount: 1,
+      } }),
+    })
+
+    expect(result.progress.stage).toBe("stock-history")
+    expect(result.progress.offset).toBe(0)
+    expect(operations.some((entry) => entry.table === "rpc:apply_pharmacy_tally_replay_movement")).toBe(false)
+  })
+
+  it("refuses to continue when the ledger no longer matches the checkpoint", async () => {
+    const { db } = replayDb({ accounts: [{ code: "4000", debit: 0, credit: 300 }] })
+
+    await expect(
+      applyTallyChunk(db, {
+        tenantId: "tenant-1",
+        actorId: "user-1",
+        sessionId: "session-2",
+        replay: true,
+        plan: plan(),
+        progress: { ...emptyProgress(), stage: "opening-journal" },
+        continuation: checkpoint({ closingState: {
+          accounts: { "4000": -250 },
+          items: [],
+          sourceIdsByItem: {},
+          sourceIdsByAccount: {},
+          eventCount: 1,
+        } }),
+      }),
+    ).rejects.toThrow(/TALLY_CONTINUATION_DRIFT.*4000/)
+  })
+
+  it("refuses to continue when stock no longer matches the checkpoint", async () => {
+    const { db } = replayDb({ quantity: 4 })
+
+    await expect(
+      applyTallyChunk(db, {
+        tenantId: "tenant-1",
+        actorId: "user-1",
+        sessionId: "session-2",
+        replay: true,
+        plan: plan({ stockItems: [stockItem()] }),
+        progress: { ...emptyProgress(), stage: "opening-stock" },
+        continuation: checkpoint({ closingState: {
+          accounts: {},
+          items: [{ stockItemName: "Test Item A", quantity: 5, value: 50, batches: [] }],
+          sourceIdsByItem: {},
+          sourceIdsByAccount: {},
+          eventCount: 1,
+        } }),
+      }),
+    ).rejects.toThrow(/TALLY_CONTINUATION_DRIFT.*Test Item A/)
   })
 })
 

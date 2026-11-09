@@ -64,6 +64,11 @@ export type PharmacyRpcErrorCode =
   | "TRANSFER_EMPTY"
   | "TRANSFER_STATE_INVALID"
   | "INVALID_TRANSFER_STATE"
+  | "REPLAY_SESSION_REQUIRED"
+  | "REPLAY_SESSION_NOT_TALLY"
+  | "REPLAY_BATCH_REQUIRED"
+  | "REPLAY_NEGATIVE_STOCK"
+  | "BATCH_EXPIRY_CONFLICT"
   | "PERMISSION"
   | "UNKNOWN";
 
@@ -109,6 +114,14 @@ export function parsePharmacyRpcError(raw: string | null | undefined): PharmacyR
     INVALID_TRANSFER_STATE: "This transfer is not in the right state for that action.",
     UNBATCHED_STOCK:
       "This product shows stock without batch records. Receive it with genuine batch data before selling.",
+    REPLAY_SESSION_REQUIRED: "A replayed movement must name the Tally import it came from.",
+    REPLAY_SESSION_NOT_TALLY:
+      "That import session is not a Tally session of this pharmacy, so it cannot move stock.",
+    REPLAY_BATCH_REQUIRED: "A replayed movement must name the batch it moves.",
+    REPLAY_NEGATIVE_STOCK:
+      "Replaying this movement would make stock negative. Acknowledge it in the review before applying.",
+    BATCH_EXPIRY_CONFLICT:
+      "This batch number is already recorded with a different expiry date. Correct the export rather than merging the two.",
   };
 
   return {

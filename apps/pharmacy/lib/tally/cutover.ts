@@ -71,12 +71,16 @@ export async function releaseTallyApplyLease(
 }
 
 export async function findCompletedCutover(tenantId: string): Promise<TallyCutover | null> {
+  // A rolled-back session stays complete in its own history but no longer
+  // holds the pharmacy: its movements are reversed and the next import must be
+  // able to start from a clean cut-over rather than being refused forever.
   const { data, error } = await db()
     .from("pharmacy_import_sessions")
     .select("id, completed_at")
     .eq("tenant_id", tenantId)
     .eq("source_system", "Tally")
     .eq("status", "complete")
+    .is("ai_mapping->>reversedAt", null)
     .order("completed_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -86,6 +90,37 @@ export async function findCompletedCutover(tenantId: string): Promise<TallyCutov
   }
   if (!data) return null
   return { sessionId: String(data.id), completedAt: data.completed_at ?? null }
+}
+
+/**
+ * The one-shot guard as a route applies it to an existing session.
+ *
+ * A session that declares itself a continuation of the completed session is
+ * let through: preview and apply then validate the company, period and mode
+ * before anything is written. Every other session is refused exactly as
+ * before, so an ordinary second import still cannot start.
+ */
+export async function findCutoverBlockingSession(
+  tenantId: string,
+  sessionId: string,
+): Promise<TallyCutover | null> {
+  const cutover = await findCompletedCutover(tenantId)
+  if (!cutover) return null
+  if (cutover.sessionId === sessionId) return null
+
+  const { data, error } = await db()
+    .from("pharmacy_import_sessions")
+    .select("ai_mapping")
+    .eq("id", sessionId)
+    .eq("tenant_id", tenantId)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(`TALLY_CUTOVER_STATUS_UNAVAILABLE: ${error.message}`)
+  }
+  const mapping = (data?.ai_mapping ?? {}) as Record<string, unknown>
+  const declared = mapping.continuationOf
+  return typeof declared === "string" && declared === cutover.sessionId ? null : cutover
 }
 
 export const CUTOVER_ALREADY_COMPLETE = {

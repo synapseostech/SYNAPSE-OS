@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin } from "@/lib/tally/auth"
-import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
+import { CUTOVER_ALREADY_COMPLETE, findCutoverBlockingSession } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { isManifestLike } from "@/lib/tally/chunks"
 import { readStoredDocument } from "@/lib/tally/consolidate-session"
@@ -15,6 +15,7 @@ import {
   type TallyStorageClient,
 } from "@/lib/tally/storage"
 import { tallyErrorResponse } from "@/lib/tally/http"
+import type { TallyImportMode } from "@/lib/tally/types"
 
 const db = () => supabaseAdmin as any
 const storage = () => ({ storage: db().storage }) as TallyStorageClient
@@ -23,7 +24,7 @@ const SHEET_EXTENSIONS: Record<string, TallySourceExtension> = { xlsx: "xlsx", x
 const SHEET_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 type MappingState = {
-  mode?: "opening" | "closing"
+  mode?: TallyImportMode
   manifest?: unknown
   stockSheet?: { path?: string; fileName?: string; rows?: number; stagedAt?: string }
 }
@@ -98,7 +99,7 @@ export async function POST(
   const { tenantId } = auth
   const { id } = await params
 
-  if (await findCompletedCutover(tenantId)) {
+  if (await findCutoverBlockingSession(tenantId, id)) {
     return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
   }
 
@@ -185,7 +186,7 @@ export async function DELETE(
   const { tenantId } = auth
   const { id } = await params
 
-  if (await findCompletedCutover(tenantId)) {
+  if (await findCutoverBlockingSession(tenantId, id)) {
     return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
   }
 

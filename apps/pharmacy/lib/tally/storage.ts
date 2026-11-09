@@ -19,7 +19,7 @@ export const TALLY_BUCKET = PHARMACY_IMPORT_BUCKET
 export const TALLY_SOURCE_LIMIT = 50 * 1024 * 1024
 export const TALLY_JSON_LIMIT = 20 * 1024 * 1024
 
-export type TallySourceExtension = "xml" | "xlsx" | "xls" | "csv"
+export type TallySourceExtension = "xml" | "xlsx" | "xls" | "csv" | "zip"
 
 export type TallyStorageClient = {
   storage: {
@@ -54,7 +54,7 @@ export type TallyStorageClient = {
 }
 
 const UUID_OK = /^[0-9a-z][0-9a-z-]{7,63}$/i
-const EXTENSIONS: TallySourceExtension[] = ["xml", "xlsx", "xls", "csv"]
+const EXTENSIONS: TallySourceExtension[] = ["xml", "xlsx", "xls", "csv", "zip"]
 
 function segment(value: string, label: string): string {
   if (!UUID_OK.test(value) || value.includes("/") || value.includes("..")) {
@@ -107,6 +107,7 @@ export async function ensureTallyBucket(db: TallyStorageClient): Promise<void> {
       "text/csv",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "application/vnd.ms-excel",
+      "application/zip",
       "application/octet-stream",
     ],
   })

@@ -8,6 +8,8 @@ import {
   releaseTallyApplyLease,
 } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
+import { continuationSessionOf, evaluateContinuation } from "@/lib/tally/continuation"
+import { readTallyReplayCheckpoint, type TallyReplayCheckpoint } from "@synapse/db/tally-replay-rpc"
 import {
   applyTallyChunk,
   emptyProgress,
@@ -15,8 +17,14 @@ import {
   type TallyApplyProgress,
   type TallyApplyStage,
 } from "@/lib/tally/apply"
-import type { TallyApplyDb, TallyPlanSummary } from "@/lib/tally/types"
-import { loadStagePlan } from "@/lib/tally/plan"
+import type { TallyApplyDb, TallyPlanSummary, TallyReplayTarget } from "@/lib/tally/types"
+import { loadStagePlan, readTallyReplayTarget } from "@/lib/tally/plan"
+import {
+  evaluateReplayGate,
+  parseReplayAcknowledgement,
+  type ReplayGate,
+  type SavedReplayAcknowledgement,
+} from "@/lib/tally/replay-gate"
 import {
   canApplyManifest,
   isManifestLike,
@@ -57,7 +65,9 @@ function applyFailureReason(
   const step =
     progress.stage === "journals"
       ? `journals chunk ${progress.offset + 1}`
-      : `the "${progress.stage}" step`
+      : progress.stage === "stock-history"
+        ? `stock history chunk ${progress.offset + 1}`
+        : `the "${progress.stage}" step`
   const where =
     phase === "load-plan"
       ? `before ${step} started`
@@ -97,6 +107,34 @@ type UnverifiedAcknowledgement = {
   manifestUpdatedAt: string
 }
 
+/**
+ * The replay's answers, carried into the audit row. A difference accepted
+ * knowingly is part of the migration's record, reason and all; the note is
+ * capped because the audit message is a sentence, not a second report.
+ */
+function replayAcknowledgementNote(mapping: Record<string, unknown>): string {
+  const saved = mapping.replayAcknowledgement
+  if (typeof saved !== "object" || saved === null) return ""
+  const value = saved as Record<string, unknown>
+  if (value.sequenceConfirmed !== true) return ""
+  const items = Array.isArray(value.items) ? value.items : []
+  const listed = items
+    .filter(
+      (item): item is { key: string; reason: string } =>
+        typeof item === "object" &&
+        item !== null &&
+        typeof (item as Record<string, unknown>).key === "string" &&
+        typeof (item as Record<string, unknown>).reason === "string",
+    )
+    .map((item) => `${item.key} — ${item.reason}`)
+    .join("; ")
+  const note =
+    items.length === 0
+      ? "; replay sequence confirmed by the operator"
+      : `; replay sequence confirmed and ${items.length} difference${items.length === 1 ? "" : "s"} acknowledged by the operator: ${listed.slice(0, 1_500)}`
+  return `${note}${listed.length > 1_500 ? " (truncated)" : ""}`
+}
+
 /** Releases the lease; returns the refusal to send when it cannot be released. */
 async function releaseLease(
   tenantId: string,
@@ -122,8 +160,9 @@ async function applySessionStep(input: {
   tenantId: string
   actorId: string
   mapping: Record<string, unknown>
+  continuation?: TallyReplayCheckpoint | null
 }): Promise<NextResponse> {
-  const { id, tenantId, actorId, mapping } = input
+  const { id, tenantId, actorId, mapping, continuation } = input
   let progress = (mapping.progress as TallyApplyProgress | undefined) ?? emptyProgress()
   let done = progress.stage === "complete"
   let stagesRun = 0
@@ -154,10 +193,15 @@ async function applySessionStep(input: {
       const result = await applyTallyChunk(applyDb(), {
         tenantId,
         actorId,
+        sessionId: id,
         plan: loaded.plan,
         progress,
         chunk: loaded.chunk,
         totalChunks: loaded.totalChunks,
+        replay: loaded.summary.mode === "replay",
+        movementTotalChunks: loaded.summary.replay?.movementChunkCount ?? 0,
+        replayTarget: loaded.replay,
+        continuation: continuation ?? null,
       })
 
       progress = result.progress
@@ -240,7 +284,7 @@ async function applySessionStep(input: {
           action: "IMPORT_TALLY",
           entity: "IMPORT_SESSION",
           entity_id: id,
-          details: `Tally cut-over applied: ${progress.counts.accounts} accounts, ${progress.counts.parties} parties, ${progress.counts.products} products, ${progress.counts.journals} vouchers, ${progress.counts.openingStock} batches; ${progress.failures.length} listed exceptions; source company "${sourceCompany}", edition ${storedManifest?.edition ?? "not stated"}, session ${id}${mapping.unverifiedAcknowledgement ? "; source completeness unverified, acknowledged by the operator before apply" : ""}`,
+          details: `Tally cut-over applied: ${progress.counts.accounts} accounts, ${progress.counts.parties} parties, ${progress.counts.products} products, ${progress.counts.journals} vouchers, ${progress.counts.openingStock} batches; ${progress.failures.length} listed exceptions; source company "${sourceCompany}", edition ${storedManifest?.edition ?? "not stated"}, session ${id}${mapping.unverifiedAcknowledgement ? "; source completeness unverified, acknowledged by the operator before apply" : ""}${replayAcknowledgementNote(mapping)}`,
         })
 
         if (auditWriteError) {
@@ -276,7 +320,11 @@ async function applySessionStep(input: {
       progress,
       reconcile: reconcile ?? mapping.reconcile ?? null,
       totalChunks: summaryForRequest?.chunkCount ?? null,
-      nextOffset: progress.stage === "journals" ? progress.offset : null,
+      movementTotalChunks: summaryForRequest?.replay?.movementChunkCount ?? null,
+      nextOffset:
+        progress.stage === "journals" || progress.stage === "stock-history"
+          ? progress.offset
+          : null,
     })
   } catch (error) {
     const reason = applyFailureReason(progress, phase, error)
@@ -345,14 +393,17 @@ export async function POST(
     )
   }
 
-  // The only field Apply accepts. An unverified migration is applied only after
-  // the operator has been shown its evidence and said so; this is that "so".
+  // The two decisions Apply accepts. An unverified migration is applied only
+  // after the operator has been shown its evidence and said so; a replay is
+  // applied only for the preview they reviewed and the differences they
+  // answered. Both are that "so", recorded rather than assumed.
   let acknowledgedInRequest = false
+  let replayAcknowledgementInRequest: unknown
   const bodyText = await request.text()
   if (bodyText.trim()) {
-    let body: { acknowledgeUnverified?: unknown }
+    let body: { acknowledgeUnverified?: unknown; acknowledgeReplay?: unknown }
     try {
-      body = JSON.parse(bodyText) as { acknowledgeUnverified?: unknown }
+      body = JSON.parse(bodyText) as { acknowledgeUnverified?: unknown; acknowledgeReplay?: unknown }
     } catch {
       return NextResponse.json(
         { error: "Invalid JSON body", code: "TALLY_APPLY_BODY_INVALID" },
@@ -360,6 +411,7 @@ export async function POST(
       )
     }
     acknowledgedInRequest = body?.acknowledgeUnverified === true
+    replayAcknowledgementInRequest = body?.acknowledgeReplay
   }
 
   const { id } = await params
@@ -387,8 +439,12 @@ export async function POST(
     })
   }
 
+  // A session that claims to continue the completed one is held to the
+  // checkpoint it names, but only once its reviewed plan is in hand — the
+  // company and period it must match live there.
   const cutover = await findCompletedCutover(tenantId)
-  if (cutover && cutover.sessionId !== id) {
+  const cutoverApplies = cutover !== null && cutover.sessionId !== id
+  if (cutoverApplies && !continuationSessionOf(mapping)) {
     return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
   }
 
@@ -418,6 +474,58 @@ export async function POST(
       },
       { status: 409 },
     )
+  }
+
+  // The checkpoint is read again here, not trusted from the request: a
+  // continuation's opening stages compare the database against it, so it must
+  // be the row the company reached, read now.
+  let continuation: TallyReplayCheckpoint | null = null
+  if (cutoverApplies) {
+    const evaluation = await evaluateContinuation({
+      tenantId,
+      mapping,
+      companyKey: summary.companyKey,
+      conversionDate: summary.conversionDate,
+      mode: summary.mode,
+      client: db(),
+    })
+    if (evaluation.kind !== "valid") {
+      return NextResponse.json(
+        evaluation.kind === "invalid"
+          ? {
+              error: evaluation.message,
+              code: evaluation.code,
+              continueFrom: evaluation.continueFrom ?? null,
+            }
+          : CUTOVER_ALREADY_COMPLETE,
+        { status: 409 },
+      )
+    }
+    const checkpoint = await readTallyReplayCheckpoint(
+      db(),
+      tenantId,
+      evaluation.checkpoint.companyKey,
+    )
+    if (checkpoint.error) {
+      return NextResponse.json(
+        {
+          error: `The position this continuation starts from could not be read. Retry apply. (${checkpoint.error.humanMessage})`,
+          code: "TALLY_CONTINUATION_READ_FAILED",
+        },
+        { status: 503 },
+      )
+    }
+    if (!checkpoint.data) {
+      return NextResponse.json(
+        {
+          error:
+            "The session this import continues has no recorded closing position, so a continuation cannot verify where it starts. Start a fresh cut-over instead.",
+          code: "TALLY_CONTINUATION_NO_CHECKPOINT",
+        },
+        { status: 409 },
+      )
+    }
+    continuation = checkpoint.data
   }
 
   // A Tally cut-over must be able to prove what company and period it covers.
@@ -577,6 +685,70 @@ export async function POST(
     )
   }
 
+  // A replay states the closing position it reaches, and Apply runs only
+  // against the preview whose figures the operator answered for. The target is
+  // read from storage, never recomputed, so what is checked is what was shown.
+  let replayTarget: TallyReplayTarget | null = null
+  let replayGate: ReplayGate | null = null
+  let replayAcknowledgement: SavedReplayAcknowledgement | undefined
+
+  if (summary.mode === "replay") {
+    replayTarget = await readTallyReplayTarget(storage(), tenantId, id)
+    if (replayTarget) {
+      // An acknowledgement given for this preview stands until it changes; a
+      // new one in the body replaces it, and is refused rather than repaired
+      // when it is not the shape the review produces.
+      let candidate: unknown = mapping.replayAcknowledgement
+      if (replayAcknowledgementInRequest !== undefined && row.status !== "importing") {
+        const parsed = parseReplayAcknowledgement(replayAcknowledgementInRequest)
+        if (!parsed.ok) {
+          return NextResponse.json({ error: parsed.message, code: parsed.code }, { status: 400 })
+        }
+        replayAcknowledgement = {
+          preparedAt: replayTarget.preparedAt,
+          sequenceConfirmed: true,
+          acknowledgedAt: new Date().toISOString(),
+          acknowledgedBy: actorId,
+          items: parsed.items,
+        }
+        candidate = replayAcknowledgement
+      }
+
+      replayGate = evaluateReplayGate(replayTarget, candidate)
+
+      // A running import is resumed: refusing it here would strand a partial
+      // write that only resume can finish.
+      if (row.status !== "importing") {
+        if (replayGate.unknown.length > 0) {
+          return NextResponse.json(
+            {
+              error:
+                "This apply answered a difference the reviewed replay does not carry, so its acknowledgement was not accepted. Review the reconciliation and apply again.",
+              code: "TALLY_REPLAY_ACK_UNKNOWN",
+              unknown: replayGate.unknown,
+            },
+            { status: 409 },
+          )
+        }
+        if (!replayGate.canApply) {
+          const unanswered = replayGate.missing.length
+          return NextResponse.json(
+            {
+              error: !replayGate.sequenceConfirmed
+                ? "The order the history is replayed in has not been confirmed. Review the timeline and confirm it before applying."
+                : `${unanswered} difference${unanswered === 1 ? "" : "s"} between the replay and Tally ${unanswered === 1 ? "has" : "have"} not been answered with a reason. Every difference must be answered or corrected before applying.`,
+              code: "TALLY_REPLAY_NOT_ACKNOWLEDGED",
+              sequenceConfirmed: replayGate.sequenceConfirmed,
+              blockers: replayGate.blockers,
+              missing: replayGate.missing,
+            },
+            { status: 409 },
+          )
+        }
+      }
+    }
+  }
+
   // The preflight the review screen shows and the route enforces is one list.
   // It runs only for a fresh apply: an import already running is resumed, and
   // refusing it here would strand a partial write that only resume can finish.
@@ -588,6 +760,9 @@ export async function POST(
       manifest: cutoverManifest,
       manifestProblems: cutoverProblems,
       flaggedRows: blocking,
+      ...(summary.mode === "replay"
+        ? { replay: replayTarget && replayGate ? { target: replayTarget, gate: replayGate } : null }
+        : {}),
     })
     if (!preflight.canApply) {
       const refusal = preflight.checks.find(
@@ -702,9 +877,11 @@ export async function POST(
   // The execution record is written before the first unit of work, not after
   // it: a crash between reserving the session and writing anything would
   // otherwise leave an `importing` session no resume can ever validate.
-  const effectiveMapping = acknowledgement
-    ? { ...freshMapping, unverifiedAcknowledgement: acknowledgement }
-    : freshMapping
+  const effectiveMapping: Record<string, unknown> = {
+    ...freshMapping,
+    ...(acknowledgement ? { unverifiedAcknowledgement: acknowledgement } : {}),
+    ...(replayAcknowledgement ? { replayAcknowledgement } : {}),
+  }
   const startMapping = {
     ...effectiveMapping,
     progress: isApplyProgressLike(effectiveMapping.progress)
@@ -729,7 +906,13 @@ export async function POST(
 
   let response: NextResponse
   try {
-    response = await applySessionStep({ id, tenantId, actorId, mapping: startMapping })
+    response = await applySessionStep({
+      id,
+      tenantId,
+      actorId,
+      mapping: startMapping,
+      continuation,
+    })
   } catch (error) {
     // Only reachable when the step's own recovery threw, so say so explicitly:
     // this one may leave no checkpoint behind.
