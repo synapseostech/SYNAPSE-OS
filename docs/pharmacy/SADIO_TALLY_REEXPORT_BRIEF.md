@@ -107,6 +107,19 @@ balances belong to — and export again. The script also sends that date to Tall
 when it asks for the masters, so a build that honours it answers with the
 balances as on the cut-off.
 
+**Masters only.** When the voucher files are already staged on the portal and
+only the masters file is missing, `-MastersOnly` writes that one file and
+reads no vouchers:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tally-export-history.ps1 -Company "SADIO PHARMACY" -MastersOnly -From 20251017 -To 20261031
+```
+
+Give it the same dates the staged voucher files carry, so the masters file
+declares the period the cut-over covers and the staged set stays one period.
+Use it only when the voucher coverage is already known to be complete; when in
+doubt, run the script without the switch and send the whole folder.
+
 ## 4. Required content, field by field
 
 ### 4.1 Masters
