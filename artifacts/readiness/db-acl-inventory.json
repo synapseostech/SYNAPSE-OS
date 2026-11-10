@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-04T21:07:35.272Z",
-  "security_definer_count": 88,
+  "generated_at": "2026-11-09T16:59:27.023Z",
+  "security_definer_count": 97,
   "public_or_anon_execute_grants": [],
   "unexpected_public_execute": [],
   "possible_implicit_public_exec": [
@@ -472,6 +472,42 @@
     {
       "file": "20261104120000_pharmacy_tenant_purge.sql",
       "fn": "public.purge_pharmacy_tenant_data"
+    },
+    {
+      "file": "20261106120000_pharmacy_tally_stock_replay.sql",
+      "fn": "public.guard_pharmacy_tally_replay_movement"
+    },
+    {
+      "file": "20261106120000_pharmacy_tally_stock_replay.sql",
+      "fn": "public.apply_pharmacy_tally_replay_movement"
+    },
+    {
+      "file": "20261106120000_pharmacy_tally_stock_replay.sql",
+      "fn": "public.pharmacy_tally_replay_actuals"
+    },
+    {
+      "file": "20261107120000_pharmacy_tally_replay_continuation.sql",
+      "fn": "public.guard_pharmacy_tally_replay_checkpoint"
+    },
+    {
+      "file": "20261107120000_pharmacy_tally_replay_continuation.sql",
+      "fn": "public.record_pharmacy_tally_replay_checkpoint"
+    },
+    {
+      "file": "20261107120000_pharmacy_tally_replay_continuation.sql",
+      "fn": "public.pharmacy_tally_replay_checkpoint"
+    },
+    {
+      "file": "20261107120000_pharmacy_tally_replay_continuation.sql",
+      "fn": "public.reverse_pharmacy_tally_replay_session"
+    },
+    {
+      "file": "20261107120000_pharmacy_tally_replay_continuation.sql",
+      "fn": "public.claim_pharmacy_tally_cutover_apply"
+    },
+    {
+      "file": "20261109120000_pharmacy_tally_cutover_lease_claim.sql",
+      "fn": "public.claim_pharmacy_tally_cutover_apply"
     }
   ]
 }

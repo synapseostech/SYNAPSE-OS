@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Disposable Supabase stack for the database-backed pharmacy proof suites.
 #
-# PREPARED ONLY — this script has not been executed. Running it provisions
-# containers and DROPs the public schema of the stack it starts. It refuses to
-# run without an explicit, per-invocation opt-in:
+# Running it provisions containers and DROPs the public schema of the stack it
+# starts, so it refuses to run without an explicit, per-invocation opt-in:
 #
 #   SYNAPSE_PHARM_DB_HARNESS=1 bash scripts/db-tests/run-pharmacy-db-harness.sh [suites...]
 #
-# Suites (default: all): refund rls concurrency reconciliation
+# Suites (default: all): refund rls concurrency reconciliation tally
 #
 #   refund          reverse_pharmacy_sale / adjust_pharmacy_batch_stock behaviour
 #   rls             tenant isolation under a real signed-in user JWT
 #   concurrency     last-unit oversell and concurrent refunds through PostgREST
 #   reconciliation  accounting/inventory evidence check (db:reconciliation:check)
+#   tally           Tally replay movement RPC, idempotency, rollback, AC-9 data half
 #
 # What it does, and why in this order:
 #   1. Refuses if any Supabase container is already running, so a developer's
@@ -74,10 +74,28 @@ if ! docker info >/dev/null 2>"$docker_err"; then
 fi
 rm -f "$docker_err"
 trap - EXIT
-if docker ps --format '{{.Names}}' | grep -q '^supabase_'; then
-  echo "REFUSED: a Supabase stack is already running:" >&2
-  docker ps --format '  {{.Names}}' | grep '^  supabase_' >&2 || true
-  echo "Stop it first (supabase stop). The harness will not provision beside it." >&2
+# The harness uses its own ports, so a developer's local stack may keep
+# running. What must not happen is two stacks binding the same port, so the
+# harness refuses on a port conflict instead of on any Supabase container.
+HARNESS_API_PORT="${HARNESS_API_PORT:-55321}"
+HARNESS_DB_PORT="${HARNESS_DB_PORT:-55322}"
+HARNESS_SHADOW_PORT="${HARNESS_SHADOW_PORT:-55320}"
+HARNESS_STUDIO_PORT="${HARNESS_STUDIO_PORT:-55323}"
+HARNESS_INBUCKET_PORT="${HARNESS_INBUCKET_PORT:-55324}"
+HARNESS_ANALYTICS_PORT="${HARNESS_ANALYTICS_PORT:-55327}"
+
+port_in_use() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1
+}
+conflicts=()
+for p in "$HARNESS_API_PORT" "$HARNESS_DB_PORT" "$HARNESS_SHADOW_PORT" \
+         "$HARNESS_STUDIO_PORT" "$HARNESS_INBUCKET_PORT" "$HARNESS_ANALYTICS_PORT"; do
+  port_in_use "$p" && conflicts+=("$p")
+done
+if [ ${#conflicts[@]} -gt 0 ]; then
+  echo "REFUSED: harness port(s) already in use: ${conflicts[*]}" >&2
+  echo "The developer stack (54321-54327) is left alone; this harness uses 55320-55327." >&2
+  echo "Free those ports or override HARNESS_*_PORT." >&2
   exit 2
 fi
 
@@ -90,13 +108,13 @@ unset DATABASE_URL DIRECT_DATABASE_URL SUPABASE_DB_URL PGURI PGSERVICE PGSERVICE
 
 SUITES=("$@")
 if [ ${#SUITES[@]} -eq 0 ]; then
-  SUITES=(refund rls concurrency reconciliation)
+  SUITES=(refund rls concurrency reconciliation tally)
 fi
 for suite in "${SUITES[@]}"; do
   case "$suite" in
-    refund|rls|concurrency|reconciliation) ;;
+    refund|rls|concurrency|reconciliation|tally) ;;
     *)
-      echo "unknown suite: $suite (expected refund, rls, concurrency or reconciliation)" >&2
+      echo "unknown suite: $suite (expected refund, rls, concurrency, reconciliation or tally)" >&2
       exit 2
       ;;
   esac
@@ -116,27 +134,46 @@ trap cleanup EXIT
 
 mkdir -p "$WORK/supabase"
 # Separate project_id => separate containers and volumes. The developer's
-# supabase volume is never opened by this stack.
-sed "s/^project_id = .*/project_id = \"$PROJECT_ID\"/" supabase/config.toml > "$WORK/supabase/config.toml"
+# supabase volume is never opened by this stack, and its ports are untouched.
+sed -e "s/^project_id = .*/project_id = \"$PROJECT_ID\"/" \
+    -e "s/^port = 54321$/port = $HARNESS_API_PORT/" \
+    -e "s/^port = 54322$/port = $HARNESS_DB_PORT/" \
+    -e "s/^shadow_port = 54320$/shadow_port = $HARNESS_SHADOW_PORT/" \
+    -e "s/^port = 54323$/port = $HARNESS_STUDIO_PORT/" \
+    supabase/config.toml > "$WORK/supabase/config.toml"
+cat >> "$WORK/supabase/config.toml" <<CFG
+
+[inbucket]
+port = $HARNESS_INBUCKET_PORT
+
+[analytics]
+enabled = false
+port = $HARNESS_ANALYTICS_PORT
+CFG
 if ! grep -q "project_id = \"$PROJECT_ID\"" "$WORK/supabase/config.toml"; then
   echo "FAILED: could not rewrite project_id in the temporary config." >&2
   exit 1
 fi
+if ! grep -q "^port = $HARNESS_DB_PORT$" "$WORK/supabase/config.toml"; then
+  echo "FAILED: could not rewrite the database port in the temporary config." >&2
+  exit 1
+fi
 
 echo "Starting disposable Supabase stack ($PROJECT_ID)"
+HARNESS_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STARTED=true
 (cd "$WORK" && supabase start -x studio,imgproxy,edge-runtime,logflare,vector)
 
 ready=false
 for _ in $(seq 1 120); do
-  if pg_isready -h 127.0.0.1 -p 54322 -U postgres >/dev/null 2>&1; then
+  if pg_isready -h 127.0.0.1 -p "$HARNESS_DB_PORT" -U postgres >/dev/null 2>&1; then
     ready=true
     break
   fi
   sleep 1
 done
 if [ "$ready" != true ]; then
-  echo "FAILED: the disposable database did not become ready on 127.0.0.1:54322 within 120s." >&2
+  echo "FAILED: the disposable database did not become ready on 127.0.0.1:$HARNESS_DB_PORT within 120s." >&2
   exit 1
 fi
 
@@ -144,14 +181,21 @@ fi
 # *this* server, and the suites are only meaningful if it is the one the stack
 # just started.
 psql_disposable() {
-  PGPASSWORD=postgres psql -h 127.0.0.1 -p 54322 -U postgres -d postgres \
+  PGPASSWORD=postgres psql -h 127.0.0.1 -p "$HARNESS_DB_PORT" -U postgres -d postgres \
     -v ON_ERROR_STOP=1 -tAq "$@"
 }
 
 SERVER_VERSION="$(psql_disposable -c 'select version()')"
+# The container listens on 5432 internally whatever host port the CLI maps it
+# to, so port equality proves nothing. What does: this host port was free
+# immediately before `supabase start` (checked above), and the postmaster now
+# answering there started after the harness invoked the CLI. That rules out a
+# developer stack answering on the same port.
 SERVER_PORT="$(psql_disposable -c "select current_setting('port')")"
-if [ "$SERVER_PORT" != "54322" ]; then
-  echo "REFUSED: the server answered on port ${SERVER_PORT:-<none>}, not the disposable 54322." >&2
+STARTED_AFTER="$(psql_disposable -c "select pg_postmaster_start_time() > timestamptz '${HARNESS_STARTED_AT}'")"
+if [ "$STARTED_AFTER" != "t" ]; then
+  echo "REFUSED: the server on 127.0.0.1:$HARNESS_DB_PORT started before this harness (port $SERVER_PORT)." >&2
+  echo "It is not the disposable stack, and nothing has been written to it." >&2
   exit 1
 fi
 case "$SERVER_VERSION" in
@@ -171,10 +215,10 @@ if [ "$ROLE_COUNT" != "3" ]; then
   exit 1
 fi
 echo "Engine: $SERVER_VERSION"
-echo "Disposable target: 127.0.0.1:54322 (project $PROJECT_ID), Supabase roles present"
+echo "Disposable target: 127.0.0.1:$HARNESS_DB_PORT (project $PROJECT_ID), Supabase roles present"
 
 echo "Bootstrapping the canonical snapshot"
-PGPASSWORD=postgres bash scripts/db-reset-fresh.sh
+PGPASSWORD=postgres PGPORT="$HARNESS_DB_PORT" bash scripts/db-reset-fresh.sh
 
 echo "Applying post-snapshot migrations"
 SNAPSHOT_CUTOFF=20260920190000
@@ -183,7 +227,7 @@ while IFS= read -r f; do
   version="$(basename "$f" | cut -d_ -f1)"
   if [[ "$version" > "$SNAPSHOT_CUTOFF" ]]; then
     echo "  applying $(basename "$f")"
-    PGPASSWORD=postgres psql -h 127.0.0.1 -p 54322 -U postgres -d postgres \
+    PGPASSWORD=postgres psql -h 127.0.0.1 -p "$HARNESS_DB_PORT" -U postgres -d postgres \
       -v ON_ERROR_STOP=1 -q -f "$f"
     applied=$((applied + 1))
   fi
@@ -191,7 +235,7 @@ done < <(ls supabase/migrations/[0-9]*_*.sql | sort)
 echo "Applied $applied post-snapshot migrations"
 
 echo "Asserting the function ACL surface"
-PGPASSWORD=postgres psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+PGPASSWORD=postgres psql -h 127.0.0.1 -p "$HARNESS_DB_PORT" -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -f scripts/db-tests/assert-function-acl-surface.sql >/dev/null
 
 status_env="$(mktemp "${TMPDIR:-/tmp}/synapse-pharm-harness.XXXXXX.env")"
@@ -252,6 +296,11 @@ run_suite() {
     reconciliation)
       npm run db:reconciliation:check
       ;;
+    tally)
+      # Binds to nothing pre-existing: the suite provisions its own ZZ tenant,
+      # products and sessions, and reports its own cleanup.
+      node --test scripts/db-tests/tally-replay.local.test.mjs
+      ;;
   esac
 }
 
@@ -273,7 +322,7 @@ done
 echo
 echo "=== pharmacy db harness evidence ==="
 echo "engine:        $SERVER_VERSION"
-echo "target:        127.0.0.1:54322 (project $PROJECT_ID, disposable)"
+echo "target:        127.0.0.1:$HARNESS_DB_PORT (project $PROJECT_ID, disposable)"
 echo "migrations:    $applied applied after snapshot cutoff $SNAPSHOT_CUTOFF"
 for line in "${RESULTS[@]}"; do echo "suite:         $line"; done
 echo "evidence-kind: native PostgreSQL under a disposable Supabase stack (NOT WebAssembly)"

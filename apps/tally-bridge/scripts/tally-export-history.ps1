@@ -275,6 +275,36 @@ function Get-VoucherDates([string]$path, [int]$edgeBytes = 262144) {
     return $dates
 }
 
+function Get-BatchExpiryCoverage([string]$path) {
+    $total = 0
+    $withExpiry = 0
+    if (-not (Test-Path -LiteralPath $path)) { return [pscustomobject]@{ Total = 0; WithExpiry = 0 } }
+    $inBlock = $false
+    $hasExpiry = $false
+    # Line by line: a month of vouchers is tens of megabytes and only the
+    # BATCHALLOCATIONS.LIST blocks matter here.
+    $reader = New-Object System.IO.StreamReader($path)
+    try {
+        while ($null -ne ($line = $reader.ReadLine())) {
+            if ($line -match '<BATCHALLOCATIONS\.LIST') {
+                $inBlock = $true
+                $hasExpiry = $false
+            }
+            if ($inBlock -and $line -match '<EXPIRYDATE[^>]*>\s*[^<\s]') { $hasExpiry = $true }
+            if ($line -match '</BATCHALLOCATIONS\.LIST>') {
+                if ($inBlock) {
+                    $total = $total + 1
+                    if ($hasExpiry) { $withExpiry = $withExpiry + 1 }
+                }
+                $inBlock = $false
+            }
+        }
+    } finally {
+        $reader.Dispose()
+    }
+    return [pscustomobject]@{ Total = $total; WithExpiry = $withExpiry }
+}
+
 function Invoke-Tally([string]$body, [string]$outFile, [int]$targetPort = 0) {
     if ($targetPort -le 0) { $targetPort = $script:Port }
     $started = Get-Date
@@ -322,10 +352,14 @@ function Invoke-TallyText([string]$body, [int]$targetPort = 0) {
 function Get-MasterRecords([string]$type, [string[]]$methods) {
     $id = "Synapse $type"
     $methodXml = (@($methods) | ForEach-Object { "<NATIVEMETHOD>$_</NATIVEMETHOD>" }) -join ""
+    # The cutoff is stated as Tally's current date so a build that honours it
+    # reports closing balances for that day rather than for the company's own
+    # period end. A build that ignores it answers exactly as before; the import
+    # refuses to compare figures that belong to another period.
     $body = '<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>' + $id +
         '</ID></HEADER><BODY><DESC><STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT><SVCURRENTCOMPANY>' +
         (Escape-Xml $script:Company) +
-        '</SVCURRENTCOMPANY></STATICVARIABLES><TDL><TDLMESSAGE><COLLECTION NAME=''' + $id +
+        '</SVCURRENTCOMPANY><SVCURRENTDATE>' + $script:endDate.ToString("yyyyMMdd") + '</SVCURRENTDATE></STATICVARIABLES><TDL><TDLMESSAGE><COLLECTION NAME=''' + $id +
         ''' ISMODIFY=''No'' ISFIXED=''No'' ISINITIALIZE=''No'' ISOPTION=''No'' ISINTERNAL=''No''><TYPE>' + $type +
         '</TYPE>' + $methodXml + '</COLLECTION></TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>'
 
@@ -692,6 +726,32 @@ if ($allDates.Count -gt 0) {
     Say ("  Vouchers run from {0} to {1}." -f $firstVoucher.ToString("yyyy-MM-dd"), $lastVoucher.ToString("yyyy-MM-dd"))
     if ($firstVoucher -lt $startDate) {
         $problems.Add(("a voucher is dated {0}, before the books begin on {1}" -f $firstVoucher.ToString("yyyyMMdd"), $startDate.ToString("yyyyMMdd")))
+    }
+}
+
+# ----------------------------------------------------------------- batch expiry
+# A no-expiry export is importable, but only by an operator who states that
+# choice at review. Counted here, while the operator still has Tally open, so
+# the numbers are visible before the upload rather than only in the portal. It
+# is not a problem with the export, so it does not fail the run.
+$batchTotal = 0
+$batchDated = 0
+foreach ($entry in ($written | Where-Object { $_.From })) {
+    $coverage = Get-BatchExpiryCoverage $entry.File
+    $batchTotal = $batchTotal + $coverage.Total
+    $batchDated = $batchDated + $coverage.WithExpiry
+}
+if ($batchTotal -gt 0) {
+    Say ""
+    Say ("  Batch allocations: {0}; with an expiry date: {1}." -f $batchTotal, $batchDated)
+    if ($batchDated -lt $batchTotal) {
+        Say ("  {0} of {1} batch allocations carry no expiry date." -f ($batchTotal - $batchDated), $batchTotal) -ForegroundColor Yellow
+        Say "  If Tally does not hold them, this export can still be imported: at review, tick" -ForegroundColor Yellow
+        Say "  'This export carries no batch expiry dates'. Imported stock keeps Tally's batch" -ForegroundColor Yellow
+        Say "  names but cannot be expiry-tracked, allocated by expiry or recalled by batch" -ForegroundColor Yellow
+        Say "  expiry. Stock received after the cut-over is unaffected." -ForegroundColor Yellow
+        Say "  To track expiry instead, turn on batch-wise details with expiry dates for the" -ForegroundColor Yellow
+        Say "  stock items in Tally and export again." -ForegroundColor Yellow
     }
 }
 

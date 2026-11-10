@@ -41,8 +41,9 @@ export function detectTallyFormat(bytes: Uint8Array, fileName?: string): TallySo
     const name = (fileName ?? "").toLowerCase()
     if (name && !name.endsWith(".xlsx")) {
       throw new TallySourceError(
-        "Only .xlsx workbooks are supported, not other archive files. " +
-          "A zipped Tally company folder is not an export: " +
+        "A zip is read as an export package, not as a single file. " +
+          "Add it through the Tally import, which unpacks each monthly export inside it. " +
+          "A zipped Tally company data folder is not an export: " +
           "export All Masters and Day Book from Tally, or use the Tally Bridge.",
       )
     }

@@ -17,7 +17,8 @@
 import { canApplyManifest, type TallyMigrationManifest } from "./chunks"
 import { editionDisclosure } from "./editions"
 import type { TallyReconcileCheck } from "./reconcile"
-import type { TallyPlanSummary } from "./types"
+import type { ReplayGate } from "./replay-gate"
+import type { TallyPlanSummary, TallyReplayTarget } from "./types"
 
 export type CutoverState = "pre-cutover" | "in-progress" | "completed" | "blocked"
 
@@ -55,6 +56,11 @@ export type PreflightInput = {
   reconcile?: readonly TallyReconcileCheck[] | null
   /** Whether the IMPORT_TALLY audit row exists. Only meaningful once complete. */
   auditRecorded?: boolean
+  /**
+   * Replay only. The saved target and its gate, or null when the session is a
+   * replay whose target could not be read — which blocks.
+   */
+  replay?: { target: TallyReplayTarget; gate: ReplayGate } | null
 }
 
 const APPLY_CAPABILITIES = ["inventory.adjust", "reports.financial"] as const
@@ -226,6 +232,17 @@ export function buildCutoverPreflight(input: PreflightInput): CutoverPreflight {
       : check("exceptions", "Unresolved extraction errors", "pass", "None.", true),
   )
 
+  if (summary?.batchExpiry === "not-supplied") {
+    checks.push(
+      check(
+        "batch-expiry",
+        "Batch expiry dates",
+        "warning",
+        "This plan was prepared accepting that the export states no batch expiry dates. Imported stock keeps Tally's batch names but no expiry, so it cannot be expiry-tracked, allocated by expiry or recalled by batch expiry; stock received after the cut-over is unaffected.",
+      ),
+    )
+  }
+
   const reconciliation = summary?.reconciliation
   if (!reconciliation) {
     checks.push(
@@ -324,6 +341,100 @@ export function buildCutoverPreflight(input: PreflightInput): CutoverPreflight {
       "the supplier opening balances",
     ),
   )
+
+  if (summary?.mode === "replay") {
+    const replayTarget = input.replay?.target
+    if (!replayTarget || !input.replay) {
+      checks.push(
+        check(
+          "replay-plan",
+          "Replay target saved",
+          "fail",
+          "This session rebuilds the history but its saved replay target is missing, so the closing position cannot be checked. Preview the export again.",
+          true,
+        ),
+      )
+    } else {
+      const gate = input.replay.gate
+      const periodEnd = manifest?.period?.to
+      checks.push(
+        replayTarget.cutoffDate === periodEnd
+          ? check(
+              "replay-period",
+              "Cut-off matches the exported period",
+              "pass",
+              `The export ends ${periodEnd} and the replay stops there.`,
+              true,
+            )
+          : check(
+              "replay-period",
+              "Cut-off matches the exported period",
+              "fail",
+              `Tally's closing figures are only comparable when the export ends on the cut-off: the export ends ${periodEnd ?? "no stated date"} and the replay stops at ${replayTarget.cutoffDate || "no date"}. Export the period so its last day is the cut-off.`,
+              true,
+            ),
+        check(
+          "replay-order",
+          "Replay sequence recorded",
+          replayTarget.ordering === "date-then-export-order" ? "pass" : "fail",
+          replayTarget.ordering === "date-then-export-order"
+            ? `${replayTarget.eventCount} events, ordered by date and then by the order Tally exported them. Tally states no time of day, so this is a reproducible sequence, not the day's real order.`
+            : "The saved replay does not state how its events were ordered, so the sequence cannot be reviewed.",
+          replayTarget.ordering !== "date-then-export-order",
+        ),
+        replayTarget.movementCount > 0
+          ? check(
+              "replay-movements",
+              "Stock movements captured",
+              "pass",
+              `${replayTarget.movementCount} stock movement${replayTarget.movementCount === 1 ? "" : "s"} across ${replayTarget.perDay.length} day${replayTarget.perDay.length === 1 ? "" : "s"}.`,
+              true,
+            )
+          : check(
+              "replay-movements",
+              "Stock movements captured",
+              "fail",
+              "No stock movement was captured from this export, so a replay would carry balances but no history. Export the day book with inventory vouchers, or use the balances-only mode.",
+              true,
+            ),
+        gate.missing.length === 0
+          ? check(
+              "replay-parity",
+              "Closing position reaches Tally's",
+              "pass",
+              gate.blockers.length === 0
+                ? "Every figure the export carries agrees with the replay."
+                : `All ${gate.blockers.length} difference${gate.blockers.length === 1 ? " is" : "s are"} acknowledged with a reason, which is recorded with the cut-over.`,
+              true,
+            )
+          : check(
+              "replay-parity",
+              "Closing position reaches Tally's",
+              "fail",
+              `${gate.missing.length} difference${gate.missing.length === 1 ? "" : "s"} between the replay and Tally have not been answered: ${gate.missing
+                .slice(0, 5)
+                .map((blocker) => blocker.label)
+                .join("; ")}${gate.missing.length > 5 ? `; and ${gate.missing.length - 5} more` : ""}. Answer each with a reason, or correct the export.`,
+              true,
+            ),
+        gate.sequenceConfirmed
+          ? check(
+              "replay-sequence",
+              "Sequence confirmed",
+              "pass",
+              "The operator has confirmed the order the history is replayed in.",
+              true,
+            )
+          : check(
+              "replay-sequence",
+              "Sequence confirmed",
+              "fail",
+              "The order in which the history is replayed has not been confirmed. Review the timeline and confirm it before applying.",
+              true,
+            ),
+      )
+    }
+  }
 
   const completed = input.sessionStatus === "complete"
   const reconcile = input.reconcile ?? null

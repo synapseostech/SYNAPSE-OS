@@ -262,6 +262,24 @@ describe("POST /api/admin/tally/[id]/preview", () => {
     expect(m.readSource).not.toHaveBeenCalled()
   })
 
+  it("passes the operator's no-expiry decision to the normaliser", async () => {
+    const res = await post({ batchExpiry: "not-supplied" })
+
+    expect(res.status).toBe(200)
+    expect(m.normalise).toHaveBeenCalledWith(
+      { currency: "UGX" },
+      expect.objectContaining({ batchExpiry: "not-supplied" }),
+    )
+  })
+
+  it("refuses an expiry policy it does not understand", async () => {
+    const res = await post({ batchExpiry: "ignore" })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe("TALLY_BATCH_EXPIRY_INVALID")
+    expect(m.normalise).not.toHaveBeenCalled()
+  })
+
   it("normalises once, stores the plan and returns the review payload", async () => {
     const res = await post({ conversionDate: "2026-04-01" })
     const body = await res.json()

@@ -70,25 +70,25 @@ Everything below was run in this working tree after the final edit, and the figu
 
 <!-- evidence:begin -->
 source: artifacts/readiness/evidence.json
-timestamp: 2026-11-04T21:07:35.724Z
-git.branch: feat/tally-bridge-command
-git.head: 0a641069860154203407cf2e39562948aa748c0e
-migrationCount: 214
+timestamp: 2026-11-09T16:59:27.503Z
+git.branch: feat/sadio-tally-migration
+git.head: dc8e2c9a6fc37c42d12a406f9ab9ea561af6a349
+migrationCount: 217
 suites.rls-tenant-isolation.tests: 21
-suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=27 failures=0
+suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=30 failures=0
 suites.security-gates.exitCode: 0
 suites.hardening.tests: 74
 suites.tenancy.tests: 59
 suites.workflow-safety.tests: 89
 suites.rls-matrix.tests: 10
-dbAcl.definerFunctions: 88
+dbAcl.definerFunctions: 97
 dbAcl.publicGrants: 0
 dbAcl.possibleImplicitPublic: 28
 dbAcl.liveCheck: SKIPPED_NO_DATABASE_ACL_URL
 routeIntegrity.pages: 289
 routeIntegrity.navLinks: 73
 routeIntegrity.roadmap: 77
-disposableDb.result: not_provided
+disposableDb.result: pass
 <!-- evidence:end -->
 
 `npm run db:check` accepts the migration set, including the repair at `20261025120000_tenant_isolation_policy_repair.sql` and the two migrations added after this handover was written, `20261026120000_telemedicine_intake_tenant_ownership.sql` and `20261026130000_scope_admin_policies_to_tenant.sql`. `npm run db:history:check` exits 0 and reports `remoteReconciliation: BLOCKED_OPERATOR_CONTROLLED`, which is the correct status when no linked database is accessible.

@@ -6,14 +6,26 @@
  */
 
 import type {
+  TallyCutoverMovement,
   TallyCutoverPlan,
   TallyCutoverPurchase,
   TallyCutoverSale,
   TallyCutoverVoucher,
 } from "@synapse/db/tally-normalise"
 import { TALLY_SYSTEM_ACCOUNT_CODES } from "@synapse/db/tally-map"
+import {
+  buildReplayEvents,
+  compareReplayMovements,
+  reconcileReplay,
+  simulateReplay,
+} from "@synapse/db/tally-replay"
 import type { TallyApplyStage } from "./apply"
-import { TALLY_APPLY_CHUNK, type TallyPlanSummary } from "./types"
+import {
+  TALLY_APPLY_CHUNK,
+  type TallyPlanSummary,
+  type TallyReplayDayCount,
+  type TallyReplayTarget,
+} from "./types"
 import {
   ensureTallyBucket,
   readTallyJson,
@@ -28,6 +40,8 @@ type StaticPlan = Pick<
   | "companyKey"
   | "currency"
   | "conversionDate"
+  | "cutoffDate"
+  | "ordering"
   | "mode"
   | "accounts"
   | "parties"
@@ -47,6 +61,8 @@ type PlanChunk = {
 const SUMMARY = "plan-summary"
 const STATIC = "plan-static"
 const CHUNK = "plan-chunk"
+const MOVEMENT_CHUNK = "plan-movement-chunk"
+const REPLAY_TARGET = "plan-replay-target"
 
 function round2(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100
@@ -115,17 +131,69 @@ function journalSources(plan: TallyCutoverPlan): string[] {
   return sources
 }
 
+/**
+ * Replays the plan and places the position it reaches beside Tally's own
+ * closing figures. The result is persisted once, so Apply checks against the
+ * numbers the review showed rather than recomputing them from another input.
+ */
+export function buildReplayTarget(
+  plan: TallyCutoverPlan,
+  preparedAt: string,
+): TallyReplayTarget {
+  const events = buildReplayEvents(plan)
+  const simulation = simulateReplay(plan)
+  const reconciliation = reconcileReplay(simulation, plan)
+
+  const perDay = new Map<string, TallyReplayDayCount>()
+  for (const event of events) {
+    const day = perDay.get(event.date) ?? { date: event.date, events: 0, movements: 0, kinds: {} }
+    day.events += 1
+    day.movements += event.movements.length
+    day.kinds[event.kind] = (day.kinds[event.kind] ?? 0) + 1
+    perDay.set(event.date, day)
+  }
+
+  const totals = { match: 0, difference: 0, notAvailable: 0 }
+  for (const row of reconciliation.rows) {
+    if (row.status === "match") totals.match += 1
+    else if (row.status === "difference") totals.difference += 1
+    else totals.notAvailable += 1
+  }
+
+  return {
+    preparedAt,
+    conversionDate: plan.conversionDate,
+    cutoffDate: plan.cutoffDate ?? "",
+    ordering: "date-then-export-order",
+    eventCount: events.length,
+    movementCount: (plan.movements ?? []).length,
+    perDay: [...perDay.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    reconciliation: reconciliation.rows,
+    totals,
+    blocking: reconciliation.blocking,
+    warnings: reconciliation.warnings,
+    findings: simulation.findings,
+    simulated: simulation.state,
+    costs: simulation.lineCosts,
+  }
+}
+
 export function summarisePlan(
   plan: TallyCutoverPlan,
   format: "xml" | "xlsx" | "xls" | "csv",
   chunkSize = TALLY_APPLY_CHUNK,
+  replay?: TallyReplayTarget,
 ): TallyPlanSummary {
   return {
+    // One timestamp for the whole preview: an acknowledgement made against
+    // this summary must also match the replay target it was shown with.
+    preparedAt: replay?.preparedAt ?? new Date().toISOString(),
     company: plan.company,
     companyKey: plan.companyKey,
     currency: plan.currency,
     conversionDate: plan.conversionDate,
     mode: plan.mode,
+    batchExpiry: plan.batchExpiry ?? "source",
     format,
     counts: plan.counts,
     opening: {
@@ -136,16 +204,31 @@ export function summarisePlan(
     },
     stock: plan.stock,
     reconciliation: reconciliationOf(plan),
+    ...(replay
+      ? {
+          replay: {
+            cutoffDate: replay.cutoffDate,
+            ordering: replay.ordering,
+            eventCount: replay.eventCount,
+            movementCount: replay.movementCount,
+            movementChunkCount: Math.ceil(replay.movementCount / chunkSize),
+            perDay: replay.perDay,
+            reconciliation: replay.reconciliation,
+            blocking: replay.blocking,
+            warnings: replay.warnings,
+          },
+        }
+      : {}),
     exceptions: plan.exceptions.map((entry) => ({
       code: entry.code,
       message: entry.message,
       detail: entry.detail,
       severity: entry.severity,
     })),
+    ...(plan.exceptionCounts ? { exceptionCounts: plan.exceptionCounts } : {}),
     chunkCount: Math.max(1, Math.ceil(journalSources(plan).length / chunkSize)),
     chunkSize,
     warnings: plan.warnings,
-    preparedAt: new Date().toISOString(),
   }
 }
 
@@ -156,7 +239,9 @@ export async function writeTallyPlan(
   plan: TallyCutoverPlan,
   format: "xml" | "xlsx" | "xls" | "csv",
 ): Promise<TallyPlanSummary> {
-  const summary = summarisePlan(plan, format)
+  const preparedAt = new Date().toISOString()
+  const replay = plan.mode === "replay" ? buildReplayTarget(plan, preparedAt) : undefined
+  const summary = summarisePlan(plan, format, TALLY_APPLY_CHUNK, replay)
   // The plan is JSON. A bucket that was set up for the export's XML alone
   // accepts every upload and then refuses to store this, after the whole file
   // has already been read.
@@ -167,6 +252,8 @@ export async function writeTallyPlan(
     companyKey: plan.companyKey,
     currency: plan.currency,
     conversionDate: plan.conversionDate,
+    cutoffDate: plan.cutoffDate,
+    ordering: plan.ordering,
     mode: plan.mode,
     accounts: plan.accounts,
     parties: plan.parties,
@@ -199,6 +286,23 @@ export async function writeTallyPlan(
     await writeTallyJson(db, tallyChunkPath(tenantId, sessionId, CHUNK, index), chunk)
   }
 
+  if (replay) {
+    // Chronological, because FEFO at a sale depends on what had arrived by then.
+    // A chunk applied out of order would consume a batch that did not exist yet
+    // and then disagree with the simulation at closing.
+    const movements = [...(plan.movements ?? [])].sort(compareReplayMovements)
+    const movementChunks = Math.ceil(replay.movementCount / summary.chunkSize)
+    for (let index = 0; index < movementChunks; index += 1) {
+      const start = index * summary.chunkSize
+      await writeTallyJson(
+        db,
+        tallyChunkPath(tenantId, sessionId, MOVEMENT_CHUNK, index),
+        movements.slice(start, start + summary.chunkSize),
+      )
+    }
+    await writeTallyJson(db, tallyChunkPath(tenantId, sessionId, REPLAY_TARGET), replay)
+  }
+
   await writeTallyJson(db, tallyChunkPath(tenantId, sessionId, STATIC), staticPlan)
   await writeTallyJson(db, tallyChunkPath(tenantId, sessionId, SUMMARY), summary)
   return summary
@@ -212,11 +316,38 @@ export async function readTallyPlanSummary(
   return readTallyJson<TallyPlanSummary>(db, tallyChunkPath(tenantId, sessionId, SUMMARY))
 }
 
+/** The replay figures the review, the gate and the closing check all read. */
+export async function readTallyReplayTarget(
+  db: TallyStorageClient,
+  tenantId: string,
+  sessionId: string,
+): Promise<TallyReplayTarget | null> {
+  return readTallyJson<TallyReplayTarget>(
+    db,
+    tallyChunkPath(tenantId, sessionId, REPLAY_TARGET),
+  )
+}
+
+/** One movement chunk, as the timeline route pages through them. */
+export async function readTallyMovementChunk(
+  db: TallyStorageClient,
+  tenantId: string,
+  sessionId: string,
+  index: number,
+): Promise<TallyCutoverMovement[] | null> {
+  return readTallyJson<TallyCutoverMovement[]>(
+    db,
+    tallyChunkPath(tenantId, sessionId, MOVEMENT_CHUNK, index),
+  )
+}
+
 export type LoadedStagePlan = {
   plan: TallyCutoverPlan
   chunk?: PlanChunk
   totalChunks: number
   summary: TallyPlanSummary
+  /** `replay-closing` only: the figures the closing check compares against. */
+  replay?: TallyReplayTarget
 }
 
 /** Loads exactly what one apply stage needs. */
@@ -246,15 +377,33 @@ export async function loadStagePlan(
     chunk = loaded ?? { vouchers: [], sales: [], purchases: [] }
   }
 
+  let movements: TallyCutoverMovement[] | undefined
+  if (stage === "stock-history") {
+    // A chunk that is missing past the last one means the movements ran out.
+    movements = (await readTallyMovementChunk(db, tenantId, sessionId, chunkIndex)) ?? []
+  }
+
+  let replay: TallyReplayTarget | undefined
+  if (stage === "journals" || stage === "stock-history" || stage === "replay-closing") {
+    // Journals reads the cost each sale line's stock moved at, history reads
+    // which negatives the operator acknowledged, and closing reads the
+    // position to compare against. All three read the same saved artifact.
+    replay = (await readTallyReplayTarget(db, tenantId, sessionId)) ?? undefined
+    // Closing against nothing would compare the database with itself.
+    if (stage === "replay-closing" && !replay) throw new Error("TALLY_PLAN_MISSING")
+  }
+
   return {
     summary,
     totalChunks: summary.chunkCount,
     chunk,
+    replay,
     plan: {
       ...staticPlan,
       vouchers: chunk?.vouchers ?? [],
       sales: chunk?.sales ?? [],
       purchases: chunk?.purchases ?? [],
+      ...(movements ? { movements } : {}),
       exceptions: [],
     } as TallyCutoverPlan,
   }

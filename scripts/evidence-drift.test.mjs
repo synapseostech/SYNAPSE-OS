@@ -14,9 +14,10 @@ import { renderEvidenceBlock, extractEvidenceBlock } from "./lib/evidence-block.
  * restating numbers. Deliberately corrupt one value in evidence.json and this
  * test fails; restore it and it passes.
  *
- * These expectations are pinned to the known-good baseline at HEAD 0a641069. They
- * are the *guard*, not the documentation: the audit documents cite evidence.json,
- * and this test is what makes a silent rot visible.
+ * These expectations are pinned to the known-good baseline at HEAD dc8e2c9a, the
+ * commit the evidence was regenerated at. They are the *guard*, not the
+ * documentation: the audit documents cite evidence.json, and this test is what
+ * makes a silent rot visible.
  */
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -31,7 +32,7 @@ const migrationFiles = readdirSync(join(root, "supabase", "migrations"))
   .sort().length
 
 const EXPECTED = {
-  gitHead: "0a641069860154203407cf2e39562948aa748c0e",
+  gitHead: "dc8e2c9a6fc37c42d12a406f9ab9ea561af6a349",
   migrationCount: migrationFiles,
   rlsTests: 21,
   hardeningTests: 74,

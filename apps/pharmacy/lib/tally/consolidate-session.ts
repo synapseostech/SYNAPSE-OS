@@ -7,7 +7,7 @@
  * from drifting — a change to how chunks become a document lands for both.
  */
 
-import { normaliseTallyDocument } from "@synapse/db/tally-normalise"
+import { normaliseTallyDocument, type TallyBatchExpiry } from "@synapse/db/tally-normalise"
 import type { TallyAccountOverrides } from "@synapse/db/tally-map"
 import { applyTallyStockSheet, type TallyStockSheet, type TallyStockSheetMerge } from "./stock-sheet"
 import { consolidateTallyParts, type TallyConsolidation } from "./consolidate"
@@ -66,6 +66,8 @@ export async function consolidateStoredChunks(
     productSkuOverrides?: Record<string, string>
     /** Batch expiries the operator typed, merged before normalising. */
     stockSheet?: TallyStockSheet
+    /** Whether the source states batch expiry dates. */
+    batchExpiry?: TallyBatchExpiry
   },
 ): Promise<TallyConsolidatedPlan> {
   const consolidation = await readStoredDocument(client, input)
@@ -80,6 +82,7 @@ export async function consolidateStoredChunks(
     currency: document.currency,
     accountOverrides: input.accountOverrides,
     productSkuOverrides: input.productSkuOverrides,
+    batchExpiry: input.batchExpiry,
   })
 
   return { plan, consolidation: { ...consolidation, document }, ...(merge ? { stockSheet: merge } : {}) }

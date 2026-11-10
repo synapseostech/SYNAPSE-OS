@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireTallyAdmin } from "@/lib/tally/auth"
-import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
+import { requireTallyAdmin, tallyReplayEnabled } from "@/lib/tally/auth"
+import { CUTOVER_ALREADY_COMPLETE, findCutoverBlockingSession } from "@/lib/tally/cutover"
+import { evaluateContinuation } from "@/lib/tally/continuation"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { normaliseTallyDocument } from "@synapse/db/tally-normalise"
 import type { TallyAccountOverrides } from "@synapse/db/tally-map"
 import type { TallyXmlDocument } from "@synapse/db/tally-xml-rows"
+import type { TallyImportMode } from "@/lib/tally/types"
 import { readTallySource, type TallyStorageClient } from "@/lib/tally/storage"
 import { readTallyDocument } from "@/lib/tally/source"
 import {
@@ -40,7 +42,7 @@ type MappingState = {
   path?: string
   bucket?: string
   conversionDate?: string
-  mode?: "opening" | "closing"
+  mode?: TallyImportMode
   accountOverrides?: TallyAccountOverrides
   productSkuOverrides?: Record<string, string>
   edition?: unknown
@@ -63,7 +65,7 @@ export async function POST(
   const { tenantId } = auth
   const { id } = await params
 
-  if (await findCompletedCutover(tenantId)) {
+  if (await findCutoverBlockingSession(tenantId, id)) {
     return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
   }
 
@@ -89,6 +91,7 @@ export async function POST(
     period?: unknown
     edition?: unknown
     company?: unknown
+    batchExpiry?: unknown
   } = {}
   try {
     const text = await request.text()
@@ -99,11 +102,23 @@ export async function POST(
         period?: unknown
         edition?: unknown
         company?: unknown
+        batchExpiry?: unknown
       }
     }
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
+  if (
+    body.batchExpiry !== undefined &&
+    body.batchExpiry !== "source" &&
+    body.batchExpiry !== "not-supplied"
+  ) {
+    return NextResponse.json(
+      { error: "batchExpiry must be \"source\" or \"not-supplied\"", code: "TALLY_BATCH_EXPIRY_INVALID" },
+      { status: 400 },
+    )
+  }
+  const batchExpiry = body.batchExpiry === "not-supplied" ? "not-supplied" : "source"
   // The company the operator entered, used only when the file names none.
   const bodyCompany = typeof body.company === "string" ? body.company.trim() : ""
   if (body.company !== undefined && typeof body.company !== "string") {
@@ -113,10 +128,25 @@ export async function POST(
     )
   }
   if (body.mode !== undefined && body.mode !== "opening" && body.mode !== "closing") {
-    return NextResponse.json(
-      { error: "mode must be either \"opening\" or \"closing\"" },
-      { status: 400 },
-    )
+    if (body.mode === "replay" && !tallyReplayEnabled()) {
+      return NextResponse.json(
+        {
+          error: "The historical replay mode is disabled in this environment.",
+          code: "TALLY_REPLAY_DISABLED",
+        },
+        { status: 400 },
+      )
+    }
+    if (body.mode !== "replay") {
+      return NextResponse.json(
+        {
+          error: tallyReplayEnabled()
+            ? "mode must be \"opening\", \"closing\" or \"replay\""
+            : "mode must be either \"opening\" or \"closing\"",
+        },
+        { status: 400 },
+      )
+    }
   }
 
   // The period the operator asked Tally for. Used only when the file itself
@@ -209,6 +239,7 @@ export async function POST(
         conversionDate: body.conversionDate ?? mapping.conversionDate,
         accountOverrides: mapping.accountOverrides,
         productSkuOverrides: mapping.productSkuOverrides,
+        batchExpiry,
         ...(stockSheet ? { stockSheet } : {}),
       })
       plan = consolidated.plan
@@ -240,7 +271,30 @@ export async function POST(
         currency: document.currency,
         accountOverrides: mapping.accountOverrides,
         productSkuOverrides: mapping.productSkuOverrides,
+        batchExpiry,
       })
+    }
+
+    // A session that declares a continuation is held to the checkpoint it names
+    // before any plan artifact is written, so a refused continuation leaves
+    // nothing behind for apply to pick up.
+    const continuation = await evaluateContinuation({
+      tenantId,
+      mapping: mapping as Record<string, unknown>,
+      companyKey: plan.companyKey,
+      conversionDate: plan.conversionDate,
+      mode: plan.mode,
+      client: db(),
+    })
+    if (continuation.kind === "invalid") {
+      return NextResponse.json(
+        {
+          error: continuation.message,
+          code: continuation.code,
+          continueFrom: continuation.continueFrom ?? null,
+        },
+        { status: 409 },
+      )
     }
 
     const summary = await writeTallyPlan(storage(), tenantId, id, plan, format)

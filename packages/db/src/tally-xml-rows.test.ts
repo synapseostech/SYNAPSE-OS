@@ -181,6 +181,33 @@ describe("parseTallyXmlRows", () => {
     )
   })
 
+  it("reads the Tally user and cost centre a voucher states", () => {
+    const document = parseTallyXmlRows(
+      tallyExport(`
+        <VOUCHER VCHTYPE="Cash Sale">
+          <GUID>attributed-guid</GUID>
+          <DATE>20251017</DATE>
+          <ENTEREDBY>sam</ENTEREDBY>
+          <ISCOSTCENTRE>Yes</ISCOSTCENTRE>
+          <COSTCENTRENAME>Gloria</COSTCENTRENAME>
+        </VOUCHER>
+        <VOUCHER VCHTYPE="Cash Sale">
+          <GUID>plain-guid</GUID>
+          <DATE>20251018</DATE>
+          <ENTEREDBY>admin</ENTEREDBY>
+          <ISCOSTCENTRE>No</ISCOSTCENTRE>
+        </VOUCHER>
+      `),
+      "tally.xml",
+    )
+
+    assert.equal(document.vouchers.length, 2)
+    assert.equal(document.vouchers[0].enteredBy, "sam")
+    assert.equal(document.vouchers[0].costCentre, "Gloria")
+    assert.equal(document.vouchers[1].enteredBy, "admin")
+    assert.equal(document.vouchers[1].costCentre, undefined)
+  })
+
   it("reads a sale line whose posting is the ACCOUNTINGALLOCATIONS record itself", () => {
     const document = parseTallyXmlRows(
       tallyExport(`
@@ -472,6 +499,16 @@ describe("parseTallyXmlRows", () => {
 
   it("refuses input that is not XML at all", () => {
     assert.throws(() => parseTallyXmlRows("not xml"), /MIGRATION_XML_MALFORMED/)
+  })
+
+  it("refuses an envelope Tally marked as a failed export", () => {
+    const failed = `<?xml version="1.0" encoding="UTF-8"?>
+<ENVELOPE><HEADER><VERSION>1</VERSION><STATUS>0</STATUS></HEADER><BODY><DATA></DATA></BODY></ENVELOPE>`
+
+    assert.throws(() => parseTallyXmlRows(failed), /MIGRATION_XML_STATUS_FAILED/)
+    // The same body under a successful status is read normally.
+    const succeeded = failed.replace("<STATUS>0</STATUS>", "<STATUS>1</STATUS>")
+    assert.equal(parseTallyXmlRows(succeeded).vouchers.length, 0)
   })
 
   it("bounds captured text and warns instead of throwing on unreadable values", () => {

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin } from "@/lib/tally/auth"
-import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
+import { CUTOVER_ALREADY_COMPLETE, findCutoverBlockingSession } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import type { TallyAccountOverrides } from "@synapse/db/tally-map"
+import type { TallyImportMode } from "@/lib/tally/types"
 import {
   createTallyChunkUploadTarget,
   readTallySource,
@@ -47,7 +48,7 @@ type MappingState = {
   path?: string
   bucket?: string
   conversionDate?: string
-  mode?: "opening" | "closing"
+  mode?: TallyImportMode
   accountOverrides?: TallyAccountOverrides
   productSkuOverrides?: Record<string, string>
   manifest?: unknown
@@ -188,7 +189,7 @@ export async function POST(
   const { tenantId } = auth
   const { id } = await params
 
-  if (await findCompletedCutover(tenantId)) {
+  if (await findCutoverBlockingSession(tenantId, id)) {
     return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
   }
 

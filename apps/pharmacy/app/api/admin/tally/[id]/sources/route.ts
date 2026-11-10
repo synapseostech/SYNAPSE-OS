@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin } from "@/lib/tally/auth"
-import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
+import { CUTOVER_ALREADY_COMPLETE, findCutoverBlockingSession } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import type { TallyAccountOverrides } from "@synapse/db/tally-map"
+import type { TallyImportMode } from "@/lib/tally/types"
 import {
   readTallySource,
   tallyChunkSourcePath,
@@ -12,6 +13,13 @@ import {
   type TallyStorageClient,
 } from "@/lib/tally/storage"
 import { readTallyDocument } from "@/lib/tally/source"
+import type { TallyXmlDocument } from "@synapse/db/tally-xml-rows"
+import {
+  readTallyArchive,
+  readTallyPackageCompany,
+  TallyArchiveError,
+  type TallyArchiveReport,
+} from "@synapse/db/tally-archive"
 import {
   describeStagedDocument,
   readStagedSources,
@@ -38,12 +46,13 @@ const EXTENSIONS: Record<string, TallySourceExtension> = {
   xlsx: "xlsx",
   xls: "xls",
   csv: "csv",
+  zip: "zip",
 }
 
 type MappingState = {
   format?: "xml" | "xlsx" | "xls" | "csv"
   path?: string
-  mode?: "opening" | "closing"
+  mode?: TallyImportMode
   accountOverrides?: TallyAccountOverrides
   productSkuOverrides?: Record<string, string>
   manifest?: unknown
@@ -75,7 +84,7 @@ export async function POST(
   const { tenantId } = auth
   const { id } = await params
 
-  if (await findCompletedCutover(tenantId)) {
+  if (await findCutoverBlockingSession(tenantId, id)) {
     return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
   }
 
@@ -129,8 +138,9 @@ export async function POST(
   }
   // A session's chunks are read back as XML when the migration is consolidated,
   // so a workbook or CSV cannot stand as one of them. One of those still goes in
-  // as a session's only file, through preview's single-file path.
-  if (extension !== "xml") {
+  // as a session's only file, through preview's single-file path. A package is
+  // expanded into the XML exports it holds, so it stages as well as they do.
+  if (extension !== "xml" && extension !== "zip") {
     return NextResponse.json(
       {
         error: "A cut-over built from several files takes Tally XML exports. Use one workbook or CSV on its own instead.",
@@ -202,35 +212,58 @@ export async function POST(
     )
   }
 
-  try {
-    const bytes = await readTallySource(storage(), stagedPath)
-    const { document } = readTallyDocument(bytes, fileName)
+  const existing = isManifestLike(mapping.manifest) ? mapping.manifest : undefined
+  let manifest: TallyMigrationManifest | undefined = existing
+  let sources = readStagedSources(mapping.sources)
+
+  type StageResult =
+    | { ok: true; entry: TallyStagedSource; duplicate: boolean }
+    | { ok: false; response: NextResponse }
+
+  /**
+   * Stages one export under the chunk its own company and period imply. Shared
+   * by a file uploaded on its own and by every entry of a package, so both
+   * follow the same company, overlap and idempotency rules.
+   */
+  const stageParsed = async (
+    fileBytes: Uint8Array,
+    entryName: string,
+    entryCompany: string,
+    parsed?: TallyXmlDocument,
+  ): Promise<StageResult> => {
+    const document = parsed ?? readTallyDocument(fileBytes, entryName).document
     const described = describeStagedDocument(document, {
       requestedPeriod,
       fallbackPeriod,
-      company,
+      company: entryCompany,
       kind,
     })
     if (!described.ok) {
-      return NextResponse.json(
-        { error: described.message, code: described.code },
-        { status: 422 },
-      )
+      return {
+        ok: false,
+        response: NextResponse.json(
+          { error: described.message, code: described.code, file: entryName },
+          { status: 422 },
+        ),
+      }
     }
 
-    const existing = isManifestLike(mapping.manifest) ? mapping.manifest : undefined
-    if (existing && existing.company.trim() !== described.company) {
-      return NextResponse.json(
-        {
-          error: `This file belongs to "${described.company}", but the cut-over is for "${existing.company}".`,
-          code: "TALLY_COMPANY_MISMATCH",
-        },
-        { status: 422 },
-      )
+    if (manifest && manifest.company.trim() !== described.company) {
+      return {
+        ok: false,
+        response: NextResponse.json(
+          {
+            error: `This file belongs to "${described.company}", but the cut-over is for "${manifest.company}".`,
+            code: "TALLY_COMPANY_MISMATCH",
+            file: entryName,
+          },
+          { status: 422 },
+        ),
+      }
     }
 
-    let manifest: TallyMigrationManifest =
-      existing ??
+    let next: TallyMigrationManifest =
+      manifest ??
       createOpenManifest({
         sessionId: id,
         company: described.company,
@@ -244,28 +277,28 @@ export async function POST(
 
     // A file that names the company is better evidence than the operator's
     // word, so the record upgrades rather than keeps claiming it was entered.
-    if (existing && described.companySource === "file" && existing.companySource !== "file") {
-      manifest = { ...manifest, companySource: "file", updatedAt: now }
+    if (manifest && described.companySource === "file" && manifest.companySource !== "file") {
+      next = { ...next, companySource: "file", updatedAt: now }
     }
 
     // The chunk is added first: the period is the union of the day books staged
     // so far, so the one being added has to be one of them.
-    manifest = ensureChunk(
-      manifest,
+    next = ensureChunk(
+      next,
       { kind: described.kind, id: described.chunkId, range: described.range },
       now,
     )
-    manifest = widenPeriod(manifest, described.range, now, described.kind)
+    next = widenPeriod(next, described.range, now, described.kind)
 
-    const target = manifest.chunks.find((chunk) => chunk.id === described.chunkId)
+    const target = next.chunks.find((chunk) => chunk.id === described.chunkId)
     if (!target) throw new Error("TALLY_CHUNK_UNKNOWN")
 
-    const checksum = await checksumOf(bytes)
+    const checksum = await checksumOf(fileBytes)
     const result = {
       status: "complete" as const,
       recordsRead: described.recordsRead,
       checksum,
-      bytes: bytes.byteLength,
+      bytes: fileBytes.byteLength,
       ...(described.firstDate ? { firstDate: described.firstDate } : {}),
       ...(described.lastDate ? { lastDate: described.lastDate } : {}),
     }
@@ -275,51 +308,198 @@ export async function POST(
       // slice, which the operator has to confirm before it replaces what is
       // already staged.
       if (target.checksum === checksum) {
-        const existingSources = readStagedSources(mapping.sources)
-        return NextResponse.json({
-          source: existingSources.find((entry) => entry.chunkId === described.chunkId),
-          sources: existingSources,
+        const known = sources.find((entry) => entry.chunkId === described.chunkId)
+        return {
+          ok: true,
           duplicate: true,
-        })
+          entry:
+            known ?? {
+              uploadId,
+              fileName: entryName,
+              kind: described.kind,
+              chunkId: described.chunkId,
+              range: described.range,
+              recordsRead: described.recordsRead,
+              bytes: fileBytes.byteLength,
+              stagedAt: now,
+            },
+        }
       }
-      return NextResponse.json(
-        {
-          error: `A file is already staged for ${described.range.from} to ${described.range.to}. Add it again with replace to use this one instead.`,
-          code: "TALLY_CHUNK_ALREADY_STAGED",
-          chunkId: described.chunkId,
-        },
-        { status: 409 },
-      )
+      return {
+        ok: false,
+        response: NextResponse.json(
+          {
+            error: `A file is already staged for ${described.range.from} to ${described.range.to}. Add it again with replace to use this one instead.`,
+            code: "TALLY_CHUNK_ALREADY_STAGED",
+            chunkId: described.chunkId,
+            file: entryName,
+          },
+          { status: 409 },
+        ),
+      }
     }
 
-    manifest = replace
-      ? replaceChunkResult(manifest, described.chunkId, result, now)
-      : recordChunkResult(manifest, described.chunkId, result, now)
+    next = replace
+      ? replaceChunkResult(next, described.chunkId, result, now)
+      : recordChunkResult(next, described.chunkId, result, now)
 
     await writeTallySourceBytes(
       storage(),
       tallyChunkSourcePath(tenantId, id, described.chunkId),
-      bytes,
+      fileBytes,
     )
 
     const entry: TallyStagedSource = {
       uploadId,
-      fileName,
+      fileName: entryName,
       kind: described.kind,
       chunkId: described.chunkId,
       range: described.range,
       recordsRead: described.recordsRead,
-      bytes: bytes.byteLength,
+      bytes: fileBytes.byteLength,
       stagedAt: now,
     }
-    const sources = [
-      ...readStagedSources(mapping.sources).filter(
-        (staged) => staged.uploadId !== uploadId && staged.chunkId !== described.chunkId,
-      ),
-      entry,
-    ]
+    // One upload can hold many entries (a package), so the chunk id is what
+    // identifies an entry being replaced — not the upload that carried it.
+    sources = [...sources.filter((staged) => staged.chunkId !== described.chunkId), entry]
+    manifest = next
+    return { ok: true, entry, duplicate: false }
+  }
 
+  try {
+    const bytes = await readTallySource(storage(), stagedPath)
+
+    if (extension === "zip") {
+      const packageCompany = company || readTallyPackageCompany(bytes)?.name || ""
+      const stop = Symbol("stop")
+      // Held on an object so the callback's assignment survives the closure.
+      const halted: { refusal: NextResponse | null } = { refusal: null }
+      let duplicates = 0
+      let report: TallyArchiveReport
+
+      try {
+        report = await readTallyArchive(bytes, {
+          onDocument: async (document, file, extracted) => {
+            const outcome = await stageParsed(extracted, file.name, packageCompany, document)
+            if (!outcome.ok) {
+              halted.refusal = outcome.response
+              throw stop
+            }
+            if (outcome.duplicate) duplicates += 1
+          },
+        })
+      } catch (error) {
+        if (error === stop) {
+          return (
+            halted.refusal ?? NextResponse.json({ error: "The package could not be staged." }, { status: 500 })
+          )
+        }
+        if (error instanceof TallyArchiveError) {
+          return NextResponse.json({ error: error.message, code: error.code }, { status: 422 })
+        }
+        throw error
+      }
+
+      // An entry that could not be read leaves a month missing from the
+      // package. Staging the rest would import a gap while looking complete,
+      // so the whole package is refused until it is re-exported.
+      if (report.reconciliation.status === "failed") {
+        return NextResponse.json(
+          {
+            error:
+              "At least one file in the package could not be read, so the package is incomplete. Re-export the failed month and upload the package again.",
+            code: "TALLY_ARCHIVE_FAILED",
+            problems: report.reconciliation.problems,
+          },
+          { status: 422 },
+        )
+      }
+
+      if (!manifest) {
+        return NextResponse.json(
+          {
+            error: "The package holds no Tally export that could be staged.",
+            code: "TALLY_ARCHIVE_NO_EXPORTS",
+            problems: report.reconciliation.problems,
+          },
+          { status: 422 },
+        )
+      }
+
+      const problems = [
+        ...manifestProblems(manifest).map((entry) => `${entry.code}: ${entry.message}`),
+        ...report.reconciliation.problems.map((problem) => `TALLY_ARCHIVE: ${problem}`),
+      ]
+
+      const archive = {
+        company: report.company,
+        reconciliation: report.reconciliation,
+        ignored: report.ignored,
+        files: report.files.map((file) => ({
+          name: file.name,
+          role: file.role,
+          bytes: file.bytes,
+          sha256: file.sha256,
+          vouchers: file.vouchers,
+          inventoryLines: file.inventoryLines,
+          batchAllocations: file.batchAllocations,
+          firstDate: file.firstDate,
+          lastDate: file.lastDate,
+          controlCharactersStripped: file.controlCharactersStripped,
+          failure: file.failure,
+          discrepancies: file.discrepancies,
+        })),
+      }
+
+      const patch: Record<string, unknown> = {
+        ai_mapping: {
+          ...mapping,
+          // The package's chunks are XML exports, so the session is an XML
+          // cut-over from here on and must keep being recognised as one.
+          format: "xml",
+          manifest,
+          sources,
+          manifestProblems: problems,
+          archive,
+        },
+        error_message: null,
+      }
+      // Adding a file invalidates a preview already run over fewer chunks.
+      if (session.status === "review") patch.status = "pending"
+
+      const { error: writeError } = await db()
+        .from("pharmacy_import_sessions")
+        .update(patch)
+        .eq("id", id)
+        .eq("tenant_id", tenantId)
+      if (writeError) throw new Error(`TALLY_SESSION_WRITE_FAILED: ${writeError.message}`)
+
+      return NextResponse.json({
+        sources,
+        manifest: {
+          period: manifest.period,
+          periodSource: manifest.periodSource,
+          problems,
+        },
+        archive,
+        duplicates,
+        staged: sources.length,
+      })
+    }
+
+    const outcome = await stageParsed(bytes, fileName, company)
+    if (!outcome.ok) return outcome.response
+
+    if (!manifest) throw new Error("TALLY_MANIFEST_UNKNOWN")
     const problems = manifestProblems(manifest).map((entry) => `${entry.code}: ${entry.message}`)
+
+    if (outcome.duplicate) {
+      return NextResponse.json({
+        source: outcome.entry,
+        sources,
+        duplicate: true,
+      })
+    }
 
     const patch: Record<string, unknown> = {
       ai_mapping: {
@@ -342,7 +522,7 @@ export async function POST(
     if (writeError) throw new Error(`TALLY_SESSION_WRITE_FAILED: ${writeError.message}`)
 
     return NextResponse.json({
-      source: entry,
+      source: outcome.entry,
       sources,
       manifest: {
         period: manifest.period,

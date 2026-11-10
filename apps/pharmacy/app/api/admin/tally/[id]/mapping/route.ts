@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireTallyAdmin } from "@/lib/tally/auth"
-import { CUTOVER_ALREADY_COMPLETE, findCompletedCutover } from "@/lib/tally/cutover"
+import { requireTallyAdmin, tallyReplayEnabled } from "@/lib/tally/auth"
+import { CUTOVER_ALREADY_COMPLETE, findCutoverBlockingSession } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { TALLY_SYSTEM_ACCOUNT_CODES } from "@synapse/db/tally-map"
 import type { TallyAccountOverrides, TallyAccountOverride } from "@synapse/db/tally-map"
@@ -136,7 +136,7 @@ export async function PUT(
   const { tenantId } = auth
   const { id } = await params
 
-  if (await findCompletedCutover(tenantId)) {
+  if (await findCutoverBlockingSession(tenantId, id)) {
     return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
   }
 
@@ -154,10 +154,21 @@ export async function PUT(
     )
   }
   if (body.mode !== undefined && body.mode !== "opening" && body.mode !== "closing") {
-    return NextResponse.json(
-      { error: "Mode must be either \"opening\" or \"closing\"." },
-      { status: 400 },
-    )
+    if (body.mode === "replay" && !tallyReplayEnabled()) {
+      return NextResponse.json(
+        {
+          error: "The historical replay mode is disabled in this environment.",
+          code: "TALLY_REPLAY_DISABLED",
+        },
+        { status: 400 },
+      )
+    }
+    if (body.mode !== "replay") {
+      return NextResponse.json(
+        { error: "Mode must be \"opening\", \"closing\" or \"replay\"." },
+        { status: 400 },
+      )
+    }
   }
 
   const accounts = cleanAccountOverrides(body.accountOverrides)

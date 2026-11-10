@@ -75,6 +75,17 @@ export function tallyCutoverEnabled(env: Record<string, string | undefined> = pr
   return env.NODE_ENV !== "production"
 }
 
+/**
+ * Runtime switch for the chronological replay mode.
+ *
+ * Unlike the cut-over itself this fails closed everywhere: a replay writes
+ * historical stock movements, so only an explicit "true" turns it on, and
+ * nothing turns it on by default in development or production alike.
+ */
+export function tallyReplayEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env.SYNAPSE_TALLY_REPLAY_ENABLED?.trim().toLowerCase() === "true"
+}
+
 function cutoverDisabled(): TallyAuthFailure {
   return {
     ok: false,

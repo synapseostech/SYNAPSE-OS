@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin, tallyHasCapability } from "@/lib/tally/auth"
 import {
   CUTOVER_ALREADY_COMPLETE,
-  findCompletedCutover,
+  findCutoverBlockingSession,
   findTallyCutoverOwner,
 } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
@@ -15,10 +15,14 @@ import {
 import type { TallyConsolidationReport } from "@/lib/tally/consolidate"
 import { isTallyCutoverSession, readStagedSources } from "@/lib/tally/manifest"
 import { buildCutoverPreflight } from "@/lib/tally/preflight"
+import { readTallyReplayTarget } from "@/lib/tally/plan"
+import { evaluateReplayGate } from "@/lib/tally/replay-gate"
+import type { TallyStorageClient } from "@/lib/tally/storage"
 import type { TallyPlanSummary } from "@/lib/tally/types"
 import type { TallyReconcileCheck } from "@/lib/tally/reconcile"
 
 const db = () => supabaseAdmin as any
+const storage = () => ({ storage: db().storage }) as TallyStorageClient
 const FAILURE_LIMIT = 200
 
 /** GET /api/admin/tally/[id] — everything the workspace needs to resume. */
@@ -77,6 +81,18 @@ export async function GET(
       .maybeSingle()
     auditRecorded = Boolean(audit)
   }
+  // A replay's review is the figures it reaches beside Tally's, and whether
+  // every difference between them has been answered. The target is the same
+  // artifact Apply checks against, so the screen cannot promise a pass Apply
+  // would refuse.
+  const replayTarget =
+    tagged && summary?.mode === "replay"
+      ? await readTallyReplayTarget(storage(), tenantId, id)
+      : null
+  const replayGate = replayTarget
+    ? evaluateReplayGate(replayTarget, mapping.replayAcknowledgement)
+    : null
+
   const cutoverPreflight = tagged
     ? buildCutoverPreflight({
         sessionStatus: session.status,
@@ -94,6 +110,12 @@ export async function GET(
         flaggedRows: Number(session.flagged_rows ?? 0),
         reconcile,
         auditRecorded,
+        ...(summary?.mode === "replay"
+          ? {
+              replay:
+                replayTarget && replayGate ? { target: replayTarget, gate: replayGate } : null,
+            }
+          : {}),
       })
     : null
 
@@ -148,6 +170,28 @@ export async function GET(
     extraction: (mapping.extraction as TallyExtractionSummary | undefined) ?? null,
     consolidation: (mapping.consolidation as TallyConsolidationReport | undefined) ?? null,
     unverifiedAcknowledged: Boolean(mapping.unverifiedAcknowledgement),
+    // Replay only: the gate the reconciliation card renders. The full rows are
+    // in `summary`; the day-by-day sequence has its own paged route.
+    replay:
+      replayTarget && replayGate
+        ? {
+            preparedAt: replayTarget.preparedAt,
+            conversionDate: replayTarget.conversionDate,
+            cutoffDate: replayTarget.cutoffDate,
+            ordering: replayTarget.ordering,
+            eventCount: replayTarget.eventCount,
+            movementCount: replayTarget.movementCount,
+            totals: replayTarget.totals,
+            blocking: replayTarget.blocking,
+            warnings: replayTarget.warnings,
+            sequenceConfirmed: replayGate.sequenceConfirmed,
+            canApply: replayGate.canApply,
+            acknowledged: replayGate.acknowledged,
+            unknown: replayGate.unknown,
+            blockers: replayGate.blockers,
+            missing: replayGate.missing,
+          }
+        : null,
     cutoverPreflight,
     reconcile,
     progress,
@@ -167,7 +211,7 @@ export async function DELETE(
   const { id } = await params
 
   // One-shot: nothing to discard once the cut-over has landed.
-  if (await findCompletedCutover(tenantId)) {
+  if (await findCutoverBlockingSession(tenantId, id)) {
     return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
   }
 

@@ -286,6 +286,26 @@ describe("buildCutoverPreflight", () => {
     expect(preflight.canApply).toBe(true)
   })
 
+  it("discloses an import accepted without batch expiry without blocking it", () => {
+    const preflight = buildCutoverPreflight(
+      input({ summary: summary({ batchExpiry: "not-supplied" }) }),
+    )
+
+    expect(preflight.canApply).toBe(true)
+    expect(statusOf(preflight.checks, "batch-expiry")).toMatchObject({
+      status: "warning",
+      blocksApply: false,
+    })
+  })
+
+  it("says nothing about expiry when the source states it", () => {
+    const preflight = buildCutoverPreflight(
+      input({ summary: summary({ batchExpiry: "source" }) }),
+    )
+
+    expect(preflight.checks.some((entry) => entry.id === "batch-expiry")).toBe(false)
+  })
+
   it("warns about an edition no installation has been verified against, for both editions", () => {
     for (const edition of ["prime", "erp9"] as const) {
       const preflight = buildCutoverPreflight(

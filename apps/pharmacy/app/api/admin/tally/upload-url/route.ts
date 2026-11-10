@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto"
 import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin } from "@/lib/tally/auth"
+import { TALLY_CONTINUATION_UNKNOWN } from "@/lib/tally/continuation"
 import {
   CUTOVER_ALREADY_COMPLETE,
   findCompletedCutover,
+  findCutoverBlockingSession,
   findTallyCutoverOwner,
 } from "@/lib/tally/cutover"
 import { supabaseAdmin } from "@/lib/supabase/admin"
@@ -20,6 +22,7 @@ const EXTENSIONS: Record<string, TallySourceExtension> = {
   xlsx: "xlsx",
   xls: "xls",
   csv: "csv",
+  zip: "zip",
 }
 
 /**
@@ -30,34 +33,32 @@ const EXTENSIONS: Record<string, TallySourceExtension> = {
  * `source: "bridge"` creates the session without a signed URL: the live
  * extraction uploads each chunk to its own target, obtained from the extract
  * route, so there is no single file for this session to point at.
+ *
+ * `continuationOf` names the session whose clean close this import extends.
+ * The body is read before the one-shot guard because that guard is the whole
+ * question: without a continuation the pharmacy is cut over and this is
+ * refused, with one the session is created and the company, period and mode
+ * are checked when the plan is built.
  */
 export async function POST(request: NextRequest) {
   const auth = await requireTallyAdmin(request, "inventory.write")
   if (!auth.ok) return auth.response
   const { actorId, tenantId } = auth
 
-  if (await findCompletedCutover(tenantId)) {
-    return NextResponse.json(CUTOVER_ALREADY_COMPLETE, { status: 409 })
+  let body: {
+    fileName?: string
+    fileSize?: number
+    source?: unknown
+    sessionId?: unknown
+    continuationOf?: unknown
   }
-  const cutoverOwner = await findTallyCutoverOwner(tenantId)
-  if (cutoverOwner) {
-    return NextResponse.json(
-      {
-        error: "A Tally cut-over has already started for this pharmacy. Resume its existing session.",
-        code: "TALLY_CUTOVER_IN_PROGRESS",
-        sessionId: cutoverOwner,
-      },
-      { status: 409 },
-    )
-  }
-
-  let body: { fileName?: string; fileSize?: number; source?: unknown; sessionId?: unknown }
   try {
     body = (await request.json()) as {
       fileName?: string
       fileSize?: number
       source?: unknown
       sessionId?: unknown
+      continuationOf?: unknown
     }
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
@@ -69,6 +70,39 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  const continuationOf =
+    typeof body.continuationOf === "string" ? body.continuationOf.trim() : ""
+  const requestedSession = typeof body.sessionId === "string" ? body.sessionId.trim() : ""
+
+  const cutover = await findCompletedCutover(tenantId)
+  if (cutover) {
+    // Joining an existing session asks that session's own record; creating one
+    // asks the caller, who must name the session that closed the cut-over.
+    const allowed = requestedSession
+      ? (await findCutoverBlockingSession(tenantId, requestedSession)) === null
+      : continuationOf === cutover.sessionId
+    if (!allowed) {
+      return NextResponse.json(
+        continuationOf ? TALLY_CONTINUATION_UNKNOWN : CUTOVER_ALREADY_COMPLETE,
+        { status: 409 },
+      )
+    }
+  } else if (continuationOf) {
+    return NextResponse.json(TALLY_CONTINUATION_UNKNOWN, { status: 409 })
+  } else {
+    const cutoverOwner = await findTallyCutoverOwner(tenantId)
+    if (cutoverOwner) {
+      return NextResponse.json(
+        {
+          error: "A Tally cut-over has already started for this pharmacy. Resume its existing session.",
+          code: "TALLY_CUTOVER_IN_PROGRESS",
+          sessionId: cutoverOwner,
+        },
+        { status: 409 },
+      )
+    }
+  }
+
   if (body.source === "bridge") {
     const { data: created, error } = await db()
       .from("pharmacy_import_sessions")
@@ -78,7 +112,12 @@ export async function POST(request: NextRequest) {
         file_name: "Tally live extraction",
         status: "pending",
         created_by: actorId,
-        ai_mapping: { format: "xml", source: "bridge", path: null },
+        ai_mapping: {
+          format: "xml",
+          source: "bridge",
+          path: null,
+          ...(continuationOf ? { continuationOf } : {}),
+        },
       })
       .select("id")
       .single()
@@ -95,7 +134,10 @@ export async function POST(request: NextRequest) {
   const extension = EXTENSIONS[fileName.toLowerCase().split(".").pop() ?? ""]
   if (!extension) {
     return NextResponse.json(
-      { error: "Choose a Tally XML export, an .xlsx/.xls workbook, or a .csv template file." },
+      {
+        error:
+          "Choose a Tally XML export, a zipped export package, an .xlsx/.xls workbook, or a .csv template file.",
+      },
       { status: 415 },
     )
   }
@@ -122,7 +164,6 @@ export async function POST(request: NextRequest) {
 
   // A later file joins the session the first one created. Nothing is inserted:
   // the extra uploads are adopted by the sources route once parsed.
-  const requestedSession = typeof body.sessionId === "string" ? body.sessionId.trim() : ""
   if (requestedSession) {
     const { data: session, error: sessionError } = await db()
       .from("pharmacy_import_sessions")
@@ -177,7 +218,12 @@ export async function POST(request: NextRequest) {
       .from("pharmacy_import_sessions")
       .update({
         file_url: target.path,
-        ai_mapping: { format: extension, path: target.path, bucket: target.bucket },
+        ai_mapping: {
+          format: extension,
+          path: target.path,
+          bucket: target.bucket,
+          ...(continuationOf ? { continuationOf } : {}),
+        },
       })
       .eq("id", sessionId)
       .eq("tenant_id", tenantId)

@@ -123,7 +123,7 @@
     "test:pharmacy-tax": "node --import tsx --test packages/db/src/pos-tax.test.ts apps/web/src/lib/pharmacy-receipt-tax.test.ts && cd apps/pharmacy && vitest run lib/pos/tax-summary.test.ts lib/pos/receipt-domain.test.ts",
     "test:pharmacy-mobile-api": "vitest run apps/web/src/app/api/mobile/pharmacy",
     "test:mobile-app": "node --import tsx --test apps/app/lib/pos-pricing.test.ts apps/app/lib/purchase-draft.test.ts apps/app/lib/receipt-print-gate.test.ts",
-    "test:tally": "node --import tsx --test packages/db/src/tally-xml.test.ts packages/db/src/tally-xml-rows.test.ts packages/db/src/tally-map.test.ts packages/db/src/tally-normalise.test.ts && npm run test:tally-bridge",
+    "test:tally": "node --import tsx --test packages/db/src/tally-xml.test.ts packages/db/src/tally-xml-rows.test.ts packages/db/src/tally-map.test.ts packages/db/src/tally-normalise.test.ts packages/db/src/tally-replay.test.ts packages/db/src/tally-zip.test.ts && npm run test:tally-bridge",
     "test:clinical-offline-triage": "tsx --test packages/db/src/clinical-offline-triage.test.ts",
     "test:clinical-offline-prescribe": "tsx --test packages/db/src/clinical-offline-prescribe.test.ts",
     "test:rc1-pulse": "vitest run apps/web/src/lib/platform/rc1-pulse.test.ts",

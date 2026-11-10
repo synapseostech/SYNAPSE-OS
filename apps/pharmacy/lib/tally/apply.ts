@@ -8,8 +8,18 @@
  */
 
 import { receivePharmacyStock, parsePharmacyRpcError } from "@synapse/db/inventory-rpc"
+import {
+  applyTallyReplayMovement,
+  readTallyReplayActuals,
+  recordTallyReplayCheckpoint,
+  type TallyReplayAllocationInput,
+  type TallyReplayCheckpoint,
+} from "@synapse/db/tally-replay-rpc"
+import { chooseFefo, type TallyReplayLineCost } from "@synapse/db/tally-replay"
+import { tallyVoucherSourceType } from "@synapse/db/tally-map"
 import { netAmountFor } from "@/lib/pos/net-amount"
 import type {
+  TallyCutoverMovement,
   TallyCutoverPlan,
   TallyCutoverPurchase,
   TallyCutoverSale,
@@ -21,6 +31,7 @@ import {
   isTallyMirrorNote,
   type TallyApplyDb,
   type TallyDbError,
+  type TallyReplayTarget,
 } from "./types"
 
 export type TallyApplyStage =
@@ -29,16 +40,25 @@ export type TallyApplyStage =
   | "products"
   | "opening-journal"
   | "opening-stock"
+  | "stock-history"
   | "journals"
+  | "replay-closing"
   | "complete"
 
+/**
+ * Every stage an apply can reach. A replay walks all of them; an opening or
+ * closing cut-over skips `stock-history` and `replay-closing` and goes from
+ * `opening-stock` to `journals` to `complete`.
+ */
 export const TALLY_STAGE_ORDER: TallyApplyStage[] = [
   "accounts",
   "parties",
   "products",
   "opening-journal",
   "opening-stock",
+  "stock-history",
   "journals",
+  "replay-closing",
   "complete",
 ]
 
@@ -48,6 +68,10 @@ export type TallyApplyCounts = {
   products: number
   openingJournal: number
   openingStock: number
+  /** Replay only: movements this run applied to stock. */
+  stockMovements: number
+  /** Replay only: movements a re-run found already applied. */
+  movementsReplayed: number
   journals: number
   sales: number
   purchases: number
@@ -100,6 +124,8 @@ export function emptyProgress(now = new Date().toISOString()): TallyApplyProgres
       products: 0,
       openingJournal: 0,
       openingStock: 0,
+      stockMovements: 0,
+      movementsReplayed: 0,
       journals: 0,
       sales: 0,
       purchases: 0,
@@ -528,6 +554,15 @@ async function stageOpeningJournal(
   return posted
 }
 
+/**
+ * The batch number given to opening stock Tally does not name. It is derived
+ * from the item and the batch's position so a resumed apply recognises the
+ * batch it already created instead of receiving it a second time.
+ */
+function openingBatchKey(sku: string, index: number): string {
+  return `TALLY-OPEN-${sku.replace(/[^A-Za-z0-9]/g, "").slice(-8).toUpperCase()}-${index}`
+}
+
 async function stageOpeningStock(
   db: TallyApplyDb,
   plan: TallyCutoverPlan,
@@ -550,9 +585,7 @@ async function stageOpeningStock(
     for (const batch of item.batches) {
       if (!batch.receivable) continue
       batchIndex += 1
-      const batchNumber =
-        batch.batchName?.trim() ||
-        `TALLY-OPEN-${item.sku.replace(/[^A-Za-z0-9]/g, "").slice(-8).toUpperCase()}-${batchIndex}`
+      const batchNumber = batch.batchName?.trim() || openingBatchKey(item.sku, batchIndex)
       const expiryDate = batch.expiryDate!
       const quantity = Math.round(batch.quantity ?? 0)
       if (quantity <= 0) continue
@@ -592,10 +625,515 @@ async function stageOpeningStock(
   return received
 }
 
+/**
+ * The two buckets the simulation keys internally. A physical count has no
+ * batch identity and a shortage has no batch at all, so each needs a stable
+ * row of its own rather than being folded into a real batch.
+ */
+const PHYSICAL_BATCH = "TALLY-RPL-PHYSICAL"
+const NEGATIVE_BATCH = "TALLY-RPL-NEGATIVE"
+const NO_EXPIRY = "9999-12-31"
+const CLOSING_DIFFERENCES_LISTED = 20
+
+type BatchRow = {
+  batchNumber: string
+  expiryDate: string
+  receivedDate: string
+  quantity: number
+}
+
+function productIdByStockItem(
+  plan: TallyCutoverPlan,
+  products: { bySku: Map<string, string>; byName: Map<string, string> },
+): Map<string, string> {
+  const ids = new Map<string, string>()
+  for (const item of plan.stockItems) {
+    const productId =
+      products.bySku.get(item.sku.trim().toLowerCase()) ??
+      products.byName.get(productNameKey(item.name))
+    if (productId) ids.set(item.sourceName, productId)
+  }
+  return ids
+}
+
+/**
+ * Opening stock replayed as history: through the replay RPC, so the batch keeps
+ * the expiry and the received date the export states. `receive_pharmacy_stock`
+ * would refuse a batch that is already expired and stamp today's date, which is
+ * right for a delivery and wrong for history.
+ */
+async function stageOpeningStockReplay(
+  db: TallyApplyDb,
+  plan: TallyCutoverPlan,
+  tenantId: string,
+  progress: Progress,
+  sessionId: string,
+): Promise<void> {
+  const products = await loadProducts(db, tenantId)
+  // One source for the whole opening position, so its provenance is as stable
+  // as the opening journal's.
+  const sourceId = `${plan.companyKey}:opening:${plan.conversionDate}`
+
+  for (const [itemIndex, item] of plan.stockItems.entries()) {
+    if (item.quantity === undefined || item.quantity <= 0) continue
+    const productId =
+      products.bySku.get(item.sku.trim().toLowerCase()) ??
+      products.byName.get(productNameKey(item.name))
+    if (!productId) {
+      progress.fail("opening-stock", item.sku, "PRODUCT_MISSING", "Product was not created; no stock received.")
+      continue
+    }
+    const unitValue =
+      item.quantity !== 0 ? (item.value ?? 0) / item.quantity : (item.rate ?? 0)
+
+    for (const [batchIndex, batch] of item.batches.entries()) {
+      if (!batch.receivable || batch.quantity === undefined || batch.quantity <= 0) continue
+      const quantity = Math.round(batch.quantity)
+      if (quantity <= 0) continue
+      const named = batch.batchName?.trim()
+      const batchNumber = named || openingBatchKey(item.sku, batchIndex + 1)
+
+      const { data, error } = await applyTallyReplayMovement(db, {
+        tenantId,
+        sessionId,
+        // Same id the simulation gives this opening batch, so a finding and a
+        // provenance row name the same thing.
+        movementId: `${plan.conversionDate}:OPENING:B${batchIndex}`,
+        sourceType: "tally_opening",
+        sourceId,
+        lineIndex: itemIndex,
+        movementKind: "opening",
+        movementDate: plan.conversionDate,
+        productId,
+        allocation: named ? "explicit" : "synthetic",
+        allocations: [
+          {
+            batchIndex,
+            batchNumber,
+            expiryDate: batch.expiryDate ?? null,
+            quantityDelta: quantity,
+            rate: money(unitValue),
+            amount: money(unitValue * quantity),
+          },
+        ],
+      })
+      if (error) {
+        progress.fail("opening-stock", `${item.sku}/${batchNumber}`, error.code, error.humanMessage)
+        continue
+      }
+      // A batch an earlier attempt already wrote is present too, and the
+      // reconciliation row asks what the pharmacy holds, not who wrote it.
+      if (data) progress.value.counts.openingStock += 1
+    }
+  }
+}
+
+async function loadBatches(
+  db: TallyApplyDb,
+  tenantId: string,
+  productId: string,
+): Promise<BatchRow[]> {
+  const { data } = await db
+    .from("pharmacy_product_batches")
+    .select("batch_number, expiry_date, received_date, quantity")
+    .eq("tenant_id", tenantId)
+    .eq("product_id", productId)
+  return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+    batchNumber: String(row.batch_number ?? ""),
+    expiryDate: String(row.expiry_date ?? NO_EXPIRY).slice(0, 10),
+    // A timestamptz comes back with a time; only the business day decides
+    // whether a batch was received by the movement's date.
+    receivedDate: String(row.received_date ?? "").slice(0, 10),
+    quantity: Math.round(Number(row.quantity ?? 0)),
+  }))
+}
+
+async function loadProductQuantity(
+  db: TallyApplyDb,
+  tenantId: string,
+  productId: string,
+): Promise<number> {
+  const { data } = await db
+    .from("pharmacy_products")
+    .select("quantity")
+    .eq("tenant_id", tenantId)
+    .eq("id", productId)
+    .limit(1)
+  return Math.round(Number(((data ?? []) as Array<{ quantity?: number }>)[0]?.quantity ?? 0))
+}
+
+/**
+ * Reproduces the simulation's choice of batches for a sale that names none: a
+ * named batch gives what it has (and the rest leaves it too, as the simulation
+ * records it); FEFO fills the remainder; and what nothing covers goes to the
+ * shortage bucket, which is only writable once the negative was acknowledged.
+ */
+function outgoingAllocations(
+  batches: BatchRow[],
+  movement: TallyCutoverMovement,
+  quantity: number,
+): TallyReplayAllocationInput[] {
+  const named =
+    movement.allocation !== "fefo" && movement.batchNumber
+      ? batches.find((batch) => batch.batchNumber === movement.batchNumber)
+      : undefined
+
+  if (named) {
+    return [
+      {
+        batchIndex: 0,
+        batchNumber: named.batchNumber,
+        expiryDate: named.expiryDate,
+        quantityDelta: -quantity,
+        rate: movement.rate,
+        amount: money(-quantity * movement.rate),
+      },
+    ]
+  }
+
+  const allocations: TallyReplayAllocationInput[] = []
+  let remaining = quantity
+  let index = 0
+  for (const take of chooseFefo(batches, quantity, movement.date)) {
+    allocations.push({
+      batchIndex: index++,
+      batchNumber: take.batch.batchNumber,
+      expiryDate: take.batch.expiryDate,
+      quantityDelta: -take.quantity,
+      rate: movement.rate,
+      amount: money(-take.quantity * movement.rate),
+    })
+    remaining -= take.quantity
+  }
+  if (remaining > 0) {
+    allocations.push({
+      batchIndex: index,
+      batchNumber: NEGATIVE_BATCH,
+      expiryDate: NO_EXPIRY,
+      quantityDelta: -remaining,
+      rate: movement.rate,
+      amount: money(-remaining * movement.rate),
+    })
+  }
+  return allocations
+}
+
+/**
+ * The history stage: one movement chunk per request, applied through the replay
+ * RPC in the order the preview showed. A resumed chunk re-sends movements the
+ * RPC reports as already applied, so a crash costs a repeat and never a second
+ * stock movement.
+ */
+async function stageStockHistory(
+  db: TallyApplyDb,
+  plan: TallyCutoverPlan,
+  tenantId: string,
+  progress: Progress,
+  sessionId: string,
+  target: TallyReplayTarget | undefined,
+): Promise<void> {
+  const movements = plan.movements ?? []
+  if (movements.length === 0) return
+
+  const products = await loadProducts(db, tenantId)
+  const productIds = productIdByStockItem(plan, products)
+  // The review's own findings, not a fresh guess: a movement may write a
+  // negative quantity only because the operator was shown that and applied.
+  const negativeAllowed = new Set(
+    (target?.findings ?? [])
+      .filter((finding) => finding.code === "REPLAY_NEGATIVE_STOCK")
+      .map((finding) => finding.movementId),
+  )
+
+  for (const movement of movements) {
+    const productId = productIds.get(movement.stockItemName)
+    if (!productId) {
+      progress.fail(
+        "stock-history",
+        movement.stockItemName,
+        "PRODUCT_MISSING",
+        `"${movement.stockItemName}" has no product in this pharmacy, so its stock movement was not replayed.`,
+      )
+      continue
+    }
+
+    let allocations: TallyReplayAllocationInput[]
+    if (movement.movementKind === "physical_adjust") {
+      // The line states the counted quantity, not a difference. It becomes a
+      // delta against what the database holds now, so the write stays a signed
+      // movement like every other one.
+      const delta = Math.round(movement.quantityDelta) - (await loadProductQuantity(db, tenantId, productId))
+      if (delta === 0) continue
+      if (delta > 0) {
+        // Stock the count found that the book did not have has no batch of its
+        // own; it goes into the physical-count bucket.
+        allocations = [
+          {
+            batchIndex: movement.batchIndex,
+            batchNumber: movement.batchNumber ?? PHYSICAL_BATCH,
+            // A physical count carries no expiry, and inventing one would make
+            // two counts of the same product disagree about the same bucket.
+            expiryDate: movement.expiryDate ?? NO_EXPIRY,
+            quantityDelta: delta,
+            rate: movement.rate,
+            amount: money(delta * movement.rate),
+          },
+        ]
+      } else {
+        // Stock the count found missing must leave the batches that hold it,
+        // exactly as a sale does. Booking the shortfall onto a fresh batch
+        // would drive that batch negative while the product kept stock its
+        // own books no longer had.
+        const batches = await loadBatches(db, tenantId, productId)
+        allocations = outgoingAllocations(batches, movement, Math.abs(delta))
+      }
+    } else if (movement.quantityDelta < 0) {
+      const batches = await loadBatches(db, tenantId, productId)
+      allocations = outgoingAllocations(batches, movement, Math.abs(movement.quantityDelta))
+    } else {
+      allocations = [
+        {
+          batchIndex: movement.batchIndex,
+          batchNumber: movement.batchNumber ?? "",
+          expiryDate: movement.expiryDate ?? null,
+          quantityDelta: movement.quantityDelta,
+          rate: movement.rate,
+          amount: movement.amount,
+        },
+      ]
+    }
+
+    const { data, error } = await applyTallyReplayMovement(db, {
+      tenantId,
+      sessionId,
+      movementId: movement.movementId,
+      sourceType: tallyVoucherSourceType(movement.kind) ?? "tally_stock_movement",
+      sourceId: movement.sourceId,
+      lineIndex: movement.lineIndex,
+      movementKind: movement.movementKind,
+      movementDate: movement.date,
+      productId,
+      godown: movement.godown ?? null,
+      allocation: movement.allocation,
+      allocations,
+      allowNegative: negativeAllowed.has(movement.movementId),
+    })
+    if (error) {
+      progress.fail(
+        "stock-history",
+        movement.movementId,
+        error.code,
+        `${movement.stockItemName} on ${movement.date}: ${error.humanMessage}`,
+      )
+      continue
+    }
+    if (data?.replayed) {
+      progress.value.counts.movementsReplayed =
+        (progress.value.counts.movementsReplayed ?? 0) + 1
+    } else {
+      progress.value.counts.stockMovements = (progress.value.counts.stockMovements ?? 0) + 1
+    }
+  }
+}
+
+/**
+ * A continuation does not replay an opening position: it is already in the
+ * database, and writing it again would double the history. The two opening
+ * stages therefore verify instead of apply — the account half at
+ * `opening-journal`, the stock half at `opening-stock` — against the
+ * checkpoint the previous session closed on.
+ *
+ * A drift is an abort, not a listed failure: continuing on top of a base that
+ * no longer matches the checkpoint would post new history against a position
+ * nobody reviewed.
+ */
+async function verifyContinuationAccounts(
+  db: TallyApplyDb,
+  tenantId: string,
+  checkpoint: TallyReplayCheckpoint,
+): Promise<void> {
+  const actuals = await readTallyReplayActuals(db, tenantId)
+  if (actuals.error || !actuals.data) {
+    throw new Error(
+      `TALLY_CONTINUATION_READ_FAILED: the position this continuation starts from could not be read (${actuals.error?.humanMessage ?? "no data"}).`,
+    )
+  }
+
+  const actualByCode = new Map(
+    actuals.data.accounts.map((row) => [row.code, money(row.debit - row.credit)]),
+  )
+  const drifted: string[] = []
+  for (const [code, expected] of Object.entries(checkpoint.closingState.accounts)) {
+    const actual = actualByCode.get(code) ?? 0
+    if (Math.abs(money(actual - expected)) > 0.01) {
+      drifted.push(`account ${code}: checkpoint ${expected}, database holds ${actual}`)
+    }
+  }
+
+  if (drifted.length > 0) {
+    throw new Error(
+      `TALLY_CONTINUATION_DRIFT: the ledger no longer matches the ${checkpoint.throughDate} checkpoint this import continues from — ${drifted.slice(0, CLOSING_DIFFERENCES_LISTED).join("; ")}${drifted.length > CLOSING_DIFFERENCES_LISTED ? `; ${drifted.length - CLOSING_DIFFERENCES_LISTED} more` : ""}. Nothing was applied by this stage.`,
+    )
+  }
+}
+
+async function verifyContinuationStock(
+  db: TallyApplyDb,
+  plan: TallyCutoverPlan,
+  tenantId: string,
+  checkpoint: TallyReplayCheckpoint,
+): Promise<void> {
+  const actuals = await readTallyReplayActuals(db, tenantId)
+  if (actuals.error || !actuals.data) {
+    throw new Error(
+      `TALLY_CONTINUATION_READ_FAILED: the position this continuation starts from could not be read (${actuals.error?.humanMessage ?? "no data"}).`,
+    )
+  }
+
+  const productIds = productIdByStockItem(plan, await loadProducts(db, tenantId))
+  const quantityByProduct = new Map(actuals.data.products.map((row) => [row.productId, row.quantity]))
+  const drifted: string[] = []
+  for (const item of checkpoint.closingState.items) {
+    const productId = productIds.get(item.stockItemName)
+    const actual = productId ? (quantityByProduct.get(productId) ?? 0) : 0
+    if (money(actual - item.quantity) !== 0) {
+      drifted.push(`stock item ${item.stockItemName}: checkpoint ${item.quantity}, database holds ${actual}`)
+    }
+  }
+
+  if (drifted.length > 0) {
+    throw new Error(
+      `TALLY_CONTINUATION_DRIFT: stock no longer matches the ${checkpoint.throughDate} checkpoint this import continues from — ${drifted.slice(0, CLOSING_DIFFERENCES_LISTED).join("; ")}${drifted.length > CLOSING_DIFFERENCES_LISTED ? `; ${drifted.length - CLOSING_DIFFERENCES_LISTED} more` : ""}. Nothing was applied by this stage.`,
+    )
+  }
+}
+
+/**
+ * The closing check. The database is read back and placed beside the position
+ * the reviewed replay said it would reach; nothing is adjusted, and a
+ * difference stops the session short of `complete`.
+ */
+async function stageReplayClosing(
+  db: TallyApplyDb,
+  plan: TallyCutoverPlan,
+  tenantId: string,
+  actorId: string,
+  sessionId: string,
+  progress: Progress,
+  target: TallyReplayTarget | undefined,
+): Promise<void> {
+  if (!target) {
+    throw new Error(
+      "TALLY_PLAN_MISSING: the reviewed replay has no saved closing position, so the closing check cannot run.",
+    )
+  }
+
+  const actuals = await readTallyReplayActuals(db, tenantId)
+  if (actuals.error || !actuals.data) {
+    throw new Error(
+      `TALLY_REPLAY_CLOSING_READ_FAILED: ${actuals.error?.humanMessage ?? "the applied state could not be read"}`,
+    )
+  }
+
+  const productIds = productIdByStockItem(plan, await loadProducts(db, tenantId))
+  const quantityByProduct = new Map(actuals.data.products.map((row) => [row.productId, row.quantity]))
+  const accountByCode = new Map(
+    actuals.data.accounts.map((row) => [row.code, money(row.debit - row.credit)]),
+  )
+  const batchQuantityByProduct = new Map<string, number>()
+  for (const batch of actuals.data.batches) {
+    batchQuantityByProduct.set(
+      batch.productId,
+      (batchQuantityByProduct.get(batch.productId) ?? 0) + batch.quantity,
+    )
+  }
+
+  const differences: Array<{ scope: string; key: string; expected: number; actual: number }> = []
+
+  for (const item of target.simulated.items) {
+    const productId = productIds.get(item.stockItemName)
+    const actual = productId ? (quantityByProduct.get(productId) ?? 0) : 0
+    if (money(actual - item.quantity) !== 0) {
+      differences.push({ scope: "stock item", key: item.stockItemName, expected: item.quantity, actual })
+      continue
+    }
+    // Stock that reached the right total through batches that do not add up to
+    // it would fail the next sale rather than this check.
+    const batchSum = productId ? (batchQuantityByProduct.get(productId) ?? 0) : 0
+    if (money(batchSum - actual) !== 0) {
+      differences.push({ scope: "batch total", key: item.stockItemName, expected: actual, actual: batchSum })
+    }
+  }
+
+  for (const [code, balance] of Object.entries(target.simulated.accounts)) {
+    const actual = accountByCode.get(code) ?? 0
+    if (Math.abs(money(actual - balance)) > 0.01) {
+      differences.push({ scope: "account", key: code, expected: balance, actual })
+    }
+  }
+
+  if (differences.length > 0) {
+    const listed = differences
+      .slice(0, CLOSING_DIFFERENCES_LISTED)
+      .map((entry) => `${entry.scope} ${entry.key}: reviewed ${entry.expected}, database holds ${entry.actual}`)
+      .join("; ")
+    throw new Error(
+      `TALLY_REPLAY_CLOSING_MISMATCH: ${differences.length} figure${differences.length === 1 ? "" : "s"} do not match the reviewed replay — ${listed}${differences.length > CLOSING_DIFFERENCES_LISTED ? "; more are in the progress record" : ""}`,
+    )
+  }
+
+  // The session reaches `complete` only after this row exists, so a crash
+  // between the check and completion leaves the check to be re-run harmlessly.
+  const { data: existing } = await db
+    .from("pharmacy_audit_logs")
+    .select("id")
+    .eq("tenant_id", tenantId)
+    .eq("action", "IMPORT_TALLY_REPLAY")
+    .eq("entity", "IMPORT_SESSION")
+    .eq("entity_id", sessionId)
+    .limit(1)
+  if (((existing ?? []) as unknown[]).length === 0) {
+    const compared = target.simulated.items.length + Object.keys(target.simulated.accounts).length
+    const { error } = await db.from("pharmacy_audit_logs").insert({
+      tenant_id: tenantId,
+      profile_id: actorId,
+      action: "IMPORT_TALLY_REPLAY",
+      entity: "IMPORT_SESSION",
+      entity_id: sessionId,
+      details: `Tally replay closed against the reviewed position: cutoff ${target.cutoffDate}, ${progress.value.counts.stockMovements ?? 0} stock movements applied, ${progress.value.counts.movementsReplayed ?? 0} already applied, ${compared} figures compared (quantities exact, money within 0.01), session ${sessionId}`,
+    })
+    if (error) throw stepFailed("replay-closing", "audit", error)
+  }
+
+  // The checkpoint is appended only now, after the database matched the
+  // reviewed position. It is idempotent on (company, cutoff), so a resumed
+  // closing stage appends it once; a cutoff the company has already closed at
+  // — or one that does not advance its period — is refused here rather than
+  // silently overwriting the position a continuation would read.
+  const checkpoint = await recordTallyReplayCheckpoint(db, {
+    tenantId,
+    sessionId,
+    companyKey: plan.companyKey,
+    throughDate: target.cutoffDate,
+    closingState: target.simulated,
+  })
+  if (checkpoint.error) {
+    throw new Error(
+      `TALLY_CHECKPOINT_FAILED: the replay closed but its checkpoint could not be recorded (${checkpoint.error.humanMessage}). Retry the closing stage.`,
+    )
+  }
+}
+
 function saleItemsFor(
   sale: TallyCutoverSale,
   products: { byName: Map<string, string> },
-): Array<{ stockItemName: string; quantity: number; unitPrice: number; lineTotal: number }> {
+): Array<{
+  stockItemName: string
+  quantity: number
+  unitPrice: number
+  lineTotal: number
+  lineIndex?: number
+}> {
   return sale.items.filter((item) => {
     const quantity = Math.round(item.quantity)
     if (quantity <= 0) return false
@@ -612,6 +1150,8 @@ async function mirrorSale(
     customers: Map<string, string>
     products: { byName: Map<string, string> }
     company?: string
+    /** Replay only: what the replayed stock says each sale line cost. */
+    costs?: Record<string, TallyReplayLineCost>
   },
   progress: Progress,
 ): Promise<void> {
@@ -707,18 +1247,24 @@ async function mirrorSale(
   if (!transactionId) return
 
   let mirrored = inserted.length > 0
-  const items = saleItemsFor(sale, input.products).map((item) => ({
-    tenant_id: input.tenantId,
-    transaction_id: transactionId,
-    product_id: input.products.byName.get(productNameKey(item.stockItemName))!,
-    quantity: Math.round(item.quantity),
-    unit_price: money(item.unitPrice),
-    // Tally sales vouchers carry no cost of sale. Copying the selling price
-    // here reported zero gross profit on every imported sale; null keeps the
-    // cost unknown so the profit report falls back to the product's cost.
-    cost_price: null,
-    total_price: money(item.lineTotal),
-  }))
+  const items = saleItemsFor(sale, input.products).map((item) => {
+    const quantity = Math.round(item.quantity)
+    const cost =
+      item.lineIndex === undefined ? undefined : input.costs?.[`${sale.sourceId}:L${item.lineIndex}`]
+    return {
+      tenant_id: input.tenantId,
+      transaction_id: transactionId,
+      product_id: input.products.byName.get(productNameKey(item.stockItemName))!,
+      quantity,
+      unit_price: money(item.unitPrice),
+      // Tally sales vouchers carry no cost of sale of their own. A replay can
+      // state it, because it knows which batches left at their purchase rates;
+      // where it cannot (a shortage, or a target saved before costs existed)
+      // the value stays null and the profit report uses the product's cost.
+      cost_price: cost?.complete && quantity > 0 ? money(cost.amount / quantity) : null,
+      total_price: money(item.lineTotal),
+    }
+  })
   if (items.length > 0) {
     const children = await childRowsExist(db, "pharmacy_transaction_items", "transaction_id", transactionId)
     if (children.error) {
@@ -871,6 +1417,7 @@ async function stageVoucherChunk(
   actorId: string,
   maps: IdMaps,
   progress: Progress,
+  costs?: Record<string, TallyReplayLineCost>,
 ): Promise<void> {
   // A mirror is the portal's copy of the sale the voucher posted. If the journal
   // was refused, writing the sale anyway shows history the ledger never got —
@@ -910,7 +1457,7 @@ async function stageVoucherChunk(
     await mirrorSale(
       db,
       sale,
-      { tenantId, actorId, customers: maps.customers, products, company: plan.company },
+      { tenantId, actorId, customers: maps.customers, products, company: plan.company, costs },
       progress,
     )
   }
@@ -954,6 +1501,20 @@ export async function applyTallyChunk(
     progress: TallyApplyProgress
     chunk?: { vouchers: TallyCutoverVoucher[]; sales: TallyCutoverSale[]; purchases: TallyCutoverPurchase[] }
     totalChunks?: number
+    /** The import session itself. A replayed movement records which session moved it. */
+    sessionId: string
+    /** Plan mode `replay`; opening and closing cut-overs leave this unset. */
+    replay?: boolean
+    /** `stock-history` chunk count, from the saved summary. */
+    movementTotalChunks?: number
+    /** The reviewed closing figures, loaded for `stock-history` and `replay-closing`. */
+    replayTarget?: TallyReplayTarget
+    /**
+     * Set when this session continues a completed replay. The opening stages
+     * verify the database against this checkpoint instead of applying an
+     * opening position that is already there.
+     */
+    continuation?: TallyReplayCheckpoint | null
   },
 ): Promise<TallyApplyChunkResult> {
   const progress = new Progress(input.progress)
@@ -976,14 +1537,47 @@ export async function applyTallyChunk(
       break
     }
     case "opening-journal": {
+      if (input.continuation) {
+        // The opening journal is already in the database; a continuation
+        // proves that rather than posting it a second time.
+        await verifyContinuationAccounts(db, tenantId, input.continuation)
+        progress.advance("opening-stock")
+        break
+      }
       const posted = await stageOpeningJournal(db, input.plan, tenantId, input.actorId, progress)
       // History must not post on top of an opening position that never landed.
       if (posted) progress.advance("opening-stock")
       break
     }
     case "opening-stock": {
-      await stageOpeningStock(db, input.plan, tenantId, input.actorId, progress)
-      progress.advance("journals", 0)
+      if (input.continuation) {
+        await verifyContinuationStock(db, input.plan, tenantId, input.continuation)
+        progress.advance("stock-history", 0)
+        break
+      }
+      if (input.replay) {
+        // History keeps the export's dates, so it cannot go through the
+        // receiving RPC that stamps today and refuses a past expiry.
+        await stageOpeningStockReplay(db, input.plan, tenantId, progress, input.sessionId)
+        progress.advance("stock-history", 0)
+      } else {
+        await stageOpeningStock(db, input.plan, tenantId, input.actorId, progress)
+        progress.advance("journals", 0)
+      }
+      break
+    }
+    case "stock-history": {
+      await stageStockHistory(
+        db,
+        input.plan,
+        tenantId,
+        progress,
+        input.sessionId,
+        input.replayTarget,
+      )
+      const next = input.progress.offset + 1
+      const total = input.movementTotalChunks ?? 0
+      progress.advance(next >= total ? "journals" : "stock-history", next >= total ? 0 : next)
       break
     }
     case "journals": {
@@ -1007,13 +1601,29 @@ export async function applyTallyChunk(
         input.actorId,
         maps,
         progress,
+        input.replayTarget?.costs,
       )
       const next = input.progress.offset + 1
       if (input.totalChunks === undefined || next >= input.totalChunks) {
-        progress.advance("complete", next)
+        // A replay is not finished when the journals are posted; it is finished
+        // when the database agrees with the position the operator reviewed.
+        progress.advance(input.replay ? "replay-closing" : "complete", input.replay ? 0 : next)
       } else {
         progress.advance("journals", next)
       }
+      break
+    }
+    case "replay-closing": {
+      await stageReplayClosing(
+        db,
+        input.plan,
+        tenantId,
+        input.actorId,
+        input.sessionId,
+        progress,
+        input.replayTarget,
+      )
+      progress.advance("complete")
       break
     }
     case "complete":
@@ -1027,6 +1637,64 @@ export async function applyTallyChunk(
       progress.value.failures.length > 0
         ? `${progress.value.failures.length} item${progress.value.failures.length === 1 ? "" : "s"} could not be imported and are listed.`
         : undefined,
+  }
+}
+
+export type TallyJournalReversal = {
+  posted: number
+  failures: Array<{ sourceId: string; code: string; message: string }>
+}
+
+/**
+ * Posts one reversing entry per voucher a session already applied.
+ *
+ * Debits and credits are swapped and the entry keeps the voucher's own date, so
+ * the period the import posted to nets back to zero instead of the reversal
+ * landing in a later period. The source key is the same one the stock reversal
+ * uses, and the journal RPC is idempotent on it, so a retried rollback posts
+ * each reversing entry once.
+ */
+export async function reverseTallyJournals(
+  db: TallyApplyDb,
+  input: {
+    tenantId: string
+    actorId: string
+    vouchers: TallyCutoverVoucher[]
+  },
+): Promise<TallyJournalReversal> {
+  const progress = new Progress(emptyProgress())
+  const accounts = await loadAccounts(db, input.tenantId)
+  let posted = 0
+
+  for (const voucher of input.vouchers) {
+    const reversed = await postJournal(db, {
+      tenantId: input.tenantId,
+      sourceType: "tally_replay_reversal",
+      sourceId: `${voucher.sourceType}:${voucher.sourceId}`,
+      date: voucher.date,
+      description: `Reversal of the Tally import: ${voucher.description}`,
+      currency: voucher.currency,
+      actorId: input.actorId,
+      lines: voucher.lines.map((line) => ({
+        accountCode: line.accountCode,
+        debit: line.credit,
+        credit: line.debit,
+        description: line.description,
+      })),
+      accounts,
+      stage: "journals",
+      progress,
+    })
+    if (reversed) posted += 1
+  }
+
+  return {
+    posted,
+    failures: progress.value.failures.map((failure) => ({
+      sourceId: failure.key,
+      code: failure.code,
+      message: failure.message,
+    })),
   }
 }
 

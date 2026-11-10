@@ -414,9 +414,14 @@ describe("isManifestLike", () => {
     expect(isManifestLike(completeAll(build(2)))).toBe(true)
   })
 
+  it("accepts a replay manifest, which the same preview writes", () => {
+    expect(isManifestLike({ ...completeAll(build(1)), mode: "replay" })).toBe(true)
+  })
+
   it("rejects anything the validators could throw on", () => {
     const done = completeAll(build(1))
     expect(isManifestLike(null)).toBe(false)
+    expect(isManifestLike({ ...done, mode: "guessed" })).toBe(false)
     expect(isManifestLike({ ...done, chunks: "nope" })).toBe(false)
     expect(isManifestLike({ ...done, sessionId: 7 })).toBe(false)
     expect(isManifestLike({ ...done, period: { from: "2026-01-01" } })).toBe(false)

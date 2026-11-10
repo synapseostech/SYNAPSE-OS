@@ -19,6 +19,7 @@ import {
   type TallyXmlDocument,
 } from "@synapse/db/tally-xml-rows"
 import { TALLY_TABULAR_LIMITS } from "./workbook"
+import type { TallyImportMode } from "./types"
 
 export const STOCK_SHEET_NAME = "StockBatches"
 export const STOCK_SHEET_COLUMNS = [
@@ -291,7 +292,7 @@ export function applyTallyStockSheet(
  */
 export function buildTallyStockSheet(
   document: TallyXmlDocument,
-  mode: "opening" | "closing",
+  mode: TallyImportMode,
 ): ArrayBuffer {
   const lines: Array<Array<string | number>> = [[...STOCK_SHEET_COLUMNS]]
   const items: TallyStockItem[] = [...document.stockItems].sort((left, right) =>

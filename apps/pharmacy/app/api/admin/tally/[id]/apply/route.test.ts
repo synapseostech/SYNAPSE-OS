@@ -14,6 +14,7 @@ const m = vi.hoisted(() => ({
   auth: null as unknown,
   db: null as unknown as { client: unknown; operations: FakeOperation[] },
   loadStagePlan: vi.fn(),
+  readReplayTarget: vi.fn(),
   applyChunk: vi.fn(),
   reconcile: vi.fn(),
   leaseStatus: "acquired",
@@ -33,7 +34,10 @@ vi.mock("@/lib/supabase/admin", () => ({
     return m.db.client
   },
 }))
-vi.mock("@/lib/tally/plan", () => ({ loadStagePlan: m.loadStagePlan }))
+vi.mock("@/lib/tally/plan", () => ({
+  loadStagePlan: m.loadStagePlan,
+  readTallyReplayTarget: m.readReplayTarget,
+}))
 vi.mock("@/lib/tally/reconcile", () => ({ reconcileTallyPlan: m.reconcile }))
 vi.mock("@/lib/tally/apply", () => ({
   TALLY_STAGE_ORDER: [
@@ -174,6 +178,47 @@ function planSummary(overrides: Record<string, unknown> = {}) {
   }
 }
 
+const REPLAY_AT = "2026-01-01T00:00:00.000Z"
+const REPLAY_ROW_KEY = "reconcile:stock_item:Panadol 500mg"
+const REPLAY_REASON = "Tally's closing stock was taken before the last return was posted."
+
+/** A replay whose stock closes ten units below Tally's own figure. */
+function replayTarget(overrides: Record<string, unknown> = {}) {
+  return {
+    preparedAt: REPLAY_AT,
+    conversionDate: PERIOD.from,
+    cutoffDate: PERIOD.to,
+    ordering: "date-then-export-order",
+    eventCount: 2,
+    movementCount: 2,
+    perDay: [{ date: "2026-01-05", events: 2, movements: 2, kinds: { sales: 1, purchase: 1 } }],
+    reconciliation: [
+      {
+        scope: "stock_item",
+        key: "Panadol 500mg",
+        expected: 90,
+        actual: 80,
+        difference: -10,
+        status: "difference",
+        tolerance: 0,
+        sourceIds: ["voucher-1"],
+      },
+    ],
+    totals: { match: 0, difference: 1, notAvailable: 0 },
+    blocking: 1,
+    warnings: 0,
+    findings: [],
+    simulated: {
+      accounts: {},
+      items: [],
+      sourceIdsByItem: {},
+      sourceIdsByAccount: {},
+      eventCount: 2,
+    },
+    ...overrides,
+  }
+}
+
 // The shape the Tally upload route writes: source_system plus a format, which
 // is what marks a session as a cut-over rather than a generic mapped import.
 function row(
@@ -200,6 +245,25 @@ function row(
     ai_mapping,
     ...extra,
   }
+}
+
+function replaySummary() {
+  return { chunkCount: 1, mode: "replay", conversionDate: PERIOD.from }
+}
+
+function replaySession() {
+  return row("review", { summary: replaySummary() })
+}
+
+/** The plan a replay apply reads, mocked so only the gate is on trial. */
+function replayPlan() {
+  m.loadStagePlan.mockResolvedValue({
+    plan: { company: "Demo Pharma" },
+    summary: { chunkCount: 1, mode: "replay" },
+    chunk: { rows: [] },
+    totalChunks: 1,
+  })
+  m.applyChunk.mockResolvedValue({ progress: progress(), done: false })
 }
 
 function setup(session: unknown, auditWriteError?: string) {
@@ -272,6 +336,7 @@ describe("POST /api/admin/tally/[id]/apply", () => {
   beforeEach(() => {
     m.auth = ADMIN
     m.loadStagePlan.mockReset()
+    m.readReplayTarget.mockReset().mockResolvedValue(null)
     m.applyChunk.mockReset()
     m.reconcile.mockReset().mockReturnValue([])
     m.leaseStatus = "acquired"
@@ -1032,6 +1097,159 @@ describe("POST /api/admin/tally/[id]/apply", () => {
     const start = m.db.operations.filter((operation) => operation.action === "update")[0]
     const mapping = (start?.payload as { ai_mapping?: Record<string, unknown> }).ai_mapping ?? {}
     expect(mapping).not.toHaveProperty("unverifiedAcknowledgement")
+  })
+
+  it("refuses a replay whose difference nobody has answered", async () => {
+    setup(replaySession())
+    m.readReplayTarget.mockResolvedValue(replayTarget())
+
+    const res = await post()
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({
+      code: "TALLY_REPLAY_NOT_ACKNOWLEDGED",
+      sequenceConfirmed: false,
+    })
+    expect(body.missing).toEqual([expect.objectContaining({ key: REPLAY_ROW_KEY })])
+    // Nothing reserved, planned or written while the review is open.
+    expect(m.loadStagePlan).not.toHaveBeenCalled()
+    expect(m.rpcCalls).toHaveLength(0)
+    expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+  })
+
+  it("refuses a confirmed sequence while a difference is still unanswered", async () => {
+    setup(replaySession())
+    m.readReplayTarget.mockResolvedValue(replayTarget())
+
+    const res = await post({ acknowledgeReplay: { sequenceConfirmed: true, items: [] } })
+    const body = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(body).toMatchObject({
+      code: "TALLY_REPLAY_NOT_ACKNOWLEDGED",
+      sequenceConfirmed: true,
+    })
+    expect(body.missing).toHaveLength(1)
+  })
+
+  it("refuses an acknowledgement whose reason is too short to be one", async () => {
+    setup(replaySession())
+    m.readReplayTarget.mockResolvedValue(replayTarget())
+
+    const res = await post({
+      acknowledgeReplay: { sequenceConfirmed: true, items: [{ key: REPLAY_ROW_KEY, reason: "no" }] },
+    })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ code: "TALLY_REPLAY_REASON_TOO_SHORT" })
+  })
+
+  it("refuses an answer for a difference this replay does not carry", async () => {
+    setup(replaySession())
+    m.readReplayTarget.mockResolvedValue(replayTarget())
+
+    const res = await post({
+      acknowledgeReplay: {
+        sequenceConfirmed: true,
+        items: [{ key: "reconcile:account:Bank", reason: REPLAY_REASON }],
+      },
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({
+      code: "TALLY_REPLAY_ACK_UNKNOWN",
+      unknown: ["reconcile:account:Bank"],
+    })
+  })
+
+  it("applies a replay once the sequence is confirmed and every difference answered", async () => {
+    setup(replaySession())
+    m.readReplayTarget.mockResolvedValue(replayTarget())
+    replayPlan()
+
+    const res = await post({
+      acknowledgeReplay: {
+        sequenceConfirmed: true,
+        items: [{ key: REPLAY_ROW_KEY, reason: REPLAY_REASON }],
+      },
+    })
+
+    expect(res.status).toBe(200)
+    const start = m.db.operations.filter((operation) => operation.action === "update")[0]
+    const mapping = (start?.payload as { ai_mapping?: Record<string, unknown> }).ai_mapping ?? {}
+    expect(mapping.replayAcknowledgement).toMatchObject({
+      preparedAt: REPLAY_AT,
+      sequenceConfirmed: true,
+      acknowledgedBy: "user-1",
+      items: [{ key: REPLAY_ROW_KEY, reason: REPLAY_REASON }],
+    })
+  })
+
+  it("honours the acknowledgement saved by an earlier call", async () => {
+    setup(
+      row("review", {
+        summary: replaySummary(),
+        replayAcknowledgement: {
+          preparedAt: REPLAY_AT,
+          sequenceConfirmed: true,
+          acknowledgedAt: "2026-01-01T01:00:00.000Z",
+          acknowledgedBy: "user-1",
+          items: [{ key: REPLAY_ROW_KEY, reason: REPLAY_REASON }],
+        },
+      }),
+    )
+    m.readReplayTarget.mockResolvedValue(replayTarget())
+    replayPlan()
+
+    expect((await post()).status).toBe(200)
+  })
+
+  it("asks again when the acknowledgement was given for another preview", async () => {
+    setup(
+      row("review", {
+        summary: replaySummary(),
+        replayAcknowledgement: {
+          preparedAt: "2025-12-31T00:00:00.000Z",
+          sequenceConfirmed: true,
+          acknowledgedAt: "2025-12-31T01:00:00.000Z",
+          acknowledgedBy: "user-1",
+          items: [{ key: REPLAY_ROW_KEY, reason: REPLAY_REASON }],
+        },
+      }),
+    )
+    m.readReplayTarget.mockResolvedValue(replayTarget())
+
+    const res = await post()
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: "TALLY_REPLAY_NOT_ACKNOWLEDGED" })
+  })
+
+  it("does not re-judge a replay that is already running", async () => {
+    setup(
+      row("importing", {
+        summary: replaySummary(),
+        progress: progress({ stage: "accounts" }),
+      }),
+    )
+    // The gate would refuse this target if it were judged.
+    m.readReplayTarget.mockResolvedValue(replayTarget())
+    replayPlan()
+
+    expect((await post()).status).toBe(200)
+  })
+
+  it("reads the replay target only for this session and tenant", async () => {
+    setup(replaySession())
+    m.readReplayTarget.mockResolvedValue(replayTarget())
+
+    await post()
+
+    expect(m.readReplayTarget).toHaveBeenCalledTimes(1)
+    const [, tenantArg, idArg] = m.readReplayTarget.mock.calls[0] ?? []
+    expect(tenantArg).toBe("tenant-1")
+    expect(idArg).toBe("session-1")
   })
 
   it("refuses a malformed apply body before reading the session", async () => {

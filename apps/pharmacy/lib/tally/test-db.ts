@@ -29,6 +29,7 @@ type Chain = {
   delete: () => Chain
   eq: (column: string, value: unknown) => Chain
   in: (column: string, values: unknown[]) => Chain
+  is: (column: string, value: unknown) => Chain
   gte: (column: string, value: unknown) => Chain
   lte: (column: string, value: unknown) => Chain
   order: (column: string, options?: { ascending?: boolean }) => Chain
@@ -81,6 +82,10 @@ export function fakeSupabase(resolve: (operation: FakeOperation) => FakeResult) 
       },
       in: (column, values) => {
         operation.filters.push([column, values])
+        return chain
+      },
+      is: (column, value) => {
+        operation.filters.push([column, value])
         return chain
       },
       gte: (column, value) => {
