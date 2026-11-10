@@ -30,14 +30,39 @@ describe("ensureTallyBucket", () => {
     })
     await ensureTallyBucket(client)
     expect(updates).toEqual([
-      { allowedMimeTypes: ["application/xml", "text/csv", "application/json"] },
+      {
+        allowedMimeTypes: [
+          "application/xml",
+          "text/csv",
+          "application/json",
+          "application/zip",
+        ],
+      },
     ])
   })
 
-  it("leaves a bucket that already takes JSON alone", async () => {
+  it("lets a zipped package upload to a bucket created before packages", async () => {
     const { client, updates } = clientFor({
       file_size_limit: TALLY_SOURCE_LIMIT,
-      allowed_mime_types: ["application/xml", "application/json"],
+      allowed_mime_types: ["text/xml", "application/xml", "application/json"],
+    })
+    await ensureTallyBucket(client)
+    expect(updates).toEqual([
+      {
+        allowedMimeTypes: [
+          "text/xml",
+          "application/xml",
+          "application/json",
+          "application/zip",
+        ],
+      },
+    ])
+  })
+
+  it("leaves a bucket that already takes JSON and packages alone", async () => {
+    const { client, updates } = clientFor({
+      file_size_limit: TALLY_SOURCE_LIMIT,
+      allowed_mime_types: ["application/xml", "application/json", "application/zip"],
     })
     await ensureTallyBucket(client)
     expect(updates).toHaveLength(0)
@@ -52,7 +77,7 @@ describe("ensureTallyBucket", () => {
     expect(updates).toEqual([
       {
         fileSizeLimit: TALLY_SOURCE_LIMIT,
-        allowedMimeTypes: ["application/xml", "application/json"],
+        allowedMimeTypes: ["application/xml", "application/json", "application/zip"],
       },
     ])
   })
