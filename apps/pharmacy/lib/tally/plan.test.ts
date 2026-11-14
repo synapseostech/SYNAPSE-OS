@@ -4,6 +4,7 @@ import type { TallyCutoverPlan } from "@synapse/db/tally-normalise"
 import {
   loadStagePlan,
   readTallyPlanSummary,
+  readTallyPlaybackChunk,
   readTallyReplayTarget,
   writeTallyPlan,
 } from "./plan"
@@ -270,5 +271,164 @@ describe("tally replay plan persistence", () => {
     const summary = await writeTallyPlan(client, TENANT, SESSION, truncatedPlan(), "xml")
 
     expect(summary.replay).toBeUndefined()
+  })
+})
+
+describe("tally opening stock adjustments", () => {
+  function openingWithCounts(): TallyCutoverPlan {
+    return {
+      ...truncatedPlan(),
+      counts: { ...truncatedPlan().counts, adjustedVouchers: 2, vouchers: 2 },
+      movements: [
+        {
+          movementId: "count-late",
+          sourceId: "count-late",
+          kind: "stock_journal",
+          movementKind: "physical_adjust",
+          date: "2026-02-20",
+          sourceOrder: 1,
+          lineIndex: 0,
+          batchIndex: 0,
+          stockItemName: "Test Item A",
+          quantityDelta: 4,
+          rate: 100,
+          amount: 400,
+        },
+        {
+          movementId: "count-early",
+          sourceId: "count-early",
+          kind: "stock_journal",
+          movementKind: "physical_adjust",
+          date: "2026-02-10",
+          sourceOrder: 0,
+          lineIndex: 0,
+          batchIndex: 0,
+          stockItemName: "Test Item A",
+          quantityDelta: 11,
+          rate: 100,
+          amount: 1100,
+        },
+      ],
+    }
+  }
+
+  it("persists the adjustments and the chunk count a resumed apply walks", async () => {
+    const { client, objects } = memoryStorage()
+
+    const summary = await writeTallyPlan(client, TENANT, SESSION, openingWithCounts(), "xml")
+
+    expect(summary.stockAdjustments).toEqual({
+      voucherCount: 2,
+      movementCount: 2,
+      movementChunkCount: 1,
+    })
+    // Opening applies dated counts; it never builds a replay target.
+    expect(summary.replay).toBeUndefined()
+    expect([...objects.keys()].some((path) => path.endsWith("plan-replay-target.json"))).toBe(false)
+    expect([...objects.keys()].some((path) => path.endsWith("plan-movement-chunk-000.json"))).toBe(
+      true,
+    )
+
+    // Oldest first, because the newest count is the one that must stand.
+    const history = await loadStagePlan(client, TENANT, SESSION, "stock-history", 0)
+    expect(history.plan.movements?.map((entry) => entry.movementId)).toEqual([
+      "count-early",
+      "count-late",
+    ])
+    expect(history.replay).toBeUndefined()
+  })
+
+  it("adds no adjustment block when the export carries no stock-only vouchers", async () => {
+    const { client } = memoryStorage()
+
+    const summary = await writeTallyPlan(client, TENANT, SESSION, truncatedPlan(), "xml")
+
+    expect(summary.stockAdjustments).toBeUndefined()
+  })
+})
+
+describe("tally playback persistence", () => {
+  function playbackPlan(): TallyCutoverPlan {
+    return {
+      ...truncatedPlan(),
+      vouchers: [
+        {
+          sourceId: "guid-2:SAL-0002",
+          sourceType: "Voucher",
+          kind: "sales",
+          date: "2026-01-15",
+          number: "SAL-0002",
+          description: "A later sale",
+          currency: "UGX",
+          lines: [{ accountCode: "CASH", accountName: "Cash", debit: 400, credit: 0 }],
+        },
+        {
+          sourceId: "guid-1:SAL-0001",
+          sourceType: "Voucher",
+          kind: "sales",
+          date: "2026-01-05",
+          number: "SAL-0001",
+          description: "An earlier sale",
+          currency: "UGX",
+          lines: [{ accountCode: "CASH", accountName: "Cash", debit: 200, credit: 0 }],
+        },
+      ],
+      sales: [
+        {
+          sourceId: "guid-1:SAL-0001",
+          date: "2026-01-05",
+          transactionNumber: "SAL-0001",
+          paymentMethod: "CASH",
+          total: 200,
+          tax: 0,
+          discount: 0,
+          items: [{ stockItemName: "Test Item A", quantity: 2, unitPrice: 100, lineTotal: 200 }],
+        },
+      ],
+      counts: { ...truncatedPlan().counts, vouchers: 2, sales: 1 },
+    }
+  }
+
+  it("walks the plan by date, opening first", async () => {
+    const { client } = memoryStorage()
+
+    const summary = await writeTallyPlan(client, TENANT, SESSION, playbackPlan(), "xml")
+    const events = await readTallyPlaybackChunk(client, TENANT, SESSION, 0)
+
+    expect(summary.playback).toMatchObject({
+      mode: "opening",
+      firstDate: "2026-01-01",
+      lastDate: "2026-01-15",
+      eventCount: 3,
+      movementCount: 0,
+    })
+    expect(summary.playback?.days.map((day) => day.date)).toEqual([
+      "2026-01-01",
+      "2026-01-05",
+      "2026-01-15",
+    ])
+    expect(events?.map((event) => event.id)).toEqual([
+      "opening",
+      "guid-1:SAL-0001",
+      "guid-2:SAL-0002",
+    ])
+    // The sale mirror is what opening mode posts, so its stock line is the
+    // walkthrough's stock line.
+    expect(events?.[1]).toMatchObject({
+      type: "voucher",
+      number: "SAL-0001",
+      debit: 200,
+      stock: [{ item: "Test Item A", quantity: 2, direction: "out" }],
+    })
+  })
+
+  it("walks a closing plan through nothing, because it carries no history", async () => {
+    const { client } = memoryStorage()
+    const plan = { ...playbackPlan(), mode: "closing" as const }
+
+    const summary = await writeTallyPlan(client, TENANT, SESSION, plan, "xml")
+
+    expect(summary.playback).toBeUndefined()
+    expect(await readTallyPlaybackChunk(client, TENANT, SESSION, 0)).toBeNull()
   })
 })

@@ -307,8 +307,11 @@ export type TallyCutoverPlan = {
   sales: TallyCutoverSale[]
   purchases: TallyCutoverPurchase[]
   /**
-   * Replay only. Opening stock is not repeated here: it is carried by
-   * `stockItems` and applied by its own stage.
+   * Stock movements. A replay carries every voucher's movement in
+   * `(date, export order)`; an opening cut-over carries only the physical
+   * stock and stock journal adjustments, dated as the export dates them.
+   * Opening stock is not repeated here: it is carried by `stockItems` and
+   * applied by its own stage.
    */
   movements?: TallyCutoverMovement[]
   exceptions: TallyException[]
@@ -323,6 +326,8 @@ export type TallyCutoverPlan = {
     stockItems: number
     vouchers: number
     postedVouchers: number
+    /** Stock-only vouchers applied as dated stock adjustments. */
+    adjustedVouchers: number
     skippedVouchers: number
     sales: number
     purchases: number
@@ -1178,12 +1183,14 @@ export function normaliseTallyDocument(
   // ledger payload is withheld below.
   const sourceVouchers = document.vouchers
   let skippedVouchers = 0
+  // Stock-only vouchers that became dated adjustments instead of ledger posts.
+  let adjustedVouchers = 0
   const usedSourceIds = new Set<string>()
-  // Replay: stock movements, their position in the export, and batch numbers
-  // already seen with an expiry so one number cannot quietly carry two.
+  // Stock movements, their position in the export, and batch numbers already
+  // seen with an expiry so one number cannot quietly carry two.
   const replayMovements: TallyCutoverMovement[] = []
   const batchIdentities =
-    mode === "replay"
+    mode !== "closing"
       ? collectReplayBatchIdentities(sourceVouchers, conversionDate, cutoffDate)
       : null
   const batchExpiry: TallyBatchExpiry =
@@ -1282,12 +1289,16 @@ export function normaliseTallyDocument(
   for (const [sourceOrder, voucher] of sourceVouchers.entries()) {
     const kind = classifyTallyVoucherType(voucher.type)
     const sourceType = tallyVoucherSourceType(kind)
-    // Replay also reads the vouchers that carry stock but post nothing to the
-    // ledger; every other mode keeps rejecting them.
+    // A physical stock or stock journal voucher posts nothing to the ledger:
+    // its inventory list is the whole voucher. Opening mode applies it as a
+    // dated adjustment to the stock it just opened; replay folds it into the
+    // rebuilt movement history. Closing mode posts no history at all.
+    const stockAdjustmentVoucher = kind === "stock_journal" && mode !== "closing"
+    // Replay also reads the single-sided notes and orders so it can say why
+    // they are not replayed; every other mode keeps rejecting them.
     const replayStockVoucher =
-      mode === "replay" &&
-      (kind === "stock_journal" || kind === "inventory_note" || kind === "order")
-    if (!sourceType && !replayStockVoucher) {
+      mode === "replay" && (kind === "inventory_note" || kind === "order")
+    if (!sourceType && !stockAdjustmentVoucher && !replayStockVoucher) {
       skippedVouchers += 1
       addException(
         "VOUCHER_TYPE_UNSUPPORTED",
@@ -1347,8 +1358,8 @@ export function normaliseTallyDocument(
     }
 
     if (!sourceType) {
-      // Only a replay stock voucher reaches here; every part of it is handled
-      // in this branch, and nothing below it posts to the ledger.
+      // A stock-only or replay-only voucher reaches here; every part of it is
+      // handled in this branch, and nothing below it posts to the ledger.
       if (kind === "order") {
         skippedVouchers += 1
         addException(
@@ -1378,6 +1389,7 @@ export function normaliseTallyDocument(
       usedSourceIds.add(sourceId)
       sourceOrderById.set(sourceId, sourceOrder)
 
+      const before = replayMovements.length
       captureReplayMovements({
         voucher,
         kind,
@@ -1390,6 +1402,9 @@ export function normaliseTallyDocument(
         missingExpiry,
         movements: replayMovements,
       })
+      // A voucher whose lines could not be read produces no movement; it is
+      // already named by a blocking exception and must not count as adjusted.
+      if (replayMovements.length > before) adjustedVouchers += 1
       continue
     }
 
@@ -1503,6 +1518,11 @@ export function normaliseTallyDocument(
         { date: b.voucher.date ?? "", sourceId: b.sourceId },
       ),
     )
+  }
+  // A physical count sets the quantity at its own date, so applying the
+  // adjustments out of order would leave the newest count overwritten by an
+  // older one.
+  if (replayMovements.length > 1) {
     replayMovements.sort((a, b) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1
       if (a.sourceOrder !== b.sourceOrder) return a.sourceOrder - b.sourceOrder
@@ -1960,13 +1980,17 @@ export function normaliseTallyDocument(
     companyKey,
     currency,
     conversionDate,
+    // Replay carries every movement; opening carries only the dated stock
+    // adjustments and leaves the trade history to the mirror.
     ...(mode === "replay"
       ? {
           cutoffDate,
           ordering: "date-then-export-order" as const,
           movements: replayMovements,
         }
-      : {}),
+      : replayMovements.length > 0
+        ? { movements: replayMovements }
+        : {}),
     batchExpiry,
     mode,
     accounts: cutoverAccounts,
@@ -1992,6 +2016,7 @@ export function normaliseTallyDocument(
       stockItems: document.stockItems.length,
       vouchers: sourceVouchers.length,
       postedVouchers: vouchers.length,
+      adjustedVouchers,
       skippedVouchers,
       sales: sales.length,
       purchases: purchases.length,

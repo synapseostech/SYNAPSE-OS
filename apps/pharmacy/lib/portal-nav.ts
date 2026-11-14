@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, Package, ShoppingCart, DollarSign,
   UserCheck, ClipboardList, MessageSquare, Activity, Truck, FileText,
   BarChart3, RotateCcw, Wifi, CalendarClock, WalletCards, BrainCircuit,
-  CreditCard, Building2, ShoppingBag, BookOpen, FileSpreadsheet,
+  CreditCard, Building2, ShoppingBag, BookOpen,
   Settings, Download,
 } from "lucide-react"
 import { sessionHasCapability, type CapabilitySession } from "@/lib/capabilities"
@@ -38,8 +38,10 @@ export const NAV_GROUPS: PortalNavGroup[] = [
     label: "Inventory",
     items: [
       { name: "Inventory",        href: "/portal/inventory",        icon: Package,         permission: "MANAGE_INVENTORY" },
-      { name: "Import Assistant", href: "/portal/import-assistant", icon: BrainCircuit,    permission: "MANAGE_INVENTORY" },
-      { name: "Tally Cut-over",   href: "/portal/tally-import",     icon: FileSpreadsheet, permission: "MANAGE_INVENTORY", adminOnly: true },
+      // One entry for every import. Which workspace it opens — the Tally
+      // cut-over or the assistant — is read from the file, not chosen here.
+      // The cut-over endpoints still enforce admin on their own.
+      { name: "Import",           href: "/portal/import",           icon: BrainCircuit,    permission: "MANAGE_INVENTORY" },
     ],
   },
   {

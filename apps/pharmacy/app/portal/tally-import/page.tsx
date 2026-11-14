@@ -15,14 +15,18 @@ import {
   Upload,
 } from "lucide-react"
 import { TallyDocumentProbe } from "@/components/tally/tally-document-probe"
+import { TallyPlayback } from "@/components/tally/tally-playback"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useToast } from "@/hooks/use-toast"
+import { takeImportHandoff } from "@/lib/import-handoff"
 import { diagnosticFrom, reportTallyFailure } from "@/lib/tally/diagnostics"
 import type { TallyEditionDisclosure, TallyEditionProblem } from "@/lib/tally/editions"
+import { isIsoDay, kindFromFileName, periodFromFileName } from "@/lib/tally/file-names"
+import type { TallyPlaybackIndex } from "@/lib/tally/types"
 import { REPLAY_REASON_MAX, REPLAY_REASON_MIN } from "@/lib/tally/replay-gate"
 import { TALLY_SOURCE_LIMIT } from "@/lib/tally/storage"
 import { cutoverBlockReason, track } from "@/lib/telemetry/events"
@@ -72,6 +76,7 @@ type Counts = {
   stockItems: number
   vouchers: number
   postedVouchers: number
+  adjustedVouchers?: number
   skippedVouchers: number
   sales: number
   purchases: number
@@ -106,6 +111,14 @@ type Summary = {
     blocking: number
     warnings: number
   }
+  /** Opening only: the physical counts applied as dated stock adjustments. */
+  stockAdjustments?: {
+    voucherCount: number
+    movementCount: number
+    movementChunkCount: number
+  }
+  /** The dated walkthrough; absent on a closing cut-over. */
+  playback?: TallyPlaybackIndex
   exceptions: Array<{ code: string; message: string; detail?: string; severity: string }>
   chunkCount: number
   chunkSize: number
@@ -258,6 +271,8 @@ type ManifestEvidence = {
   recordsRead: number
   recordsStaged: { accounts: number; parties: number; products: number; vouchers: number } | null
   independentCount: boolean
+  declaredVouchers?: number | null
+  voucherRecordsRead?: number
   coverage: "verified" | "unverified"
 }
 
@@ -276,31 +291,10 @@ type ManifestView = {
 const formatPeriod = (period: TallyPeriod | null | undefined) =>
   period ? `${period.from} to ${period.to}` : null
 
-const isIsoDay = (value: string) =>
-  /^\d{4}-\d{2}-\d{2}$/.test(value) &&
-  new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value
-
-/**
- * The range an export names in its own file name, as the Synapse export
- * script writes it (`3-daybook-20250101-20251231.xml`). Slices have to carry
- * their own dates: one period typed into the form would make every slice claim
- * the whole migration and collide with the others.
- */
-function periodFromFileName(name: string): TallyPeriod | undefined {
-  const match = /(\d{4})(\d{2})(\d{2})-(\d{4})(\d{2})(\d{2})\.xml$/i.exec(name)
-  if (!match) return undefined
-  const from = `${match[1]}-${match[2]}-${match[3]}`
-  const to = `${match[4]}-${match[5]}-${match[6]}`
-  if (!isIsoDay(from) || !isIsoDay(to) || to < from) return undefined
-  return { from, to }
-}
-
-/** The part of the cut-over a file holds, when its name says so. */
-function kindFromFileName(name: string): "masters" | "vouchers" | undefined {
-  const lower = name.toLowerCase()
-  if (lower.includes("masters")) return "masters"
-  if (lower.includes("daybook") || lower.includes("day-book")) return "vouchers"
-  return undefined
+/** One `"CODE: message"` problem, split so the message reads as a sentence. */
+const splitProblem = (entry: string): { code: string; message: string } => {
+  const match = /^([A-Z][A-Z0-9_]*): ([\s\S]*)$/.exec(entry)
+  return match ? { code: match[1], message: match[2] } : { code: "", message: entry }
 }
 
 /** The batch expiry sheet attached to this cut-over, as the server lists it. */
@@ -393,7 +387,9 @@ function StagedGroup({
           </TableHeader>
           <TableBody>
             {files.map((entry) => (
-              <TableRow key={entry.uploadId}>
+              // Every entry of one package shares the upload that carried it, so
+              // the chunk is what tells two rows apart.
+              <TableRow key={entry.chunkId}>
                 <TableCell className="max-w-[18rem] truncate">{entry.fileName}</TableCell>
                 <TableCell>
                   {entry.kind === "masters"
@@ -436,6 +432,7 @@ export default function TallyImportPage() {
   const [stockSheetBusy, setStockSheetBusy] = useState(false)
   const stockSheetInput = useRef<HTMLInputElement>(null)
   const [replacePrompt, setReplacePrompt] = useState<{ file: File; chunkId: string } | null>(null)
+  const [startOverPrompt, setStartOverPrompt] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [summary, setSummary] = useState<Summary | null>(null)
   const [preflightView, setPreflightView] = useState<PreflightView | null>(null)
@@ -458,7 +455,7 @@ export default function TallyImportPage() {
   const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "disabled" | "error">("checking")
   const [scriptPort, setScriptPort] = useState("")
   const [scriptCompany, setScriptCompany] = useState("")
-const [companyFrom, setCompanyFrom] = useState("")
+  const [companyFrom, setCompanyFrom] = useState("")
   const [companyTo, setCompanyTo] = useState("")
   // A refusal that outlives the toast, so a file that was not added says why.
   const [stageError, setStageError] = useState<{
@@ -542,6 +539,38 @@ const [companyFrom, setCompanyFrom] = useState("")
     busy === "idle" &&
     (preflightView?.canApply !== false || onlySequenceBlocks)
 
+  // The masters are named two ways: by the manifest gate once every file has
+  // landed, and by the chunk still unread while the set is being staged.
+  const mastersMissing = stagedProblems.some((entry) => {
+    const { code, message } = splitProblem(entry)
+    return (
+      code === "TALLY_MASTERS_MISSING" ||
+      (code === "TALLY_CHUNK_INCOMPLETE" && message.includes("All Masters"))
+    )
+  })
+
+  // What the staging itself has, so a blocked review can say what it does have
+  // as well as what it is missing.
+  const stagedSummary = useMemo(() => {
+    if (stagedFiles.length === 0) return null
+    const vouchers = stagedFiles.filter((entry) => entry.kind === "vouchers")
+    const from = stagedFiles.reduce<string | null>(
+      (earliest, entry) =>
+        earliest === null || entry.range.from < earliest ? entry.range.from : earliest,
+      null,
+    )
+    const to = stagedFiles.reduce<string | null>(
+      (latest, entry) => (latest === null || entry.range.to > latest ? entry.range.to : latest),
+      null,
+    )
+    return {
+      files: stagedFiles.length,
+      vouchers: vouchers.reduce((total, entry) => total + entry.recordsRead, 0),
+      from,
+      to,
+    }
+  }, [stagedFiles])
+
   // The dates the operator entered, used only for a file that states none.
   const companyPeriod = useMemo<TallyPeriod | undefined>(() => {
     const from = companyFrom.trim()
@@ -596,16 +625,49 @@ const [companyFrom, setCompanyFrom] = useState("")
 
   const loadSession = useCallback(
     async (id: string) => {
-      const response = await fetch(`/api/admin/tally/${id}`)
-      const data = await response.json()
+      let response: Response
+      try {
+        response = await fetch(`/api/admin/tally/${id}`)
+      } catch {
+        toast({
+          variant: "destructive",
+          title: "The cut-over could not be reloaded",
+          description: "The server did not answer. Check the connection and try again.",
+        })
+        return
+      }
+      // An expired sign-in is answered with the sign-in page, whose HTML is not
+      // a session. Saying so is the point of the button: before this, the parse
+      // threw and the click looked like it did nothing at all.
+      const data = (await response.json().catch(() => null)) as Record<string, unknown> | null
+      if (!data) {
+        toast({
+          variant: "destructive",
+          title: "Your sign-in has expired",
+          description: "Sign in again, then reload the cut-over.",
+        })
+        return
+      }
       // A remembered session can be gone: the data reset deletes its row, and one
       // started against another database never existed here. Holding on to the id
       // makes every later upload post to a session that cannot exist.
       if (response.status === 404) {
         forgetSession()
+        toast({
+          title: "That cut-over is no longer here",
+          description: "Upload the export again to start a new one.",
+        })
         return
       }
-      if (!response.ok) return
+      if (!response.ok) {
+        toast({
+          variant: "destructive",
+          title: "The cut-over could not be reloaded",
+          description:
+            typeof data.error === "string" ? data.error : `The server answered ${response.status}.`,
+        })
+        return
+      }
       if (data.summary) setSummary(data.summary as Summary)
       setPreflightView((data.cutoverPreflight as PreflightView | null) ?? null)
       if (data.manifest !== undefined) {
@@ -636,7 +698,7 @@ const [companyFrom, setCompanyFrom] = useState("")
         setReplayReasons({})
       }
     },
-    [forgetSession],
+    [forgetSession, toast],
   )
 
   useEffect(() => {
@@ -647,6 +709,22 @@ const [companyFrom, setCompanyFrom] = useState("")
     }
   }, [loadSession])
 
+  // Files chosen on the Import page arrive here already in hand, so the
+  // workspace opens on them instead of asking for the same files again. The
+  // upload waits for the access check: a refused account should see why, not
+  // a toast about an upload it was never allowed to make.
+  const handoffStarted = useRef(false)
+  useEffect(() => {
+    if (cutoverAccess !== "ready" || handoffStarted.current) return
+    const carried = takeImportHandoff("tally")
+    if (carried.length === 0) return
+    handoffStarted.current = true
+    setFiles(carried)
+    void uploadAndReview(carried)
+    // uploadAndReview reads only its argument and stable setters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cutoverAccess])
+
   function rememberSession(id: string) {
     setSessionId(id)
     if (typeof window !== "undefined") window.localStorage.setItem("tallySessionId", id)
@@ -654,6 +732,7 @@ const [companyFrom, setCompanyFrom] = useState("")
 
   /** Drops every review a fresh read or a newly staged file invalidates. */
   function clearReview() {
+    setStagedProblems([])
     setSummary(null)
     setPreflightView(null)
     setPreview(null)
@@ -666,6 +745,32 @@ const [companyFrom, setCompanyFrom] = useState("")
     setReplayView(null)
     setReplayReasons({})
     setSequenceConfirmed(false)
+  }
+
+  /**
+   * Leaves this cut-over where it is and opens the workspace empty. Nothing
+   * staged is deleted: the session, its files and its stored objects stay as
+   * they were, so a set that cannot be applied — no masters, a range staged
+   * twice — can be abandoned without losing the evidence of what it held.
+   */
+  function startOver() {
+    forgetSession()
+    setStartOverPrompt(false)
+    setFiles([])
+    setStagedFiles([])
+    setStockSheet(null)
+    setStageError(null)
+    setReplacePrompt(null)
+    setConversionDate("")
+    setBatchExpiry("source")
+    setMode("opening")
+    clearReview()
+    if (fileInput.current) fileInput.current.value = ""
+    if (stockSheetInput.current) stockSheetInput.current.value = ""
+    toast({
+      title: "New cut-over started",
+      description: "The previous session was left untouched. The next file you add begins a new one.",
+    })
   }
 
   /** Shows a preview the server accepted, whichever path produced it. */
@@ -681,6 +786,9 @@ const [companyFrom, setCompanyFrom] = useState("")
   ) {
     const next = (data.summary as Summary | undefined) ?? null
     setSummary(next)
+    // A set that previews now has nothing outstanding, so what the last refusal
+    // listed cannot keep sitting under the upload card.
+    setStagedProblems([])
     setPreview((data.preview as Preview | undefined) ?? null)
     setManifestView((data.manifest as ManifestView | null | undefined) ?? null)
     setEditionInfo((data.edition as TallyEditionDisclosure | undefined) ?? null)
@@ -753,10 +861,8 @@ const [companyFrom, setCompanyFrom] = useState("")
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...(conversionDate ? { conversionDate } : {}),
-...(period ? { period } : companyPeriod ? { period: companyPeriod } : {}),
+          ...(period ? { period } : companyPeriod ? { period: companyPeriod } : {}),
           ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
-          mode,
           ...(mode === "replay" ? { batchExpiry } : {}),
         }),
       })
@@ -786,7 +892,7 @@ const [companyFrom, setCompanyFrom] = useState("")
 
   type StageOutcome =
     | { ok: true; session: string; sources: StagedFile[]; problems: string[] }
-    | { ok: false; replaceChunkId?: string }
+    | { ok: false; replaceChunkId?: string; code?: string; session?: string }
 
   /**
    * Uploads one file and hands it to the sources endpoint, which gives it the
@@ -797,6 +903,7 @@ const [companyFrom, setCompanyFrom] = useState("")
     selectedFile: File,
     session: string | null,
     replace: boolean,
+    deferUnnamed = false,
   ): Promise<StageOutcome> {
     const requestUpload = (sessionId: string | null) =>
       fetch("/api/admin/tally/upload-url", {
@@ -843,7 +950,7 @@ const [companyFrom, setCompanyFrom] = useState("")
 
     rememberSession(start.sessionId as string)
 
-// A slice names its own dates; the dates entered above are the fallback for
+    // A slice names its own dates; the dates entered above are the fallback for
     // a file that does not, and name the one range a masters export covers.
     const period = periodFromFileName(selectedFile.name)
     const kind = kindFromFileName(selectedFile.name)
@@ -866,6 +973,12 @@ const [companyFrom, setCompanyFrom] = useState("")
         return { ok: false, replaceChunkId: String(staged.chunkId ?? "") }
       }
       const code = typeof staged.code === "string" ? staged.code : undefined
+      // A masters export carries no company header of its own. When it is the
+      // first file of a set it cannot be placed yet, but the files beside it
+      // can name the company for it, so it is held back rather than refused.
+      if (code === "TALLY_COMPANY_MISSING" && deferUnnamed) {
+        return { ok: false, code, session: start.sessionId as string }
+      }
       setStageError({
         fileName: selectedFile.name,
         ...(code ? { code } : {}),
@@ -879,7 +992,10 @@ const [companyFrom, setCompanyFrom] = useState("")
         companyInput.current?.scrollIntoView({ block: "center", behavior: "smooth" })
       }
       toast({ variant: "destructive", title: staged.error ?? "The file could not be added" })
-      return { ok: false }
+      // The session the upload created is kept even though this file was
+      // refused, so the files beside it join that one instead of each starting
+      // a session of its own.
+      return { ok: false, ...(code ? { code } : {}), session: start.sessionId as string }
     }
     setStageError(null)
     return {
@@ -907,9 +1023,62 @@ const [companyFrom, setCompanyFrom] = useState("")
     setBusy("uploading")
     clearReview()
 
+    // A package states the company and counts its own vouchers, so it is read
+    // first: the files chosen beside it then join the cut-over it names instead
+    // of each having to name the company again.
+    const isPackage = (entry: File) => entry.name.toLowerCase().endsWith(".zip")
+    const ordered = [...chosen].sort((a, b) => Number(isPackage(b)) - Number(isPackage(a)))
+
     let session = sessionId
+    // A masters file names no company inside the XML, so when it arrives before
+    // a file that does it is held back and added after the rest of the set has
+    // named the cut-over. Refusing the whole upload over the one file that
+    // cannot answer the question is how a 13-file export used to stop at file 1.
+    const unnamed: File[] = []
     try {
-      for (const selectedFile of chosen) {
+      for (const selectedFile of ordered) {
+        const result = await stageOne(selectedFile, session, replace, true)
+        if (!result.ok) {
+          session = result.session ?? session
+          if (result.replaceChunkId) {
+            setReplacePrompt({ file: selectedFile, chunkId: result.replaceChunkId })
+            return
+          }
+          if (result.code === "TALLY_COMPANY_MISSING") {
+            unnamed.push(selectedFile)
+            // Two files in and nothing has named the company: the rest of the
+            // set cannot say it either, so the operator is asked once instead
+            // of every remaining file being uploaded to be refused as well.
+            if (unnamed.length >= 2 && !scriptCompany.trim()) {
+              // The panel holding the field is collapsed by default, so the
+              // refusal opens it and puts the cursor in the company rather
+              // than naming a field the operator cannot see.
+              setStageError({
+                fileName: selectedFile.name,
+                code: "TALLY_COMPANY_MISSING",
+                message: "These files name no Tally company. Enter it above, then add them again.",
+              })
+              setTimeout(() => {
+                companyInput.current?.focus()
+                companyInput.current?.scrollIntoView({ block: "center", behavior: "smooth" })
+              }, 0)
+              toast({
+                variant: "destructive",
+                title: "These files do not name the Tally company",
+                description:
+                  "Enter the company above, exactly as Tally shows it, then add the files again.",
+              })
+              return
+            }
+            continue
+          }
+          return
+        }
+        session = result.session
+        setStagedFiles(result.sources)
+        setStagedProblems(result.problems)
+      }
+      for (const selectedFile of unnamed) {
         const result = await stageOne(selectedFile, session, replace)
         if (!result.ok) {
           if (result.replaceChunkId) {
@@ -1017,9 +1186,7 @@ const [companyFrom, setCompanyFrom] = useState("")
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...(conversionDate ? { conversionDate } : {}),
-...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
-          mode,
+          ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
           ...(mode === "replay" ? { batchExpiry } : {}),
         }),
       })
@@ -1048,53 +1215,17 @@ const [companyFrom, setCompanyFrom] = useState("")
    * vouchers is read directly. Several files are staged one by one and read
    * together at the end.
    */
-  async function uploadAndReview() {
-    if (files.length === 0) {
+  async function uploadAndReview(chosen: File[] = files) {
+    if (chosen.length === 0) {
       toast({ variant: "destructive", title: "Choose a Tally export first" })
       return
     }
-    if (files.length === 1 && stagedFiles.length === 0) {
-      const only = files[0] ?? null
+    if (chosen.length === 1 && stagedFiles.length === 0) {
+      const only = chosen[0] ?? null
       await uploadAndPreview(only, only ? periodFromFileName(only.name) : undefined)
       return
     }
-    await stageAndPreview(files)
-  }
-
-  async function saveMapping() {
-    if (!sessionId) return
-    setBusy("saving")
-    try {
-      const response = await fetch(`/api/admin/tally/${sessionId}/mapping`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversionDate, mode }),
-      })
-      const data = await response.json()
-      if (!response.ok) {
-        toast({ variant: "destructive", title: data.error ?? "Could not save the cut-over date" })
-        return
-      }
-      const previewResponse = await fetch(`/api/admin/tally/${sessionId}/preview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-body: JSON.stringify({
-          conversionDate,
-          mode,
-          ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
-          ...(mode === "replay" ? { batchExpiry } : {}),
-        }),
-      })
-      const previewData = await previewResponse.json()
-      if (!previewResponse.ok) {
-        toast({ variant: "destructive", title: previewData.error ?? "Re-preview failed" })
-        return
-      }
-      showPreview(previewData, sessionId)
-      toast({ title: "Cut-over date applied" })
-    } finally {
-      setBusy("idle")
-    }
+    await stageAndPreview(chosen)
   }
 
   async function apply() {
@@ -1238,12 +1369,17 @@ Export from Tally, then add the files
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-3 rounded-lg border p-4">
-            <p className="text-sm font-medium">Company details</p>
+          <details
+            className="space-y-3 rounded-lg border p-4"
+            open={Boolean(stageError?.code?.startsWith("TALLY_COMPANY")) || undefined}
+          >
+            <summary className="cursor-pointer text-sm font-medium">
+              Company details — optional
+            </summary>
             <p className="text-xs text-muted-foreground">
-              Used when a file does not name its company. Tally&apos;s own export already names it,
-              and so does the script below; enter it here for an export that does not, and every
-              file you add is attributed to it.
+              Leave this closed unless a file does not name its company. Tally&apos;s own export
+              names it, and so does the script below; anything entered here is used only for a file
+              that carries no company of its own.
             </p>
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="space-y-1.5">
@@ -1290,7 +1426,7 @@ Export from Tally, then add the files
               names every slice it writes. Leave the company blank and the script lists the
               companies Tally has open, then asks which one.
             </p>
-          </div>
+          </details>
 
           <div className="space-y-3 rounded-lg border border-dashed p-4">
             <div className="flex items-center gap-2">
@@ -1348,47 +1484,15 @@ Export from Tally, then add the files
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label>What this export carries</Label>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant={mode === "opening" ? "default" : "outline"}
-                onClick={() => setMode("opening")}
-                disabled={cutoverAccess !== "ready" || busy !== "idle"}
-              >
-                Opening balances and history
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={mode === "closing" ? "default" : "outline"}
-                onClick={() => setMode("closing")}
-                disabled={cutoverAccess !== "ready" || busy !== "idle"}
-              >
-                Closing balances only
-              </Button>
-              {replayEnabled && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={mode === "replay" ? "default" : "outline"}
-                  onClick={() => setMode("replay")}
-                  disabled={cutoverAccess !== "ready" || busy !== "idle"}
-                >
-                  Full history — replay
-                </Button>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {mode === "replay"
-                ? "Every stock movement in the export is rebuilt in date order — purchases, sales, returns, stock journals — and the closing position it reaches is compared with Tally's own figures before anything is applied. A difference must be answered before Apply."
-                : mode === "opening"
-                  ? "Tally's opening balances are posted, then the Day Book vouchers are replayed on top."
-                  : "The balances the export closes on become the opening in Synapse, and no voucher is posted. Use this when you are starting Synapse from Tally's closing position rather than rebuilding the history."}
-            </p>
-            {mode === "replay" && (
+          {mode === "replay" && (
+            <div className="space-y-1.5">
+              <p className="text-sm font-medium">Full history — replay</p>
+              <p className="text-xs text-muted-foreground">
+                This session was prepared as a replay: every stock movement in the export is
+                rebuilt in date order — purchases, sales, returns, stock journals — and the
+                closing position it reaches is compared with Tally&apos;s own figures before
+                anything is applied. A difference must be answered before Apply.
+              </p>
               <label className="flex items-start gap-2 rounded-md border border-dashed p-3 text-sm">
                 <input
                   type="checkbox"
@@ -1409,8 +1513,8 @@ Export from Tally, then add the files
                   </span>
                 </span>
               </label>
-            )}
-          </div>
+            </div>
+          )}
 
           <div className="space-y-2 rounded-lg border border-dashed p-4">
             <p className="text-sm font-medium">2. Add the files here</p>
@@ -1476,26 +1580,27 @@ Export from Tally, then add the files
               )}
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="cutover-date">
-                {mode === "closing"
-                  ? "Balances as at"
-                  : mode === "replay"
-                    ? "History opens on"
-                    : "Cut-over date"}
-              </Label>
-              <Input
-                id="cutover-date"
-                type="date"
-                value={conversionDate}
-                onChange={(event) => setConversionDate(event.target.value)}
-              />
+              <p className="text-sm font-medium">How it will be imported</p>
               <p className="text-xs text-muted-foreground">
-                {mode === "closing"
-                  ? "The export's closing balances are taken as at this date and become the opening in Synapse."
-                  : mode === "replay"
-                    ? "The day the replay starts from. It runs to the last date the export itself covers, which is where Tally's closing figures are taken from."
-                    : "Balances are read as at this date. Vouchers before it are flagged, never double-posted."}
+                Read from the files themselves, never asked: an export that carries vouchers is
+                imported as Tally&apos;s opening balances and history; one that carries only
+                masters is imported as the closing balances it states. The cut-over date is the
+                period the export states, the dates the export names the file with, or its
+                earliest voucher.
               </p>
+              {conversionDate && (
+                <p className="text-xs text-muted-foreground">
+                  This cut-over is read as{" "}
+                  <span className="font-medium text-foreground">
+                    {mode === "closing"
+                      ? `closing balances as at ${conversionDate}`
+                      : mode === "replay"
+                        ? `a replay opening on ${conversionDate}`
+                        : `opening balances and history as at ${conversionDate}`}
+                  </span>
+                  .
+                </p>
+              )}
             </div>
           </div>
 
@@ -1503,10 +1608,51 @@ Export from Tally, then add the files
             <div className="space-y-3 rounded-lg border p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold">Files in this cut-over — {stagedFiles.length}</p>
-                <p className="text-xs text-muted-foreground">
-                  They are read together, once, before anything is applied.
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-muted-foreground">
+                    They are read together, once, before anything is applied.
+                  </p>
+                  {cutoverAccess === "ready" && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setStartOverPrompt(true)}
+                      disabled={busy !== "idle"}
+                    >
+                      Start a new cut-over
+                    </Button>
+                  )}
+                </div>
               </div>
+
+              {startOverPrompt && (
+                <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
+                  <p className="font-semibold">Start again with a different set of files?</p>
+                  <p className="mt-1 text-muted-foreground">
+                    The {stagedFiles.length} file{stagedFiles.length === 1 ? "" : "s"} staged here
+                    stay where they are — nothing is deleted — but this page stops using them, and
+                    the next file you add begins a new cut-over.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={startOver}
+                      disabled={busy !== "idle"}
+                    >
+                      Start a new cut-over
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setStartOverPrompt(false)}
+                      disabled={busy !== "idle"}
+                    >
+                      Keep this one
+                    </Button>
+                  </div>
+                </div>
+              )}
               <StagedGroup
                 title="Masters"
                 files={stagedMasters}
@@ -1585,10 +1731,51 @@ Export from Tally, then add the files
                     Not ready to apply yet
                   </p>
                   <ul className="mt-1 space-y-1">
-                    {stagedProblems.map((entry) => (
-                      <li key={entry}>{entry}</li>
-                    ))}
+                    {stagedProblems.map((entry) => {
+                      const { code, message } = splitProblem(entry)
+                      return (
+                        <li key={entry}>
+                          {message}
+                          {code && (
+                            <span className="ml-2 font-mono text-[10px] tracking-wide text-muted-foreground">
+                              {code}
+                            </span>
+                          )}
+                        </li>
+                      )
+                    })}
                   </ul>
+                  {mastersMissing && (
+                    <div className="mt-2 space-y-1.5 border-t border-[#E8B84B]/40 pt-2">
+                      <p className="font-semibold">This set is the vouchers only.</p>
+                      <p>
+                        The All Masters export is the other half of a cut-over. It carries the
+                        ledger accounts with their opening and closing balances, the stock items
+                        with their opening quantity and value, and the groups, units and godowns
+                        the vouchers post into. Without it the vouchers have no accounts to post
+                        against and no opening balance to post from, so Apply stays blocked.
+                      </p>
+                      <p className="text-muted-foreground">
+                        Export All Masters from Tally and add that file to this same cut-over, so
+                        both are read together. Nothing staged here is lost by adding it.
+                      </p>
+                    </div>
+                  )}
+                  {stagedSummary && (
+                    <p className="mt-2 text-muted-foreground">
+                      Staged so far: {stagedSummary.files.toLocaleString()} file
+                      {stagedSummary.files === 1 ? "" : "s"}
+                      {stagedSummary.vouchers > 0
+                        ? `, ${stagedSummary.vouchers.toLocaleString()} voucher${
+                            stagedSummary.vouchers === 1 ? "" : "s"
+                          }`
+                        : ""}
+                      {stagedSummary.from && stagedSummary.to
+                        ? ` from ${stagedSummary.from} to ${stagedSummary.to}`
+                        : ""}
+                      .
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -1671,6 +1858,17 @@ Export from Tally, then add the files
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-xs text-muted-foreground">
+                Read from the export:{" "}
+                <span className="font-medium text-foreground">
+                  {summary.mode === "closing"
+                    ? "closing balances only"
+                    : summary.mode === "replay"
+                      ? "a full history rebuild"
+                      : "opening balances and history"}
+                </span>{" "}
+                · as at {summary.conversionDate}
+              </p>
+              <p className="text-xs text-muted-foreground">
                 {summary.mode === "closing"
                   ? `Balances as at ${summary.conversionDate} — no Tally voucher is posted.`
                   : summary.mode === "replay"
@@ -1679,7 +1877,11 @@ Export from Tally, then add the files
                       } — ${summary.counts.postedVouchers} vouchers and ${
                         replaySummary?.movementCount ?? 0
                       } stock movements.`
-                    : `Opening balances as at ${summary.conversionDate}, then ${summary.counts.postedVouchers} vouchers replayed.`}
+                    : `Opening balances as at ${summary.conversionDate}, then ${summary.counts.postedVouchers} vouchers posted${
+                        summary.stockAdjustments
+                          ? ` and ${summary.stockAdjustments.voucherCount} physical stock adjustments applied by date`
+                          : ""
+                      }.`}
               </p>
 
               {editionInfo && (
@@ -1706,6 +1908,12 @@ Export from Tally, then add the files
                 <Stat label="Ledger accounts" value={String(summary.counts.ledgers)} />
                 <Stat label="Stock items" value={String(summary.counts.stockItems)} />
                 <Stat label="Vouchers to post" value={String(summary.counts.postedVouchers)} />
+                {summary.stockAdjustments && (
+                  <Stat
+                    label="Stock adjustments"
+                    value={String(summary.stockAdjustments.voucherCount)}
+                  />
+                )}
                 <Stat
                   label="Vouchers skipped"
                   value={String(summary.counts.skippedVouchers)}
@@ -1864,7 +2072,11 @@ Export from Tally, then add the files
                     <div>
                       <p className="text-muted-foreground">Independent source count</p>
                       <p className="font-medium">
-                        {evidence?.independentCount ? "Provided" : "None supplied"}
+                        {!evidence?.independentCount
+                          ? "None supplied"
+                          : evidence.declaredVouchers != null && evidence.voucherRecordsRead != null
+                            ? `${evidence.declaredVouchers.toLocaleString()} declared, ${evidence.voucherRecordsRead.toLocaleString()} read`
+                            : "Provided"}
                       </p>
                     </div>
                   </div>
@@ -1872,9 +2084,9 @@ Export from Tally, then add the files
                   {unverifiedCoverage ? (
                     <>
                       <p className="mt-3 text-xs">
-                        Nothing counted this export independently, so Synapse cannot prove that every record in the
-                        period was read. Applying accepts that risk; the coverage stays unverified and the cut-over
-                        is not marked complete on that basis.
+                        {evidence?.independentCount
+                          ? "The vouchers are reconciled against the export package's own manifest. The masters export carries no such count, so the completeness of the ledgers, parties and stock items is not independently verified."
+                          : "Nothing counted this export independently, so Synapse cannot prove that every record in the period was read. Applying accepts that risk; the coverage stays unverified and the cut-over is not marked complete on that basis."}
                       </p>
                       <label className="mt-3 flex cursor-pointer items-start gap-2">
                         <input
@@ -2118,27 +2330,6 @@ Export from Tally, then add the files
                 </div>
               )}
 
-              <div className="flex flex-wrap items-end gap-2">
-                <div className="space-y-1.5">
-                  <Label htmlFor="cutover-date-2">
-                    {mode === "closing"
-                      ? "Balances as at"
-                      : mode === "replay"
-                        ? "History opens on"
-                        : "Cut-over date"}
-                  </Label>
-                  <Input
-                    id="cutover-date-2"
-                    type="date"
-                    value={conversionDate}
-                    onChange={(event) => setConversionDate(event.target.value)}
-                  />
-                </div>
-                <Button variant="outline" onClick={() => void saveMapping()} disabled={cutoverAccess !== "ready" || busy !== "idle"}>
-                  {busy === "saving" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                  Save and re-read
-                </Button>
-              </div>
             </CardContent>
           </Card>
 
@@ -2304,6 +2495,14 @@ Export from Tally, then add the files
                 </CardContent>
               </Card>
             </div>
+          )}
+
+          {sessionId && summary.playback && (
+            <TallyPlayback
+              sessionId={sessionId}
+              index={summary.playback}
+              currency={summary.currency}
+            />
           )}
 
           <Card>

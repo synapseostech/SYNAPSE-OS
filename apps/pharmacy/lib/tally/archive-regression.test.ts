@@ -76,6 +76,10 @@ suite("the SADIO PHARMACY archive", () => {
       stockItems: 0,
       vouchers: report.reconciliation.parsedVouchers,
       postedVouchers: 25_609,
+      // All 454 Physical Stock vouchers build movements. The archive's single
+      // Stock Journal is refused here because its receipt line states no
+      // expiry, so it is not counted among them.
+      adjustedVouchers: 454,
       skippedVouchers: 0,
       sales: 24_288,
       purchases: 1_319,

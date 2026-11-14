@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import Link from "next/link"
 import { BrainCircuit, FileSpreadsheet, Wand2, Upload } from "lucide-react"
 import { formatImportRows, parseImportRows } from "@/lib/import-rows"
+import { takeImportHandoff } from "@/lib/import-handoff"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -78,6 +79,18 @@ export default function ImportAssistantPage() {
     loadSessions()
   }, [])
 
+  // A stock file chosen on the Import page arrives here already in hand, so
+  // the assistant analyses it on arrival instead of asking for it again.
+  useEffect(() => {
+    const carried = takeImportHandoff("assistant")[0]
+    if (!carried) return
+    setFile(carried)
+    setFileName(carried.name)
+    void analyseFile(carried)
+    // analyseFile reads the source system chosen at the moment of arrival.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   async function analyse(event: React.FormEvent) {
     event.preventDefault()
     setIsLoading(true)
@@ -126,8 +139,8 @@ export default function ImportAssistantPage() {
     }
   }
 
-  async function analyseFile() {
-    if (!file) {
+  async function analyseFile(target: File | null = file) {
+    if (!target) {
       toast({ variant: "destructive", title: "Choose a Tally / stock export file first" })
       return
     }
@@ -135,7 +148,7 @@ export default function ImportAssistantPage() {
     setApplyResult(null)
     try {
       const formData = new FormData()
-      formData.append("file", file)
+      formData.append("file", target)
       formData.append("sourceSystem", sourceSystem)
       formData.append("mode", "analyse")
 
@@ -148,7 +161,7 @@ export default function ImportAssistantPage() {
         toast({ variant: "destructive", title: data.error ?? "Could not analyse file" })
         return
       }
-      setFileName(file.name)
+      setFileName(target.name)
       setHeadersText(Array.isArray(data.headers) ? data.headers.join(", ") : "")
       if (Array.isArray(data.sampleRows) && data.sampleRows.length > 0) {
         setSampleText(formatImportRows(data.sampleRows))

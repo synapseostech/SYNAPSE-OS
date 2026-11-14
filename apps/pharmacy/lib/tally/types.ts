@@ -75,6 +75,58 @@ export type TallyReplayTarget = {
   costs?: Record<string, TallyReplayLineCost>
 }
 
+/**
+ * One stock line as a playback event shows it. `count` is a physical stock
+ * journal, whose figure is the quantity counted rather than an in or out.
+ */
+export type TallyPlaybackStockLine = {
+  item: string
+  quantity: number
+  direction: "in" | "out" | "count"
+}
+
+/** One dated thing the cut-over carries, as the walkthrough shows it. */
+export type TallyPlaybackEvent = {
+  id: string
+  date: string
+  type: "opening" | "voucher" | "movement"
+  kind: string
+  number?: string
+  description: string
+  debit: number
+  credit: number
+  lineCount: number
+  stock: TallyPlaybackStockLine[]
+  /** Batch-level movements the plan proves for this event; 0 outside replay. */
+  movements: number
+}
+
+export type TallyPlaybackDay = {
+  date: string
+  events: number
+  movements: number
+  /** The chunk this day's first event is in, so the screen can page to it. */
+  firstChunk: number
+}
+
+/**
+ * The cut-over as a dated walkthrough, stored beside the plan.
+ *
+ * Only the index lives in the summary; the events themselves are chunked like
+ * the plan's vouchers so a 26,000-voucher history can be walked a day at a
+ * time without loading it all.
+ */
+export type TallyPlaybackIndex = {
+  mode: TallyImportMode
+  firstDate: string
+  lastDate: string
+  eventCount: number
+  movementCount: number
+  chunkCount: number
+  chunkSize: number
+  days: TallyPlaybackDay[]
+}
+
 export type TallySessionStatus =
   | "pending"
   | "mapping"
@@ -103,6 +155,8 @@ export type TallyPlanSummary = {
     stockItems: number
     vouchers: number
     postedVouchers: number
+    /** Stock-only vouchers applied as dated stock adjustments. */
+    adjustedVouchers?: number
     skippedVouchers: number
     sales: number
     purchases: number
@@ -157,6 +211,24 @@ export type TallyPlanSummary = {
     blocking: number
     warnings: number
   }
+  /**
+   * Opening cut-overs only. The physical stock and stock journal vouchers the
+   * plan applies as dated adjustments after the opening stock. Absent when the
+   * export carries none, and on replay, where the movements live under
+   * `replay`.
+   */
+  stockAdjustments?: {
+    /** Stock-only vouchers whose lines became movements. */
+    voucherCount: number
+    movementCount: number
+    /** Movement chunks Apply walks through in the `stock-history` stage. */
+    movementChunkCount: number
+  }
+  /**
+   * The dated walkthrough. Absent on closing plans, which carry no history to
+   * walk, and on summaries prepared before the walkthrough existed.
+   */
+  playback?: TallyPlaybackIndex
   exceptions: Array<{
     code: string
     message: string

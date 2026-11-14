@@ -199,7 +199,10 @@ async function applySessionStep(input: {
         chunk: loaded.chunk,
         totalChunks: loaded.totalChunks,
         replay: loaded.summary.mode === "replay",
-        movementTotalChunks: loaded.summary.replay?.movementChunkCount ?? 0,
+        movementTotalChunks:
+          loaded.summary.replay?.movementChunkCount ??
+          loaded.summary.stockAdjustments?.movementChunkCount ??
+          0,
         replayTarget: loaded.replay,
         continuation: continuation ?? null,
       })
@@ -320,7 +323,10 @@ async function applySessionStep(input: {
       progress,
       reconcile: reconcile ?? mapping.reconcile ?? null,
       totalChunks: summaryForRequest?.chunkCount ?? null,
-      movementTotalChunks: summaryForRequest?.replay?.movementChunkCount ?? null,
+      movementTotalChunks:
+        summaryForRequest?.replay?.movementChunkCount ??
+        summaryForRequest?.stockAdjustments?.movementChunkCount ??
+        null,
       nextOffset:
         progress.stage === "journals" || progress.stage === "stock-history"
           ? progress.offset

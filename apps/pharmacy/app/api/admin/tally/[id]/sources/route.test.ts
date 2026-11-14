@@ -4,9 +4,11 @@ import { NextRequest, NextResponse } from "next/server"
 import { fakeSupabase, filtersOf, type FakeOperation, type FakeResult } from "@/lib/tally/test-db"
 import {
   createOpenManifest,
+  ensureChunk,
   recordChunkResult,
   type TallyMigrationManifest,
 } from "@/lib/tally/chunks"
+import { tallyZipCrc32 } from "@synapse/db/tally-zip"
 
 const m = vi.hoisted(() => ({
   auth: null as unknown,
@@ -128,6 +130,88 @@ const upload = {
 
 function lastUpdate() {
   return m.db.operations.filter((operation) => operation.action === "update").at(-1)
+}
+
+const enc = (value: string) => new TextEncoder().encode(value)
+
+/** Writes a stored-entry archive, the shape the exporter's package arrives in. */
+function packageZip(entries: Array<{ name: string; data: Uint8Array }>): Uint8Array {
+  const locals: Buffer[] = []
+  const centrals: Buffer[] = []
+  let offset = 0
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, "utf8")
+    const data = Buffer.from(entry.data)
+    const crc = tallyZipCrc32(data)
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(0, 6)
+    local.writeUInt16LE(0, 8)
+    local.writeUInt16LE(0x21, 12)
+    local.writeUInt32LE(crc >>> 0, 14)
+    local.writeUInt32LE(data.length, 18)
+    local.writeUInt32LE(data.length, 22)
+    local.writeUInt16LE(name.length, 26)
+    locals.push(local, name, data)
+
+    const central = Buffer.alloc(46)
+    central.writeUInt32LE(0x02014b50, 0)
+    central.writeUInt16LE(20, 4)
+    central.writeUInt16LE(20, 6)
+    central.writeUInt16LE(0, 8)
+    central.writeUInt16LE(0, 10)
+    central.writeUInt16LE(0x21, 14)
+    central.writeUInt32LE(crc >>> 0, 16)
+    central.writeUInt32LE(data.length, 20)
+    central.writeUInt32LE(data.length, 24)
+    central.writeUInt16LE(name.length, 28)
+    central.writeUInt32LE(offset, 42)
+    centrals.push(central, name)
+
+    offset += local.length + name.length + data.length
+  }
+  const directory = Buffer.concat(centrals)
+  const eocd = Buffer.alloc(22)
+  eocd.writeUInt32LE(0x06054b50, 0)
+  eocd.writeUInt16LE(entries.length, 8)
+  eocd.writeUInt16LE(entries.length, 10)
+  eocd.writeUInt32LE(directory.length, 12)
+  eocd.writeUInt32LE(offset, 16)
+  return new Uint8Array(Buffer.concat([...locals, directory, eocd]))
+}
+
+const PACKAGE_DATES = ["2025-02-01", "2025-03-05"]
+
+/** A companyless day book, as the exporter writes it, inside the package. */
+function packageDayBook(): Uint8Array {
+  const vouchers = PACKAGE_DATES.map(
+    (date, index) =>
+      `<VOUCHER VCHTYPE="Sales" ACTION="Create"><GUID>v-${index}</GUID><DATE>${date.replaceAll("-", "")}</DATE><VOUCHERNUMBER>S-${index}</VOUCHERNUMBER></VOUCHER>`,
+  ).join("")
+  return enc(
+    `<?xml version="1.0" encoding="UTF-8"?><ENVELOPE><HEADER><VERSION>1</VERSION><STATUS>1</STATUS></HEADER><BODY><DATA><TALLYMESSAGE xmlns:UDF="TallyUDF">${vouchers}</TALLYMESSAGE></DATA></BODY></ENVELOPE>`,
+  )
+}
+
+/** The exporter's summary and manifest, beside one monthly export. */
+function exportPackage(declaredVouchers = PACKAGE_DATES.length): Uint8Array {
+  const xml = packageDayBook()
+  return packageZip([
+    {
+      name: "EXPORT_SUMMARY.txt",
+      data: enc(
+        "SADIO PHARMACY — TALLY FULL-DETAIL EXPORT\nPeriod requested: 2025-01-01 through 2025-03-31\nCompany: SADIO PHARMACY\nTotal vouchers exported: 2\n",
+      ),
+    },
+    {
+      name: "EXPORT_MANIFEST.csv",
+      data: enc(
+        `"Month","Status","Vouchers","EarliestVoucherDate","LatestVoucherDate","File","Bytes","Error"\n"2025-02","SUCCESS","${declaredVouchers}","2025-02-01","2025-03-05","2025-02-full.xml","${xml.length}",""\n`,
+      ),
+    },
+    { name: "2025-02-full.xml", data: xml },
+  ])
 }
 
 describe("POST /api/admin/tally/[id]/sources", () => {
@@ -345,6 +429,109 @@ describe("POST /api/admin/tally/[id]/sources", () => {
     expect(mapping.manifest).toMatchObject({ companySource: "file" })
   })
 
+  it("takes the company and voucher count from a package instead of the form", async () => {
+    m.readSource.mockResolvedValue(exportPackage())
+
+    const res = await post({ uploadId: upload.uploadId, fileName: "SADIO-full.zip" })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.archive.company).toEqual({ name: "SADIO PHARMACY", source: "EXPORT_SUMMARY.txt" })
+    expect(body.archive.reconciliation.status).toBe("verified")
+
+    const mapping = (lastUpdate()?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    const manifest = mapping.manifest as TallyMigrationManifest
+    expect(manifest).toMatchObject({ company: "SADIO PHARMACY", companySource: "file" })
+    // The manifest's own count is what lets the chunk say its completeness was
+    // checked against something other than its own output.
+    expect(manifest.chunks.find((chunk) => chunk.kind === "vouchers")).toMatchObject({
+      recordsRead: 2,
+      expectedRecords: 2,
+      reconciliation: "verified",
+    })
+  })
+
+  it("lets the package's own company outrank one typed into the form", async () => {
+    m.readSource.mockResolvedValue(exportPackage())
+
+    const res = await post({
+      uploadId: upload.uploadId,
+      fileName: "SADIO-full.zip",
+      company: "TALLY TEST",
+    })
+
+    expect(res.status).toBe(200)
+    const mapping = (lastUpdate()?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifest).toMatchObject({ company: "SADIO PHARMACY", companySource: "file" })
+  })
+
+  it("replaces a company entered by hand when the package names its own", async () => {
+    setup(
+      sessionRow({
+        manifest: createOpenManifest({
+          sessionId: "session-1",
+          company: "TALLY TEST",
+          companySource: "operator",
+          mode: "opening",
+          period: { from: "2025-01-01", to: "2025-03-31" },
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        }),
+      }),
+    )
+    m.readSource.mockResolvedValue(exportPackage())
+
+    const res = await post({ uploadId: upload.uploadId, fileName: "SADIO-full.zip" })
+
+    expect(res.status).toBe(200)
+    const mapping = (lastUpdate()?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifest).toMatchObject({ company: "SADIO PHARMACY", companySource: "file" })
+  })
+
+  it("records a package that declares more vouchers than its file holds", async () => {
+    m.readSource.mockResolvedValue(exportPackage(3))
+
+    const res = await post({ uploadId: upload.uploadId, fileName: "SADIO-full.zip" })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    const mapping = (lastUpdate()?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    const manifest = mapping.manifest as TallyMigrationManifest
+    expect(manifest.chunks.find((chunk) => chunk.kind === "vouchers")).toMatchObject({
+      recordsRead: 2,
+      expectedRecords: 3,
+      reconciliation: "mismatch",
+    })
+    expect(body.manifest.problems).toContainEqual(expect.stringContaining("TALLY_CHUNK_MISMATCH"))
+  })
+
+  it("attributes a companyless file to the company a package already named", async () => {
+    setup(
+      sessionRow({
+        manifest: createOpenManifest({
+          sessionId: "session-1",
+          company: "SADIO PHARMACY",
+          companySource: "file",
+          mode: "opening",
+          period: { from: "2025-02-01", to: "2025-03-05" },
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        }),
+      }),
+    )
+    // The masters export supplied beside the package names no company of its own.
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: { ...MASTERS, company: undefined },
+    })
+
+    const res = await post({ uploadId: upload.uploadId, fileName: "masters.xml" })
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.source.kind).toBe("masters")
+    const mapping = (lastUpdate()?.payload as { ai_mapping: Record<string, unknown> }).ai_mapping
+    expect(mapping.manifest).toMatchObject({ company: "SADIO PHARMACY", companySource: "file" })
+  })
+
   it("refuses a company entered in the form that disagrees with the staged one", async () => {
     setup(sessionRow({ manifest: mastersStaged() }))
     m.readDocument.mockReturnValue({
@@ -416,6 +603,83 @@ describe("POST /api/admin/tally/[id]/sources", () => {
     expect(body.duplicate).toBe(true)
     expect(m.writeBytes).not.toHaveBeenCalled()
     expect(m.db.operations.some((operation) => operation.action === "update")).toBe(false)
+  })
+
+  it("collapses a file staged again under a different range into one chunk", async () => {
+    // The same export read once as the span of its vouchers and once as the
+    // operator's period: two ranges, one file. Keeping both would stage its
+    // vouchers twice and the overlap check would refuse the whole set.
+    const bytes = enc("<daybook/>")
+    const checksum = createHash("sha256").update(bytes).digest("hex")
+    m.readSource.mockResolvedValue(bytes)
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: { ...DAY_BOOK, vouchers: [{ date: "2025-02-01" }, { date: "2025-02-20" }] },
+    })
+
+    let manifest: TallyMigrationManifest = createOpenManifest({
+      sessionId: "session-1",
+      company: "Demo Pharma",
+      mode: "opening",
+      period: { from: "2025-02-01", to: "2025-02-20" },
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    })
+    manifest = ensureChunk(
+      manifest,
+      {
+        kind: "vouchers",
+        id: "vouchers:2025-02-01:2025-02-20",
+        range: { from: "2025-02-01", to: "2025-02-20" },
+      },
+      "2026-01-01T00:00:00.000Z",
+    )
+    manifest = recordChunkResult(
+      manifest,
+      "vouchers:2025-02-01:2025-02-20",
+      {
+        status: "complete",
+        recordsRead: 2,
+        checksum,
+        firstDate: "2025-02-01",
+        lastDate: "2025-02-20",
+      },
+      "2026-01-01T00:00:00.000Z",
+    )
+    setup(
+      sessionRow({
+        manifest,
+        sources: [
+          {
+            uploadId: "old-upload",
+            fileName: "2025-02-full.xml",
+            kind: "vouchers",
+            chunkId: "vouchers:2025-02-01:2025-02-20",
+            range: { from: "2025-02-01", to: "2025-02-20" },
+            recordsRead: 2,
+            bytes: bytes.byteLength,
+            stagedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      }),
+    )
+
+    const res = await post({
+      ...upload,
+      fileName: "2025-02-full.xml",
+      period: { from: "2025-02-01", to: "2025-02-28" },
+    })
+
+    expect(res.status).toBe(200)
+    const written = lastUpdate()?.payload.ai_mapping as {
+      manifest: TallyMigrationManifest
+      sources: Array<{ chunkId: string }>
+    }
+    expect(written.manifest.chunks.filter((chunk) => chunk.kind === "vouchers").map((chunk) => chunk.id)).toEqual([
+      "vouchers:2025-02-01:2025-02-28",
+    ])
+    expect(written.sources.map((entry) => entry.chunkId)).toEqual([
+      "vouchers:2025-02-01:2025-02-28",
+    ])
   })
 
   it("refuses different bytes for a range already staged until the replacement is asked for", async () => {

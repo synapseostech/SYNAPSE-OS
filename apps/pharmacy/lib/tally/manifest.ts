@@ -89,6 +89,10 @@ export type TallyManifestEvidence = {
     vouchers: number
   } | null
   independentCount: boolean
+  /** Vouchers the export package's own manifest declared, when it declared any. */
+  declaredVouchers: number | null
+  /** Vouchers actually read, across the voucher chunks. */
+  voucherRecordsRead: number
   coverage: "verified" | "unverified"
 }
 
@@ -100,6 +104,7 @@ export function buildManifestEvidence(
   } = {},
 ): TallyManifestEvidence {
   const voucherChunks = manifest.chunks.filter((chunk) => chunk.kind === "vouchers")
+  const declared = voucherChunks.filter((chunk) => chunk.expectedRecords !== undefined)
   const dates = voucherChunks
     .flatMap((chunk) => [chunk.firstDate, chunk.lastDate])
     .filter((date): date is string => typeof date === "string")
@@ -115,6 +120,11 @@ export function buildManifestEvidence(
     recordsRead: manifest.chunks.reduce((total, chunk) => total + chunk.recordsRead, 0),
     recordsStaged: input.staged ?? null,
     independentCount: manifest.chunks.some((chunk) => chunk.expectedRecords !== undefined),
+    declaredVouchers:
+      declared.length === 0
+        ? null
+        : declared.reduce((total, chunk) => total + (chunk.expectedRecords ?? 0), 0),
+    voucherRecordsRead: voucherChunks.reduce((total, chunk) => total + chunk.recordsRead, 0),
     coverage: canApplyManifest(manifest).unverified.length > 0 ? "unverified" : "verified",
   }
 }

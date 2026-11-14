@@ -184,28 +184,52 @@ suite("the SADIO PHARMACY export folder", () => {
       stockItems: 2025,
       vouchers: 26_395,
       postedVouchers: 25_929,
+      // 465 Physical Stock and 1 Stock Journal. The unaccepted run refuses the
+      // stock journal's receipt line for having no expiry, so it builds no
+      // movement and is not counted as adjusted.
+      adjustedVouchers: 465,
       skippedVouchers: 0,
       sales: 24_602,
       purchases: 1_325,
       openingLines: 0,
     })
 
-    // Replay keeps the 465 Physical Stock and 1 Stock Journal vouchers as stock
-    // movements rather than posting them as ledger entries; opening mode skips
-    // them, and both modes end up accounting for all 26,395.
+    // Neither mode drops them: replay folds all 466 into the rebuilt movement
+    // history, opening applies them as dated adjustments after the opening
+    // stock, and every one of the 26,395 vouchers is accounted for either way.
     const opening = normaliseTallyDocument(document, {
       mode: "opening",
       conversionDate: PERIOD.from,
       today: TODAY,
       batchExpiry: "not-supplied",
     })
-    expect(opening.counts.skippedVouchers).toBe(466)
-    expect(opening.counts.postedVouchers + opening.counts.skippedVouchers).toBe(26_395)
-    expect(opening.exceptionCounts?.VOUCHER_TYPE_UNSUPPORTED).toBe(466)
-    expect(opening.exceptionCounts?.OPENING_STOCK_WITHOUT_EXPIRY).toBe(1_112)
+    expect(opening.counts.adjustedVouchers).toBe(466)
+    expect(opening.counts.skippedVouchers).toBe(0)
     expect(
-      opening.exceptions.filter((entry) => entry.severity === "blocking"),
-    ).toEqual([])
+      opening.counts.postedVouchers +
+        opening.counts.adjustedVouchers +
+        opening.counts.skippedVouchers,
+    ).toBe(26_395)
+    expect(opening.exceptionCounts?.VOUCHER_TYPE_UNSUPPORTED).toBeUndefined()
+    expect(opening.exceptionCounts?.OPENING_STOCK_WITHOUT_EXPIRY).toBe(1_112)
+
+    // Every adjustment is dated inside the period and ordered oldest first, so
+    // the newest count is the one that stands.
+    const adjustments = opening.movements ?? []
+    expect(adjustments).toHaveLength(1_673)
+    expect(movementCounts(opening)).toEqual({ physical_adjust: 1_672, stock_journal_in: 1 })
+    expect(new Set(adjustments.map((entry) => entry.sourceId)).size).toBeGreaterThan(400)
+    expect(adjustments.map((entry) => entry.date)).toEqual(
+      [...adjustments.map((entry) => entry.date)].sort(),
+    )
+    expect(adjustments[0]?.date).toBe("2025-11-16")
+    expect(adjustments.at(-1)?.date).toBe("2026-11-04")
+
+    // One physical stock line states no quantity. It is named as blocking
+    // rather than counted as zero; the rest of the voucher still applies.
+    const openingBlocking = opening.exceptions.filter((entry) => entry.severity === "blocking")
+    expect(openingBlocking).toHaveLength(1)
+    expect(openingBlocking[0]?.code).toBe("REPLAY_MOVEMENT_WITHOUT_QUANTITY")
 
     // Unaccepted, every receipt with no batch expiry is refused, so no
     // purchase movement is built at all.

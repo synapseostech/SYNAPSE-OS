@@ -26,7 +26,9 @@ import { consolidateStoredChunks } from "@/lib/tally/consolidate-session"
 import {
   canApplyManifest,
   isManifestLike,
+  mastersNotSupplied,
   parseTallyIsoDate,
+  tallyModeFor,
   type TallyDateRange,
   type TallyMigrationManifest,
 } from "@/lib/tally/chunks"
@@ -182,6 +184,11 @@ export async function POST(
     requestedPeriod = { from: candidate.from, to: candidate.to }
   }
 
+  const requestedMode: TallyImportMode | undefined =
+    body.mode === "opening" || body.mode === "closing" || body.mode === "replay"
+      ? body.mode
+      : undefined
+
   const mapping = (session.ai_mapping ?? {}) as MappingState
   // A re-preview of the same session keeps the company the first one was given,
   // so changing the cut-over date does not ask for it again.
@@ -196,6 +203,15 @@ export async function POST(
   }
 
   try {
+    // The export answers the mode question: vouchers it carries are history,
+    // a masters-only export carries the balances it closes on. A replay is the
+    // one decision an export cannot imply, so a session that settled on one
+    // keeps it; opening and closing are re-read every time, because adding the
+    // history files to a session first read as balances must not leave it
+    // closing.
+    const settledMode = (hasVouchers: boolean): TallyImportMode =>
+      requestedMode ?? (mapping.mode === "replay" ? "replay" : undefined) ?? tallyModeFor(hasVouchers)
+
     // A session whose files were staged one by one is previewed once, over
     // every stored chunk at the end. Its manifest is what the sources route
     // accumulated, not one rebuilt from a single document.
@@ -219,13 +235,15 @@ export async function POST(
           { status: 409 },
         )
       }
-      const prepared: TallyMigrationManifest = { ...stored, mode: body.mode ?? stored.mode }
+      const mode = settledMode(stored.chunks.some((chunk) => chunk.kind === "vouchers"))
+      const prepared: TallyMigrationManifest = { ...stored, mode }
       const gate = canApplyManifest(prepared)
       if (gate.problems.length > 0) {
         return NextResponse.json(
           {
-            error:
-              "The files staged so far do not cover the migration period exactly once, end to end.",
+            error: mastersNotSupplied(prepared)
+              ? "These files are vouchers only. No All Masters export was added, and the vouchers cannot be posted without it."
+              : "The files staged so far do not cover the migration period exactly once, end to end.",
             code: "TALLY_SOURCES_INCOMPLETE",
             problems: gate.problems.map((entry) => `${entry.code}: ${entry.message}`),
           },
@@ -236,7 +254,10 @@ export async function POST(
         tenantId,
         sessionId: id,
         manifest: prepared,
-        conversionDate: body.conversionDate ?? mapping.conversionDate,
+        // The staged period is the export's own range, so the normaliser reads
+        // the cut-over date from it rather than from a date an earlier preview
+        // inferred over fewer files.
+        conversionDate: body.conversionDate,
         accountOverrides: mapping.accountOverrides,
         productSkuOverrides: mapping.productSkuOverrides,
         batchExpiry,
@@ -265,9 +286,18 @@ export async function POST(
         stockSheetMerge = applyTallyStockSheet(planDocument, stockSheet)
         sheetDocument = stockSheetMerge.document
       }
+      const mode = settledMode(document.vouchers.length > 0)
+      // A masters export states no period inside the file, but the exporter
+      // names the period it covers in the file name and the page passes that
+      // through as the requested period. That range is the cut-over date. A
+      // file that states its own period keeps it, and one that states neither
+      // is still refused rather than given an invented date.
+      const statesPeriod = Boolean(document.financialPeriod?.from || document.financialPeriod?.to)
+      const periodDate =
+        mode === "closing" ? requestedPeriod?.to : mode === "opening" ? requestedPeriod?.from : undefined
       plan = normaliseTallyDocument(sheetDocument, {
-        conversionDate: body.conversionDate ?? mapping.conversionDate,
-        mode: body.mode ?? mapping.mode,
+        conversionDate: body.conversionDate ?? (statesPeriod ? undefined : periodDate),
+        mode,
         currency: document.currency,
         accountOverrides: mapping.accountOverrides,
         productSkuOverrides: mapping.productSkuOverrides,

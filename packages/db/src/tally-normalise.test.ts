@@ -878,6 +878,106 @@ describe("normaliseTallyDocument", () => {
   })
 })
 
+describe("normaliseTallyDocument — opening stock adjustments", () => {
+  const physicalCount = (guid: string, date: string, quantity: number) => `
+    <VOUCHER VCHTYPE="Physical Stock" ACTION="Create">
+      <GUID>${guid}</GUID>
+      <DATE>${date}</DATE>
+      <INVENTORYENTRIES.LIST>
+        <STOCKITEMNAME>Test Item A</STOCKITEMNAME>
+        <ACTUALQTY>${quantity} Strip</ACTUALQTY>
+        <AMOUNT>${quantity * 100}.00</AMOUNT>
+        <BATCHALLOCATIONS.LIST>
+          <BATCHNAME>B-001</BATCHNAME>
+          <EXPIRYDATE>20270228</EXPIRYDATE>
+          <ACTUALQTY>${quantity} Strip</ACTUALQTY>
+          <AMOUNT>${quantity * 100}.00</AMOUNT>
+        </BATCHALLOCATIONS.LIST>
+      </INVENTORYENTRIES.LIST>
+    </VOUCHER>
+  `
+
+  it("applies a physical stock voucher as a dated adjustment instead of skipping it", () => {
+    const result = plan(`${balancedMasters}${physicalCount("physical-guid", "20260125", 9)}`)
+
+    assert.deepEqual(
+      (result.movements ?? []).map((entry) => [
+        entry.movementKind,
+        entry.quantityDelta,
+        entry.batchNumber,
+        entry.date,
+      ]),
+      [["physical_adjust", 9, "B-001", "2026-01-25"]],
+    )
+    assert.equal(result.counts.adjustedVouchers, 1)
+    assert.equal(result.counts.skippedVouchers, 0)
+    // It posts nothing to the ledger, so it is not among the posted vouchers.
+    assert.equal(result.counts.postedVouchers, result.vouchers.length)
+    assert.equal(result.exceptionCounts?.VOUCHER_TYPE_UNSUPPORTED, undefined)
+    assert.deepEqual(
+      result.exceptions.filter((entry) => entry.severity === "blocking"),
+      [],
+    )
+  })
+
+  it("orders the counts by their own date, not the order the exporter wrote them", () => {
+    // The later count is exported first; applying it first would let the
+    // earlier one overwrite it.
+    const result = plan(
+      `${balancedMasters}${physicalCount("late-guid", "20260220", 4)}${physicalCount("early-guid", "20260210", 11)}`,
+    )
+
+    assert.deepEqual(
+      (result.movements ?? []).map((entry) => [entry.date, entry.quantityDelta]),
+      [
+        ["2026-02-10", 11],
+        ["2026-02-20", 4],
+      ],
+    )
+  })
+
+  it("leaves the trade history to the mirror rather than rebuilding it", () => {
+    const sale = `
+      <VOUCHER VCHTYPE="Sales" ACTION="Create">
+        <GUID>sale-guid</GUID>
+        <DATE>20260120</DATE>
+        <VOUCHERNUMBER>S-010</VOUCHERNUMBER>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Cash</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+          <AMOUNT>300.00</AMOUNT>
+        </ALLLEDGERENTRIES.LIST>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Sales</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+          <AMOUNT>-300.00</AMOUNT>
+        </ALLLEDGERENTRIES.LIST>
+        <ALLINVENTORYENTRIES.LIST>
+          <STOCKITEMNAME>Test Item A</STOCKITEMNAME>
+          <ACTUALQTY>3 Strip</ACTUALQTY>
+          <RATE>100.00/Strip</RATE>
+          <AMOUNT>300.00</AMOUNT>
+        </ALLINVENTORYENTRIES.LIST>
+      </VOUCHER>
+    `
+    const result = plan(`${balancedMasters}${sale}`)
+
+    assert.equal(result.movements, undefined)
+    assert.equal(result.counts.adjustedVouchers, 0)
+    assert.equal(result.vouchers.length, 1)
+  })
+
+  it("still refuses a stock-only voucher in closing mode", () => {
+    const result = plan(`${balancedMasters}${physicalCount("physical-guid", "20260125", 9)}`, {
+      mode: "closing",
+    })
+
+    assert.equal(result.movements, undefined)
+    assert.equal(result.counts.skippedVouchers, 1)
+    assert.equal(result.exceptionCounts?.VOUCHER_TYPE_UNSUPPORTED, 1)
+  })
+})
+
 describe("normaliseTallyDocument — replay", () => {
   const purchase = `
     <VOUCHER VCHTYPE="Purchase" ACTION="Create">

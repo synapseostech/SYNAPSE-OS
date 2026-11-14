@@ -6,6 +6,7 @@ import type { TallyAccountOverrides } from "@synapse/db/tally-map"
 import type { TallyImportMode } from "@/lib/tally/types"
 import {
   readTallySource,
+  removeTallySource,
   tallyChunkSourcePath,
   tallyStagedSourcePath,
   writeTallySourceBytes,
@@ -31,6 +32,7 @@ import {
   isManifestLike,
   manifestProblems,
   recordChunkResult,
+  removeChunk,
   replaceChunkResult,
   widenPeriod,
   type TallyDateRange,
@@ -228,14 +230,22 @@ export async function POST(
   const stageParsed = async (
     fileBytes: Uint8Array,
     entryName: string,
-    entryCompany: string,
+    entryCompany: { name: string; source: "file" | "operator" },
     parsed?: TallyXmlDocument,
+    expectedRecords?: number,
   ): Promise<StageResult> => {
     const document = parsed ?? readTallyDocument(fileBytes, entryName).document
+    // A file that names no company joins the cut-over already named rather
+    // than being refused: the package's own summary identified this export, so
+    // a masters file that leaves the company out belongs to the same one.
+    const named =
+      entryCompany.name || !manifest
+        ? entryCompany
+        : { name: manifest.company, source: manifest.companySource ?? "operator" }
     const described = describeStagedDocument(document, {
       requestedPeriod,
       fallbackPeriod,
-      company: entryCompany,
+      company: named.name,
       kind,
     })
     if (!described.ok) {
@@ -248,17 +258,35 @@ export async function POST(
       }
     }
 
+    // The name follows the company it names, not the file it arrived in: a
+    // package's summary is the export's own statement even when the XML inside
+    // does not repeat it.
+    const companySource: "file" | "operator" =
+      described.companySource === "file" ? "file" : named.source
+
     if (manifest && manifest.company.trim() !== described.company) {
-      return {
-        ok: false,
-        response: NextResponse.json(
-          {
-            error: `This file belongs to "${described.company}", but the cut-over is for "${manifest.company}".`,
-            code: "TALLY_COMPANY_MISMATCH",
-            file: entryName,
-          },
-          { status: 422 },
-        ),
+      // A name the operator typed is a guess about which company this is; the
+      // export's own summary answers it. Once the company has been read from a
+      // file, a file from a different one is a real conflict and is refused.
+      if (manifest.companySource === "operator" && companySource === "file") {
+        manifest = {
+          ...manifest,
+          company: described.company,
+          companySource: "file",
+          updatedAt: now,
+        }
+      } else {
+        return {
+          ok: false,
+          response: NextResponse.json(
+            {
+              error: `This file belongs to "${described.company}", but the cut-over is for "${manifest.company}".`,
+              code: "TALLY_COMPANY_MISMATCH",
+              file: entryName,
+            },
+            { status: 422 },
+          ),
+        }
       }
     }
 
@@ -267,7 +295,7 @@ export async function POST(
       createOpenManifest({
         sessionId: id,
         company: described.company,
-        companySource: described.companySource,
+        companySource,
         mode: mapping.mode ?? "opening",
         period: described.range,
         periodSource: described.periodSource,
@@ -277,7 +305,7 @@ export async function POST(
 
     // A file that names the company is better evidence than the operator's
     // word, so the record upgrades rather than keeps claiming it was entered.
-    if (manifest && described.companySource === "file" && manifest.companySource !== "file") {
+    if (companySource === "file" && next.companySource !== "file") {
       next = { ...next, companySource: "file", updatedAt: now }
     }
 
@@ -294,16 +322,40 @@ export async function POST(
     if (!target) throw new Error("TALLY_CHUNK_UNKNOWN")
 
     const checksum = await checksumOf(fileBytes)
+
+    // The same bytes are one source. A file staged again under a range it no
+    // longer claims — a package re-read with the operator's period, a slice
+    // renamed — must replace the earlier copy: keeping both stages its
+    // vouchers twice, which the overlap check then refuses for the whole set.
+    const superseded = next.chunks.filter(
+      (chunk) =>
+        chunk.kind === described.kind &&
+        chunk.id !== described.chunkId &&
+        chunk.status === "complete" &&
+        chunk.checksum === checksum,
+    )
+    for (const chunk of superseded) {
+      next = removeChunk(next, chunk.id, now)
+      sources = sources.filter((entry) => entry.chunkId !== chunk.id)
+      await removeTallySource(storage(), tallyChunkSourcePath(tenantId, id, chunk.id))
+    }
+
     const result = {
       status: "complete" as const,
       recordsRead: described.recordsRead,
+      // The package's own manifest counted this month before Synapse read it.
+      // Recording it is what lets the chunk claim its completeness was checked
+      // against something other than its own output.
+      ...(expectedRecords === undefined ? {} : { expectedRecords }),
       checksum,
       bytes: fileBytes.byteLength,
       ...(described.firstDate ? { firstDate: described.firstDate } : {}),
       ...(described.lastDate ? { lastDate: described.lastDate } : {}),
     }
 
-    if (target.status === "complete" && !replace) {
+    // A copy removed above has to be written back even when this range is
+    // already complete, so the removal outranks the idempotent retry.
+    if (target.status === "complete" && !replace && superseded.length === 0) {
       // The same bytes are an idempotent retry; different bytes are a corrected
       // slice, which the operator has to confirm before it replaces what is
       // already staged.
@@ -370,7 +422,15 @@ export async function POST(
     const bytes = await readTallySource(storage(), stagedPath)
 
     if (extension === "zip") {
-      const packageCompany = company || readTallyPackageCompany(bytes)?.name || ""
+      // The package states its own company and counts its own vouchers. Its
+      // word outranks whatever was typed into the form: the operator is not
+      // asked to repeat what the export already says, and a name that came from
+      // the form is only used when the package names none.
+      const declared = readTallyPackageCompany(bytes)
+      const packageCompany = {
+        name: declared?.name || company,
+        source: declared?.name ? ("file" as const) : ("operator" as const),
+      }
       const stop = Symbol("stop")
       // Held on an object so the callback's assignment survives the closure.
       const halted: { refusal: NextResponse | null } = { refusal: null }
@@ -380,7 +440,13 @@ export async function POST(
       try {
         report = await readTallyArchive(bytes, {
           onDocument: async (document, file, extracted) => {
-            const outcome = await stageParsed(extracted, file.name, packageCompany, document)
+            const outcome = await stageParsed(
+              extracted,
+              file.name,
+              packageCompany,
+              document,
+              file.manifest?.vouchers ?? undefined,
+            )
             if (!outcome.ok) {
               halted.refusal = outcome.response
               throw stop
@@ -432,7 +498,7 @@ export async function POST(
       ]
 
       const archive = {
-        company: report.company,
+        company: report.company ?? (packageCompany.name ? packageCompany : null),
         reconciliation: report.reconciliation,
         ignored: report.ignored,
         files: report.files.map((file) => ({
@@ -487,7 +553,7 @@ export async function POST(
       })
     }
 
-    const outcome = await stageParsed(bytes, fileName, company)
+    const outcome = await stageParsed(bytes, fileName, { name: company, source: "operator" })
     if (!outcome.ok) return outcome.response
 
     if (!manifest) throw new Error("TALLY_MANIFEST_UNKNOWN")

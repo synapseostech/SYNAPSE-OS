@@ -301,6 +301,24 @@ export function ensureChunk(
 }
 
 /**
+ * Drops a chunk whose file is now staged under a different range. The same
+ * bytes are one source: keeping both would stage its vouchers twice, which the
+ * overlap check refuses for the whole set.
+ */
+export function removeChunk(
+  manifest: TallyMigrationManifest,
+  chunkId: string,
+  now = new Date().toISOString(),
+): TallyMigrationManifest {
+  if (!manifest.chunks.some((chunk) => chunk.id === chunkId)) return manifest
+  return {
+    ...manifest,
+    chunks: manifest.chunks.filter((chunk) => chunk.id !== chunkId),
+    updatedAt: now,
+  }
+}
+
+/**
  * Grows the promised period to cover a range staged later in the same session.
  * Files may arrive in any order, so the period is the union of everything
  * uploaded rather than the range of whichever file happened to come first.
@@ -429,7 +447,23 @@ export function manifestProblems(manifest: TallyMigrationManifest): TallyManifes
       const detail = chunk.error ? `: ${chunk.error}` : "."
       problems.push(problem("TALLY_CHUNK_FAILED", `Chunk ${chunk.id} did not finish${detail}`))
     } else if (chunk.status !== "complete") {
-      problems.push(problem("TALLY_CHUNK_INCOMPLETE", `Chunk ${chunk.id} has not been read yet or is still running.`))
+      // A pending chunk that has read nothing was never supplied, which is a
+      // different problem from one that is midway through reading. Saying which
+      // file is missing is the difference between a dead end and a next step.
+      if (chunk.recordsRead === 0) {
+        problems.push(
+          problem(
+            "TALLY_CHUNK_INCOMPLETE",
+            chunk.kind === "masters"
+              ? "No All Masters export has been added. The vouchers name ledgers, parties and stock items that only the masters define, so nothing can be posted until that file is staged."
+              : `No vouchers have been read for ${chunk.range.from} to ${chunk.range.to}.`,
+          ),
+        )
+      } else {
+        problems.push(
+          problem("TALLY_CHUNK_INCOMPLETE", `Chunk ${chunk.id} has not been read yet or is still running.`),
+        )
+      }
     }
     if (chunk.reconciliation === "mismatch") {
       problems.push(
@@ -441,35 +475,64 @@ export function manifestProblems(manifest: TallyMigrationManifest): TallyManifes
     }
   }
 
+  // A closing cut-over posts balances only. It carries no history to post, so
+  // it is not asked to tile the period with voucher ranges; a set of masters
+  // alone is exactly that import.
   const ranges = manifest.chunks
     .filter((chunk) => chunk.kind === "vouchers")
     .map((chunk) => chunk.range)
     .sort((left, right) => rangeStart(left) - rangeStart(right) || rangeEnd(left) - rangeEnd(right))
 
-  if (ranges.length === 0) {
-    problems.push(problem("TALLY_CHUNK_MISSING", "No voucher range belongs to this migration."))
-  } else {
-    const first = ranges[0]
-    const last = ranges[ranges.length - 1]
-    if (first && rangeStart(first) !== periodStart) {
-      problems.push(problem("TALLY_CHUNK_GAP", "The first voucher range does not start at the beginning of the period."))
-    }
-    if (last && rangeEnd(last) !== periodEnd) {
-      problems.push(problem("TALLY_CHUNK_GAP", "The last voucher range does not end at the end of the period."))
-    }
-    for (let index = 1; index < ranges.length; index += 1) {
-      const previous = ranges[index - 1]
-      const current = ranges[index]
-      if (!previous || !current) continue
-      if (rangeStart(current) <= rangeEnd(previous)) {
-        problems.push(problem("TALLY_CHUNK_OVERLAP", "Two voucher ranges cover the same dates."))
-      } else if (rangeStart(current) > nextDay(rangeEnd(previous))) {
-        problems.push(problem("TALLY_CHUNK_GAP", "A stretch of the period is not covered by any voucher range."))
+  if (manifest.mode !== "closing") {
+    if (ranges.length === 0) {
+      problems.push(problem("TALLY_CHUNK_MISSING", "No voucher range belongs to this migration."))
+    } else {
+      const first = ranges[0]
+      const last = ranges[ranges.length - 1]
+      if (first && rangeStart(first) !== periodStart) {
+        problems.push(problem("TALLY_CHUNK_GAP", "The first voucher range does not start at the beginning of the period."))
+      }
+      if (last && rangeEnd(last) !== periodEnd) {
+        problems.push(problem("TALLY_CHUNK_GAP", "The last voucher range does not end at the end of the period."))
+      }
+      for (let index = 1; index < ranges.length; index += 1) {
+        const previous = ranges[index - 1]
+        const current = ranges[index]
+        if (!previous || !current) continue
+        if (rangeStart(current) <= rangeEnd(previous)) {
+          problems.push(problem("TALLY_CHUNK_OVERLAP", "Two voucher ranges cover the same dates."))
+        } else if (rangeStart(current) > nextDay(rangeEnd(previous))) {
+          problems.push(problem("TALLY_CHUNK_GAP", "A stretch of the period is not covered by any voucher range."))
+        }
       }
     }
   }
 
   return problems
+}
+
+/**
+ * What a set of staged files can be imported as, without asking the operator.
+ *
+ * A file that carries vouchers has history to post, so it is read as opening
+ * balances and history. Masters alone carry only the balances the export closes
+ * on, which is exactly the closing mode. Replay is never inferred: it rebuilds
+ * stock movement by movement and gates on a reconciliation, so it stays a
+ * decision the operator makes explicitly.
+ */
+export function tallyModeFor(hasVouchers: boolean): TallyImportMode {
+  return hasVouchers ? "opening" : "closing"
+}
+
+/**
+ * True when no masters file has been staged at all, as opposed to one that is
+ * still being read. Callers use it to say which file is missing rather than
+ * reporting a generic gap in coverage.
+ */
+export function mastersNotSupplied(manifest: TallyMigrationManifest): boolean {
+  return !manifest.chunks.some(
+    (chunk) => chunk.kind === "masters" && (chunk.status === "complete" || chunk.recordsRead > 0),
+  )
 }
 
 /**

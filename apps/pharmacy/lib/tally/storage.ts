@@ -166,6 +166,15 @@ export async function writeTallySourceBytes(
   return bytes.byteLength
 }
 
+/**
+ * Deletes a staged copy the manifest no longer refers to. A failure here is not
+ * fatal: apply reads the manifest, and an orphaned object in a private bucket
+ * costs storage but is never read again.
+ */
+export async function removeTallySource(db: TallyStorageClient, path: string): Promise<void> {
+  await db.storage.from(TALLY_BUCKET).remove([path])
+}
+
 export async function writeTallySourceText(
   db: TallyStorageClient,
   path: string,

@@ -46,9 +46,10 @@ export type TallyApplyStage =
   | "complete"
 
 /**
- * Every stage an apply can reach. A replay walks all of them; an opening or
- * closing cut-over skips `stock-history` and `replay-closing` and goes from
- * `opening-stock` to `journals` to `complete`.
+ * Every stage an apply can reach. A replay walks all of them. An opening
+ * cut-over walks `stock-history` only when the export carries physical stock
+ * or stock journal vouchers, and never walks `replay-closing`; a closing
+ * cut-over walks neither and goes from `opening-stock` to `journals`.
  */
 export const TALLY_STAGE_ORDER: TallyApplyStage[] = [
   "accounts",
@@ -170,6 +171,38 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (match) => `\\${match}`)
 }
 
+/**
+ * PostgREST answers an un-ranged query with at most 1,000 rows and no error, so
+ * a lookup map built from one request silently loses everything past the cap —
+ * a 2,025-item catalogue would resolve only half its stock items and the rest
+ * would fail as "product missing". Page until a short page, ordered by a unique
+ * column so no row is repeated or skipped between requests.
+ */
+const READ_PAGE = 1_000
+const MAX_READ_PAGES = 100
+
+async function loadAllRows<T>(
+  table: string,
+  db: TallyApplyDb,
+  columns: string,
+  orderBy: string,
+  scope: (query: any) => any,
+): Promise<T[]> {
+  const rows: T[] = []
+  for (let page = 0; page < MAX_READ_PAGES; page += 1) {
+    const from = page * READ_PAGE
+    const query = scope(db.from(table).select(columns))
+      .order(orderBy)
+      .range(from, from + READ_PAGE - 1)
+    const { data, error } = await query
+    if (error) throw new Error(`Reading ${table} failed: ${error.message}`)
+    const batch = (data ?? []) as T[]
+    rows.push(...batch)
+    if (batch.length < READ_PAGE) return rows
+  }
+  throw new Error(`Reading ${table} stopped after ${MAX_READ_PAGES} pages without reaching the end.`)
+}
+
 // Tally exports calendar dates with no offset but the mirrors land in
 // timestamptz columns, so the offset has to be stated. The portal, the sale
 // RPC and the ledger all read the business day as Africa/Kampala, which is
@@ -193,12 +226,15 @@ type IdMaps = {
 }
 
 async function loadAccounts(db: TallyApplyDb, tenantId: string): Promise<Map<string, string>> {
-  const { data } = await db
-    .from("pharmacy_accounting_accounts")
-    .select("id, code")
-    .eq("tenant_id", tenantId)
+  const rows = await loadAllRows<{ id: string; code: string }>(
+    "pharmacy_accounting_accounts",
+    db,
+    "id, code",
+    "id",
+    (query) => query.eq("tenant_id", tenantId),
+  )
   const map = new Map<string, string>()
-  for (const row of (data ?? []) as Array<{ id: string; code: string }>) {
+  for (const row of rows) {
     map.set(row.code, row.id)
   }
   return map
@@ -209,10 +245,16 @@ function productNameKey(name: string): string {
 }
 
 async function loadProducts(db: TallyApplyDb, tenantId: string): Promise<{ bySku: Map<string, string>; byName: Map<string, string> }> {
-  const { data } = await db
-    .from("pharmacy_products")
-    .select("id, sku, name, strength, dosage_form, active_ingredient")
-    .eq("tenant_id", tenantId)
+  const rows = await loadAllRows<{
+    id: string
+    sku: string
+    name: string
+    strength?: string | null
+    dosage_form?: string | null
+    active_ingredient?: string | null
+  }>("pharmacy_products", db, "id, sku, name, strength, dosage_form, active_ingredient", "id", (query) =>
+    query.eq("tenant_id", tenantId),
+  )
   const bySku = new Map<string, string>()
   const groupedByName = new Map<
     string,
@@ -223,14 +265,7 @@ async function loadProducts(db: TallyApplyDb, tenantId: string): Promise<{ bySku
       active_ingredient?: string | null
     }>
   >()
-  for (const row of (data ?? []) as Array<{
-    id: string
-    sku: string
-    name: string
-    strength?: string | null
-    dosage_form?: string | null
-    active_ingredient?: string | null
-  }>) {
+  for (const row of rows) {
     bySku.set(row.sku.toLowerCase(), row.id)
     const key = productNameKey(row.name)
     const group = groupedByName.get(key) ?? []
@@ -255,17 +290,21 @@ async function loadProducts(db: TallyApplyDb, tenantId: string): Promise<{ bySku
 
 async function loadParties(db: TallyApplyDb, tenantId: string): Promise<{ customers: Map<string, string>; suppliers: Map<string, string> }> {
   const [customers, suppliers] = await Promise.all([
-    db.from("pharmacy_customers").select("id, name").eq("tenant_id", tenantId),
-    db.from("pharmacy_suppliers").select("id, name").eq("tenant_id", tenantId),
+    loadAllRows<{ id: string; name: string }>("pharmacy_customers", db, "id, name", "id", (query) =>
+      query.eq("tenant_id", tenantId),
+    ),
+    loadAllRows<{ id: string; name: string }>("pharmacy_suppliers", db, "id, name", "id", (query) =>
+      query.eq("tenant_id", tenantId),
+    ),
   ])
-  const toMap = (rows: unknown) => {
+  const toMap = (rows: Array<{ id: string; name: string }>) => {
     const map = new Map<string, string>()
-    for (const row of (rows ?? []) as Array<{ id: string; name: string }>) {
+    for (const row of rows) {
       map.set(row.name.trim().toLowerCase(), row.id)
     }
     return map
   }
-  return { customers: toMap(customers.data), suppliers: toMap(suppliers.data) }
+  return { customers: toMap(customers), suppliers: toMap(suppliers) }
 }
 
 async function findByName(
@@ -1562,7 +1601,9 @@ export async function applyTallyChunk(
         progress.advance("stock-history", 0)
       } else {
         await stageOpeningStock(db, input.plan, tenantId, input.actorId, progress)
-        progress.advance("journals", 0)
+        // The export's physical counts are dated inside the period, so they
+        // can only adjust stock that is already there.
+        progress.advance((input.movementTotalChunks ?? 0) > 0 ? "stock-history" : "journals", 0)
       }
       break
     }
@@ -1698,4 +1739,4 @@ export async function reverseTallyJournals(
   }
 }
 
-export const __test__ = { money, escapeLike, isoDateTime, TALLY_APPLY_CHUNK, Progress }
+export const __test__ = { money, escapeLike, isoDateTime, loadProducts, loadAllRows, TALLY_APPLY_CHUNK, Progress }

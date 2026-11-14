@@ -17,6 +17,8 @@ type Operation = {
   payload?: unknown
   options?: unknown
   filters: Array<[string, unknown]>
+  /** Set by `.range()`, so a paged read sees the window PostgREST would return. */
+  window?: [number, number]
 }
 
 type Result = { data?: unknown; error?: { message: string } | null }
@@ -31,6 +33,8 @@ type Chain = {
   is: (column: string, value: unknown) => Chain
   ilike: (column: string, value: unknown) => Chain
   limit: (count?: number) => Chain
+  order: (column: string, options?: unknown) => Chain
+  range: (from: number, to: number) => Chain
   maybeSingle: () => Promise<Result>
   single: () => Promise<Result>
   then: (
@@ -39,9 +43,20 @@ type Chain = {
   ) => Promise<unknown>
 }
 
-function fakeDb(handler: (operation: Operation) => Result | undefined = () => undefined) {
+function fakeDb(
+  handler: (operation: Operation) => Result | undefined = () => undefined,
+  options: { pageSize?: number } = {},
+) {
   const operations: Operation[] = []
-  const resolve = (operation: Operation) => handler(operation) ?? { data: null, error: null }
+  // Models PostgREST: an un-ranged read is capped, a ranged one returns the window.
+  const cap = options.pageSize ?? 1_000
+  const resolve = (operation: Operation) => {
+    const result = handler(operation) ?? { data: null, error: null }
+    const rows = result.data
+    if (!Array.isArray(rows) || operation.action !== "select") return result
+    const [start, end] = operation.window ?? [0, cap - 1]
+    return { ...result, data: rows.slice(start, end + 1) }
+  }
 
   const from = (table: string) => {
     const operation: Operation = { table, action: "select", filters: [] }
@@ -81,6 +96,11 @@ function fakeDb(handler: (operation: Operation) => Result | undefined = () => un
         return chain
       },
       limit: () => chain,
+      order: () => chain,
+      range: (from: number, to: number) => {
+        operation.window = [from, to]
+        return chain
+      },
       maybeSingle: () => Promise.resolve(resolve(operation)),
       single: () => Promise.resolve(resolve(operation)),
       then: (
@@ -365,6 +385,40 @@ describe("opening journal", () => {
       expect.objectContaining({ code: "OPENING_DIFFERENCE" }),
     ])
     expect(operations.some((operation) => operation.action === "rpc")).toBe(false)
+  })
+})
+
+describe("opening stock adjustments", () => {
+  it("walks the dated counts the export carried before it posts journals", async () => {
+    const { db } = fakeDb()
+
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan(),
+      progress: { ...emptyProgress(), stage: "opening-stock" },
+      movementTotalChunks: 1,
+    })
+
+    expect(result.progress.stage).toBe("stock-history")
+    expect(result.progress.offset).toBe(0)
+    expect(result.done).toBe(false)
+  })
+
+  it("posts journals straight after the opening when the export had no counts", async () => {
+    const { db } = fakeDb()
+
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan(),
+      progress: { ...emptyProgress(), stage: "opening-stock" },
+      movementTotalChunks: 0,
+    })
+
+    expect(result.progress.stage).toBe("journals")
+    expect(result.progress.offset).toBe(0)
+    expect(result.done).toBe(false)
   })
 })
 
@@ -1147,6 +1201,44 @@ function replayDb(seed?: {
 function stockHistoryProgress(): TallyApplyProgress {
   return { ...emptyProgress(), stage: "stock-history" }
 }
+
+describe("product lookup past the PostgREST row cap", () => {
+  // PostgREST answers an un-ranged read with 1,000 rows and no error. The
+  // SADIO catalogue is 2,025 items, so a one-request lookup resolved barely
+  // half of it and every item past the cap failed as PRODUCT_MISSING.
+  it("sees every product when the catalogue is larger than one page", async () => {
+    const products = Array.from({ length: 2_025 }, (_, index) => ({
+      id: `product-${index}`,
+      sku: `SKU-${index}`,
+      name: `Item ${index}`,
+      strength: null,
+      dosage_form: null,
+      active_ingredient: null,
+    }))
+    const { db } = fakeDb((operation) =>
+      operation.action === "select" && operation.table === "pharmacy_products"
+        ? { data: products, error: null }
+        : undefined,
+    )
+
+    const { bySku } = await __test__.loadProducts(db, "tenant-1")
+
+    expect(bySku.size).toBe(2_025)
+    expect(bySku.get("sku-2024")).toBe("product-2024")
+  })
+
+  it("refuses to continue on a read error instead of importing a partial map", async () => {
+    const { db } = fakeDb((operation) =>
+      operation.action === "select" && operation.table === "pharmacy_products"
+        ? { data: null, error: { message: "connection reset" } }
+        : undefined,
+    )
+
+    await expect(__test__.loadProducts(db, "tenant-1")).rejects.toThrow(
+      "Reading pharmacy_products failed: connection reset",
+    )
+  })
+})
 
 describe("replay write path", () => {
   it("applies a movement once and treats a second send as already replayed", async () => {

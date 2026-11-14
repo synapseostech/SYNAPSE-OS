@@ -22,7 +22,12 @@ import {
 import type { TallyApplyStage } from "./apply"
 import {
   TALLY_APPLY_CHUNK,
+  type TallyImportMode,
   type TallyPlanSummary,
+  type TallyPlaybackDay,
+  type TallyPlaybackEvent,
+  type TallyPlaybackIndex,
+  type TallyPlaybackStockLine,
   type TallyReplayDayCount,
   type TallyReplayTarget,
 } from "./types"
@@ -63,6 +68,7 @@ const STATIC = "plan-static"
 const CHUNK = "plan-chunk"
 const MOVEMENT_CHUNK = "plan-movement-chunk"
 const REPLAY_TARGET = "plan-replay-target"
+const PLAYBACK_CHUNK = "plan-playback-chunk"
 
 function round2(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100
@@ -178,11 +184,125 @@ export function buildReplayTarget(
   }
 }
 
+function stockLinesOf(
+  movements: TallyCutoverMovement[],
+  sale: TallyCutoverSale | undefined,
+  purchase: TallyCutoverPurchase | undefined,
+): TallyPlaybackStockLine[] {
+  if (movements.length > 0) {
+    // A replay knows which batch each line moved; only the item and the
+    // signed quantity belong in a walkthrough.
+    const lines = new Map<string, TallyPlaybackStockLine>()
+    for (const movement of movements) {
+      // A physical stock line is the quantity counted, not a difference, so it
+      // is neither an in nor an out.
+      const direction =
+        movement.movementKind === "physical_adjust"
+          ? "count"
+          : movement.quantityDelta < 0
+            ? "out"
+            : "in"
+      const key = `${direction}:${movement.stockItemName}`
+      const line = lines.get(key) ?? { item: movement.stockItemName, quantity: 0, direction }
+      line.quantity = round2(line.quantity + Math.abs(movement.quantityDelta))
+      lines.set(key, line)
+    }
+    return [...lines.values()]
+  }
+  if (sale) {
+    return sale.items.map((item) => ({
+      item: item.stockItemName,
+      quantity: item.quantity,
+      direction: "out" as const,
+    }))
+  }
+  if (purchase) {
+    return purchase.items.map((item) => ({
+      item: item.stockItemName,
+      quantity: item.quantity,
+      direction: "in" as const,
+    }))
+  }
+  return []
+}
+
+/**
+ * The plan as a dated walkthrough: the same events a replay consumes, in the
+ * same order, with the stock lines each one moved.
+ *
+ * Opening mode carries no batch movements, so its stock lines are the sale and
+ * purchase mirror's items. That is what the plan itself posts; nothing is
+ * inferred from it.
+ */
+export function buildPlaybackEvents(plan: TallyCutoverPlan): TallyPlaybackEvent[] {
+  const saleBySource = new Map(plan.sales.map((sale) => [sale.sourceId, sale]))
+  const purchaseBySource = new Map(plan.purchases.map((entry) => [entry.sourceId, entry]))
+  const voucherBySource = new Map(plan.vouchers.map((voucher) => [voucher.sourceId, voucher]))
+
+  return buildReplayEvents(plan).map((event) => {
+    const sale = saleBySource.get(event.sourceId)
+    const purchase = purchaseBySource.get(event.sourceId)
+    const voucher = voucherBySource.get(event.sourceId)
+    const number = voucher?.number ?? sale?.transactionNumber ?? purchase?.purchaseNumber
+    return {
+      id: event.eventId,
+      date: event.date,
+      type: event.type,
+      kind: event.kind,
+      ...(number ? { number } : {}),
+      description: event.description,
+      debit: round2(event.lines.reduce((total, line) => total + line.debit, 0)),
+      credit: round2(event.lines.reduce((total, line) => total + line.credit, 0)),
+      lineCount: event.lines.length,
+      stock: stockLinesOf(event.movements, sale, purchase),
+      movements: event.movements.length,
+    }
+  })
+}
+
+export function summarisePlayback(
+  events: TallyPlaybackEvent[],
+  mode: TallyImportMode,
+  chunkSize: number,
+): TallyPlaybackIndex {
+  const days: TallyPlaybackDay[] = []
+  const byDate = new Map<string, TallyPlaybackDay>()
+
+  events.forEach((event, index) => {
+    const existing = byDate.get(event.date)
+    if (existing) {
+      existing.events += 1
+      existing.movements += event.movements
+      return
+    }
+    const day: TallyPlaybackDay = {
+      date: event.date,
+      events: 1,
+      movements: event.movements,
+      firstChunk: Math.floor(index / chunkSize),
+    }
+    byDate.set(event.date, day)
+    days.push(day)
+  })
+
+  return {
+    mode,
+    firstDate: events[0]?.date ?? "",
+    lastDate: events.at(-1)?.date ?? "",
+    eventCount: events.length,
+    movementCount: events.reduce((total, event) => total + event.movements, 0),
+    chunkCount: Math.ceil(events.length / chunkSize),
+    chunkSize,
+    days,
+  }
+}
+
 export function summarisePlan(
   plan: TallyCutoverPlan,
   format: "xml" | "xlsx" | "xls" | "csv",
   chunkSize = TALLY_APPLY_CHUNK,
   replay?: TallyReplayTarget,
+  playback?: TallyPlaybackIndex,
 ): TallyPlanSummary {
   return {
     // One timestamp for the whole preview: an acknowledgement made against
@@ -219,6 +339,16 @@ export function summarisePlan(
           },
         }
       : {}),
+    ...(plan.mode === "opening" && (plan.movements?.length ?? 0) > 0
+      ? {
+          stockAdjustments: {
+            voucherCount: plan.counts.adjustedVouchers,
+            movementCount: plan.movements!.length,
+            movementChunkCount: Math.ceil(plan.movements!.length / chunkSize),
+          },
+        }
+      : {}),
+    ...(playback ? { playback } : {}),
     exceptions: plan.exceptions.map((entry) => ({
       code: entry.code,
       message: entry.message,
@@ -241,7 +371,15 @@ export async function writeTallyPlan(
 ): Promise<TallyPlanSummary> {
   const preparedAt = new Date().toISOString()
   const replay = plan.mode === "replay" ? buildReplayTarget(plan, preparedAt) : undefined
-  const summary = summarisePlan(plan, format, TALLY_APPLY_CHUNK, replay)
+  // A closing cut-over states one position and has no dated history to walk,
+  // so asking for its playback would be asking for something it never had.
+  const playbackEvents =
+    plan.mode === "closing" ? [] : buildPlaybackEvents(plan)
+  const playback =
+    playbackEvents.length > 0
+      ? summarisePlayback(playbackEvents, plan.mode, TALLY_APPLY_CHUNK)
+      : undefined
+  const summary = summarisePlan(plan, format, TALLY_APPLY_CHUNK, replay, playback)
   // The plan is JSON. A bucket that was set up for the export's XML alone
   // accepts every upload and then refuses to store this, after the whole file
   // has already been read.
@@ -286,21 +424,34 @@ export async function writeTallyPlan(
     await writeTallyJson(db, tallyChunkPath(tenantId, sessionId, CHUNK, index), chunk)
   }
 
+  // Chronological, because FEFO at a sale depends on what had arrived by then
+  // and a physical count sets the quantity at its own date. A chunk applied out
+  // of order would consume a batch that did not exist yet and then disagree
+  // with the position the preview showed.
+  const movements = [...(plan.movements ?? [])].sort(compareReplayMovements)
+  const movementChunks = Math.ceil(movements.length / summary.chunkSize)
+  for (let index = 0; index < movementChunks; index += 1) {
+    const start = index * summary.chunkSize
+    await writeTallyJson(
+      db,
+      tallyChunkPath(tenantId, sessionId, MOVEMENT_CHUNK, index),
+      movements.slice(start, start + summary.chunkSize),
+    )
+  }
+
   if (replay) {
-    // Chronological, because FEFO at a sale depends on what had arrived by then.
-    // A chunk applied out of order would consume a batch that did not exist yet
-    // and then disagree with the simulation at closing.
-    const movements = [...(plan.movements ?? [])].sort(compareReplayMovements)
-    const movementChunks = Math.ceil(replay.movementCount / summary.chunkSize)
-    for (let index = 0; index < movementChunks; index += 1) {
-      const start = index * summary.chunkSize
+    await writeTallyJson(db, tallyChunkPath(tenantId, sessionId, REPLAY_TARGET), replay)
+  }
+
+  if (playback) {
+    for (let index = 0; index < playback.chunkCount; index += 1) {
+      const start = index * playback.chunkSize
       await writeTallyJson(
         db,
-        tallyChunkPath(tenantId, sessionId, MOVEMENT_CHUNK, index),
-        movements.slice(start, start + summary.chunkSize),
+        tallyChunkPath(tenantId, sessionId, PLAYBACK_CHUNK, index),
+        playbackEvents.slice(start, start + playback.chunkSize),
       )
     }
-    await writeTallyJson(db, tallyChunkPath(tenantId, sessionId, REPLAY_TARGET), replay)
   }
 
   await writeTallyJson(db, tallyChunkPath(tenantId, sessionId, STATIC), staticPlan)
@@ -338,6 +489,19 @@ export async function readTallyMovementChunk(
   return readTallyJson<TallyCutoverMovement[]>(
     db,
     tallyChunkPath(tenantId, sessionId, MOVEMENT_CHUNK, index),
+  )
+}
+
+/** One day's worth of the walkthrough, as the playback route pages it. */
+export async function readTallyPlaybackChunk(
+  db: TallyStorageClient,
+  tenantId: string,
+  sessionId: string,
+  index: number,
+): Promise<TallyPlaybackEvent[] | null> {
+  return readTallyJson<TallyPlaybackEvent[]>(
+    db,
+    tallyChunkPath(tenantId, sessionId, PLAYBACK_CHUNK, index),
   )
 }
 

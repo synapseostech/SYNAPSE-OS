@@ -260,6 +260,21 @@ describe("buildManifestEvidence", () => {
     expect(evidence.coverage).toBe("verified")
   })
 
+  it("reports the vouchers the export's own manifest declared beside what was read", () => {
+    const evidence = buildManifestEvidence(built({ read: 12, expected: [4, 12] }))
+
+    // Masters carry no declared count, so only the voucher chunk contributes.
+    expect(evidence.declaredVouchers).toBe(12)
+    expect(evidence.voucherRecordsRead).toBe(12)
+  })
+
+  it("reports no declared count rather than zero when the package declares none", () => {
+    const evidence = buildManifestEvidence(built({ read: 12 }))
+
+    expect(evidence.declaredVouchers).toBeNull()
+    expect(evidence.voucherRecordsRead).toBe(12)
+  })
+
   it("keeps the requested period separate from the manifest's own period", () => {
     const evidence = buildManifestEvidence(built({ read: 12 }), {
       requestedPeriod: { from: "2025-01-01", to: "2025-01-31" },

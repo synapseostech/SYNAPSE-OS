@@ -4,6 +4,8 @@ import { TallySourceError } from "@/lib/tally/source"
 import { fakeSupabase, filtersOf, type FakeOperation, type FakeResult } from "@/lib/tally/test-db"
 import {
   createManifest,
+  createOpenManifest,
+  MASTERS_CHUNK_ID,
   recordChunkResult,
   type TallyMigrationManifest,
 } from "@/lib/tally/chunks"
@@ -182,7 +184,7 @@ describe("POST /api/admin/tally/[id]/preview", () => {
     m.readSource.mockReset().mockResolvedValue(new Uint8Array([1, 2, 3]))
     m.readDocument.mockReset().mockReturnValue({
       format: "xml",
-      document: { currency: "UGX" },
+      document: { currency: "UGX", vouchers: [] },
     })
     m.normalise.mockReset().mockReturnValue(PLAN)
     m.consolidate.mockReset().mockResolvedValue({ plan: PLAN })
@@ -267,7 +269,7 @@ describe("POST /api/admin/tally/[id]/preview", () => {
 
     expect(res.status).toBe(200)
     expect(m.normalise).toHaveBeenCalledWith(
-      { currency: "UGX" },
+      { currency: "UGX", vouchers: [] },
       expect.objectContaining({ batchExpiry: "not-supplied" }),
     )
   })
@@ -286,7 +288,7 @@ describe("POST /api/admin/tally/[id]/preview", () => {
 
     expect(res.status).toBe(200)
     expect(m.normalise).toHaveBeenCalledWith(
-      { currency: "UGX" },
+      { currency: "UGX", vouchers: [] },
       expect.objectContaining({ conversionDate: "2026-04-01", currency: "UGX" }),
     )
     expect(m.writePlan).toHaveBeenCalledWith(
@@ -429,6 +431,8 @@ describe("POST /api/admin/tally/[id]/preview", () => {
       recordsRead: 2,
       recordsStaged: { accounts: 1, parties: 1, products: 1, vouchers: 1 },
       independentCount: false,
+      declaredVouchers: null,
+      voucherRecordsRead: 2,
       coverage: "unverified",
     })
     expect(body.manifest.coverage).toBe("unverified")
@@ -701,6 +705,185 @@ describe("POST /api/admin/tally/[id]/preview", () => {
       period: { from: "2026-01-01", to: "2026-01-10" },
       periodSource: "requested",
     })
+  })
+
+  it("reads a masters-only staged export as closing balances, asking nothing", async () => {
+    const mastersOnly = recordChunkResult(
+      createOpenManifest({
+        sessionId: "session-1",
+        company: "Demo Pharma",
+        mode: "opening",
+        period: { from: "2026-01-01", to: "2026-01-10" },
+        updatedAt: AT,
+      }),
+      MASTERS_CHUNK_ID,
+      { status: "complete", recordsRead: 3 },
+      AT,
+    )
+    setup(sessionRow("pending", { manifest: mastersOnly, sources: STAGED }))
+
+    const res = await post()
+    expect(res.status).toBe(200)
+
+    expect(m.consolidate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        manifest: expect.objectContaining({ mode: "closing" }),
+        // Nothing was asked: the normaliser infers the cut-over date from the
+        // period the export states.
+        conversionDate: undefined,
+      }),
+    )
+  })
+
+  it("reads a staged export that carries vouchers as opening balances and history", async () => {
+    const staged = createManifest({
+      sessionId: "session-1",
+      company: "Demo Pharma",
+      // Stored as closing, but the vouchers in it say otherwise.
+      mode: "closing",
+      period: { from: "2026-01-01", to: "2026-01-10" },
+      parts: 1,
+      updatedAt: AT,
+    })
+    const complete = staged.chunks.reduce(
+      (next, chunk) => recordChunkResult(next, chunk.id, { status: "complete", recordsRead: 1 }, AT),
+      staged,
+    )
+    setup(sessionRow("pending", { manifest: complete, sources: STAGED }))
+
+    const res = await post()
+    expect(res.status).toBe(200)
+
+    expect(m.consolidate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ manifest: expect.objectContaining({ mode: "opening" }) }),
+    )
+  })
+
+  it("re-reads a mode first inferred over fewer files", async () => {
+    // The operator uploaded the masters alone, saw it read as closing, then
+    // added the day books. The vouchers now in the session say otherwise.
+    const staged = createManifest({
+      sessionId: "session-1",
+      company: "Demo Pharma",
+      mode: "opening",
+      period: { from: "2026-01-01", to: "2026-01-10" },
+      parts: 1,
+      updatedAt: AT,
+    })
+    const complete = staged.chunks.reduce(
+      (next, chunk) => recordChunkResult(next, chunk.id, { status: "complete", recordsRead: 1 }, AT),
+      staged,
+    )
+    setup(
+      sessionRow("pending", {
+        manifest: complete,
+        sources: STAGED,
+        mode: "closing",
+        conversionDate: "2026-01-10",
+      }),
+    )
+
+    const res = await post()
+    expect(res.status).toBe(200)
+
+    expect(m.consolidate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        manifest: expect.objectContaining({ mode: "opening" }),
+        // The date is re-read from the staged period, not carried over from
+        // the smaller set it was first inferred over.
+        conversionDate: undefined,
+      }),
+    )
+  })
+
+  it("keeps a mode the session already settled on, such as a replay", async () => {
+    setup(
+      sessionRow("pending", {
+        manifest: completeManifest(),
+        sources: STAGED,
+        mode: "replay",
+      }),
+    )
+
+    const res = await post()
+    expect(res.status).toBe(200)
+
+    expect(m.consolidate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ manifest: expect.objectContaining({ mode: "replay" }) }),
+    )
+  })
+
+  it("reads a single masters document as closing balances", async () => {
+    const res = await post()
+
+    expect(res.status).toBe(200)
+    expect(m.normalise).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ mode: "closing" }),
+    )
+  })
+
+  it("reads a single document with vouchers as opening balances and history", async () => {
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: { currency: "UGX", vouchers: [{ date: "2026-01-03" }] },
+    })
+
+    const res = await post()
+
+    expect(res.status).toBe(200)
+    expect(m.normalise).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ mode: "opening" }),
+    )
+  })
+
+  it("dates a masters export by the period its file name states", async () => {
+    const res = await post({ period: { from: "2026-01-01", to: "2026-01-10" } })
+
+    expect(res.status).toBe(200)
+    expect(m.normalise).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ mode: "closing", conversionDate: "2026-01-10" }),
+    )
+  })
+
+  it("dates a vouchers export by the first day its file name states", async () => {
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: { currency: "UGX", vouchers: [{ date: "2026-01-03" }] },
+    })
+
+    const res = await post({ period: { from: "2026-01-01", to: "2026-01-10" } })
+
+    expect(res.status).toBe(200)
+    expect(m.normalise).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ mode: "opening", conversionDate: "2026-01-01" }),
+    )
+  })
+
+  it("leaves the date to the file when the export states its own period", async () => {
+    m.readDocument.mockReturnValue({
+      format: "xml",
+      document: {
+        currency: "UGX",
+        vouchers: [],
+        financialPeriod: { from: "2026-02-01", to: "2026-02-28" },
+      },
+    })
+
+    const res = await post({ period: { from: "2026-01-01", to: "2026-01-10" } })
+
+    expect(res.status).toBe(200)
+    expect(m.normalise).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ mode: "closing", conversionDate: undefined }),
+    )
   })
 
   it("refuses a preview while the staged ranges do not tile the period", async () => {

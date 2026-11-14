@@ -29,7 +29,8 @@ describe("access summary", () => {
     expect(areas).not.toContain("Users")
     expect(areas).not.toContain("Settings")
     expect(areas).not.toContain("Orders")
-    expect(areas).not.toContain("Tally Cut-over")
+    // Import needs stock access; a cashier has none.
+    expect(areas).not.toContain("Import")
   })
 
   it("gives a sales & stock clerk inventory and purchasing but not the ledger", () => {
@@ -41,8 +42,10 @@ describe("access summary", () => {
     expect(areas).not.toContain("Transactions")
     expect(areas).not.toContain("Credit Ledger")
     expect(areas).not.toContain("Users")
+    // One Import entry serves both flows; the Tally workspace behind it is
+    // refused by its own admin check, not by hiding the entry.
+    expect(areas).toContain("Import")
     // Admin-only pages stay closed to staff regardless of permissions.
-    expect(areas).not.toContain("Tally Cut-over")
     expect(areas).not.toContain("Activity Log")
   })
 
