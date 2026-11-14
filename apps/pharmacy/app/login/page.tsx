@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useState } from "react"
-import { Mail } from "lucide-react"
+import { Eye, EyeOff, Mail } from "lucide-react"
 
 type LoginStep = "credentials" | "choose" | "otp"
 
@@ -13,6 +13,7 @@ export default function LoginPage() {
   const [identifier, setIdentifier] = useState("")
   const [resolvedEmail, setResolvedEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [showPassword, setShowPassword] = useState(false)
   const [otp, setOtp] = useState("")
   const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([])
   const [tenantId, setTenantId] = useState("")
@@ -162,17 +163,29 @@ export default function LoginPage() {
                 >
                   Password
                 </label>
-                <input
-                  id="password"
-                  type="password"
-                  autoComplete="current-password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  disabled={isLoading}
-                  className="synapse-input"
-                />
+                <div className="relative">
+                  <input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    disabled={isLoading}
+                    className="synapse-input pr-10"
+                  />
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    title={showPassword ? "Hide password" : "Show password"}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
               </div>
 
               {error && (
