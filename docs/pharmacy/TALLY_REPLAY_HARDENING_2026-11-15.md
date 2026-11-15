@@ -38,7 +38,7 @@ operator. After the changes: **0 blocking, every row `match`.**
 | Plan | `packages/db/src/tally-normalise.ts` | Carries `costingMethod` and `financialYearStart`. Under replay + `not-supplied`, opening batches without expiry are receivable, and an item kept without batches opens as one unnamed batch (Apply names it `TALLY-OPEN-…`). Counted into the existing `REPLAY_BATCH_EXPIRY_NOT_SUPPLIED` disclosure. Default (`source`) and opening-mode behaviour unchanged. |
 | Reconciliation | `packages/db/src/tally-replay.ts` | `costingBasis()` and `averageCostPositions()`. Average Cost items are valued per financial year with Tally's five-decimal rate rounding; At Zero Cost at zero; every other method, and an export that states none, keeps the batch basis (unchanged). With no financial-year start in the export the value row is `not-available` with a reason — never a pass, never a guessed year. Rows carry `basis` and `note`. The stock total is summed on the same basis. |
 | Export | `apps/tally-bridge/scripts/tally-export-history.ps1` | Asks Tally for `CostingMethod` on stock items and records `StartingFrom` as `<STARTINGFROM>` in the masters company record when Tally answers. |
-| Apply | `apps/pharmacy/app/api/admin/tally/[id]/{apply,preview,sources}/route.ts` | `export const maxDuration = 60`. A 250-movement step takes ~8 s on loopback (13 s worst), more with real network latency; no limit was set before. |
+| Apply | `apps/pharmacy/app/api/admin/tally/[id]/{apply,preview,sources}/route.ts` | `export const maxDuration = 60`. A 250-movement step took 4.75 s mean and 8.6 s worst on loopback with a production build, more with real network latency; no limit was set before. |
 | Portal | `apps/pharmacy/hooks/use-idle-logout.ts`, `app/portal/tally-import/page.tsx` | `holdIdleLogout()`: while the page's apply loop runs, the idle timer restarts instead of signing out. Released in `finally`; normal idle rules resume after the apply. |
 | Dev tooling | `apps/tally-bridge/scripts/fake-tally.mjs` | Answers the script's company-period request. |
 | Rehearsal | `scripts/tally-fixtures/scale-history.mjs`, `scripts/db-tests/tally-scale.local.test.mjs` | Customer-scale generator with independently computed closing figures, and the portal journey that applies it. |
@@ -123,7 +123,7 @@ request 162 (~35 minutes into a dev-server run) and stopped with HTTP 401.
   `EXPIRYDATE`. If a Tally build writes batch expiry only as `EXPIRYPERIOD`, a
   pharmacy that does keep expiries would see them as absent. SADIO keeps none, so
   it is unaffected; check on the first expiry-tracking customer.
-- **Production timing.** Loopback steps took ~8 s; production adds network
+- **Production timing.** Loopback steps took up to 8.6 s; production adds network
   latency per RPC. `maxDuration = 60` gives headroom on every Vercel plan, but the
   first real apply should be watched in the function logs.
 - The live bridge (`bridge.mjs`) master collections were not changed; the folder
