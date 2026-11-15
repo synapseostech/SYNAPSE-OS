@@ -190,7 +190,7 @@ suite("the SADIO PHARMACY export folder", () => {
       adjustedVouchers: 465,
       skippedVouchers: 0,
       sales: 24_602,
-      purchases: 1_325,
+      purchases: 1_326,
       openingLines: 0,
     })
 

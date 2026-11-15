@@ -302,6 +302,89 @@ describe("normaliseTallyDocument", () => {
     assert.match(reported!.message, /10500\.00/)
   })
 
+  it("keeps the full bill of a purchase whose line states no quantity", () => {
+    const result = plan(`
+      ${balancedMasters}
+      <VOUCHER VCHTYPE="Purchase" ACTION="Create">
+        <GUID>purchase-mixed-guid</GUID>
+        <DATE>20260120</DATE>
+        <VOUCHERNUMBER>7</VOUCHERNUMBER>
+        <PARTYLEDGERNAME>Cash</PARTYLEDGERNAME>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Cash</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+          <AMOUNT>36500.00</AMOUNT>
+        </ALLLEDGERENTRIES.LIST>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Test Supplier A</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+          <AMOUNT>-36500.00</AMOUNT>
+          <INVENTORYALLOCATIONS.LIST>
+            <STOCKITEMNAME>Test Item A</STOCKITEMNAME>
+            <ACTUALQTY>100 ea</ACTUALQTY>
+            <BILLEDQTY>100 ea</BILLEDQTY>
+            <RATE>165.00/ea</RATE>
+            <AMOUNT>-16500.00</AMOUNT>
+          </INVENTORYALLOCATIONS.LIST>
+          <INVENTORYALLOCATIONS.LIST>
+            <STOCKITEMNAME>Test Item B</STOCKITEMNAME>
+            <ACTUALQTY></ACTUALQTY>
+            <BILLEDQTY></BILLEDQTY>
+            <AMOUNT>-20000.00</AMOUNT>
+          </INVENTORYALLOCATIONS.LIST>
+        </ALLLEDGERENTRIES.LIST>
+      </VOUCHER>
+    `)
+
+    assert.equal(result.purchases.length, 1)
+    const [purchase] = result.purchases
+    assert.equal(purchase.total, 36500)
+    assert.deepEqual(
+      purchase.items.map((item) => [item.stockItemName, item.quantity, item.lineTotal]),
+      [["Test Item A", 100, 16500]],
+    )
+    const reported = result.exceptions.find((entry) => entry.code === "STOCK_LINE_WITHOUT_QUANTITY")
+    assert.ok(reported)
+    assert.match(reported!.message, /Test Item B/)
+    assert.match(reported!.message, /20000\.00/)
+    assert.match(reported!.message, /purchase total/)
+  })
+
+  it("still posts a purchase whose only stock line states no quantity", () => {
+    const result = plan(`
+      ${balancedMasters}
+      <VOUCHER VCHTYPE="Purchase" ACTION="Create">
+        <GUID>purchase-quantityless-guid</GUID>
+        <DATE>20260120</DATE>
+        <VOUCHERNUMBER>8</VOUCHERNUMBER>
+        <PARTYLEDGERNAME>Cash</PARTYLEDGERNAME>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Cash</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+          <AMOUNT>10500.00</AMOUNT>
+        </ALLLEDGERENTRIES.LIST>
+        <ALLLEDGERENTRIES.LIST>
+          <LEDGERNAME>Test Supplier A</LEDGERNAME>
+          <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+          <AMOUNT>-10500.00</AMOUNT>
+          <INVENTORYALLOCATIONS.LIST>
+            <STOCKITEMNAME>Savlon 200mls</STOCKITEMNAME>
+            <ACTUALQTY></ACTUALQTY>
+            <BILLEDQTY></BILLEDQTY>
+            <AMOUNT>-10500.00</AMOUNT>
+          </INVENTORYALLOCATIONS.LIST>
+        </ALLLEDGERENTRIES.LIST>
+      </VOUCHER>
+    `)
+
+    assert.equal(result.purchases.length, 1)
+    assert.equal(result.purchases[0].total, 10500)
+    assert.deepEqual(result.purchases[0].items, [])
+    assert.ok(
+      result.exceptions.some((entry) => entry.code === "STOCK_LINE_WITHOUT_QUANTITY"),
+    )
+  })
+
   it("never plugs an unbalanced opening", () => {
     const result = plan(`
       <LEDGER NAME="Cash"><PARENT>Cash-in-hand</PARENT><OPENINGBALANCE>100.00</OPENINGBALANCE></LEDGER>

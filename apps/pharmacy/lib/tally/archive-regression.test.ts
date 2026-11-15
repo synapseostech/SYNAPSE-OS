@@ -82,7 +82,9 @@ suite("the SADIO PHARMACY archive", () => {
       adjustedVouchers: 454,
       skippedVouchers: 0,
       sales: 24_288,
-      purchases: 1_319,
+      // Purchase #122 carries only a quantity-less stock line. It posts as a
+      // purchase worth 10,500 rather than disappearing.
+      purchases: 1_320,
       openingLines: 0,
     })
     expect(plan.ordering).toBe("date-then-export-order")
@@ -104,7 +106,7 @@ suite("the SADIO PHARMACY archive", () => {
       REPLAY_INVENTORY_ON_NON_TRADE_VOUCHER: 1,
       REPLAY_MOVEMENT_WITHOUT_QUANTITY: 5,
       COST_UNKNOWN: 1,
-      PARTY_INFERRED: 1_319,
+      PARTY_INFERRED: 1_320,
       STOCK_LINE_WITHOUT_QUANTITY: 3,
     })
 
@@ -114,6 +116,18 @@ suite("the SADIO PHARMACY archive", () => {
       .reduce((sum, file) => sum + (file.inventoryLines ?? 0), 0)
     expect(movements.length + 4_529 + 5).toBe(inventoryLines)
     expect(plan.sales.length).toBe(24_288)
+
+    // The one bill whose every stock line states no quantity keeps its money:
+    // it posts as a purchase with the amount Tally put on those lines and no
+    // stock lines, rather than vanishing from the report.
+    const quantityless = plan.purchases.filter((purchase) => purchase.items.length === 0)
+    expect(quantityless).toHaveLength(1)
+    expect(quantityless[0]?.total).toBe(10_500)
+    // Every positive stock line's money reaches the report, quantity-less lines
+    // included; the old total kept only the lines that had a quantity.
+    const purchaseMoney =
+      Math.round(plan.purchases.reduce((sum, purchase) => sum + purchase.total, 0) * 100) / 100
+    expect(purchaseMoney).toBe(203_820_150.44)
   })
 
   it("imports every receipt without an expiry when the operator states the export has none", { timeout: 180_000 }, async () => {

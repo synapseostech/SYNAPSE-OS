@@ -1811,8 +1811,9 @@ export function normaliseTallyDocument(
       continue
     }
     // A stock line Tally exported without a quantity is still a line the
-    // voucher carries. It cannot become a sales or purchase line, but dropping
-    // it without a word would understate the voucher, so it is named here.
+    // voucher carries. It cannot become a stock line — the schema keeps a
+    // purchase item at a positive quantity — but its money is the bill's money,
+    // so a purchase still counts it in the total and says here that it did.
     const quantityless = amountLines.filter(
       (line) => line.quantity === undefined || !Number.isFinite(line.quantity) || line.quantity <= 0,
     )
@@ -1823,16 +1824,20 @@ export function normaliseTallyDocument(
         `Voucher "${voucherLabel(voucher)}" has ${quantityless.length} stock line${quantityless.length === 1 ? "" : "s"} worth ${money(total)} with no positive quantity (${quantityless
           .slice(0, 5)
           .map((line) => line.stockItemName)
-          .join(", ")}${quantityless.length > 5 ? ", …" : ""}). Those lines are in the ledger but not the ${
-          kind === "sales" ? "sales" : "purchases"
-        } report.`,
+          .join(", ")}${quantityless.length > 5 ? ", …" : ""}). ${
+          kind === "sales"
+            ? "A sale posts the lines it lists, so this value is not in its total."
+            : "Its value is in the purchase total, but with no quantity it adds no stock line."
+        }`,
         sourceId,
       )
     }
     const inventoryLines = amountLines.filter(
       (line) => line.quantity !== undefined && Number.isFinite(line.quantity) && line.quantity > 0,
     )
-    if (inventoryLines.length === 0) continue
+    // A supplier bill exists whether or not Tally recorded quantities for it;
+    // a till transaction does not, because a sale without items cannot post.
+    if (inventoryLines.length === 0 && kind === "sales") continue
 
     const cashLines =
       kind === "sales"
@@ -1892,9 +1897,15 @@ export function normaliseTallyDocument(
     const usable = itemLines.filter(
       (item) => item.whole && item.quantity > 0 && item.lineTotal > 0,
     )
-    if (usable.length === 0) continue
+    if (usable.length === 0 && kind === "sales") continue
 
-    const total = round2(usable.reduce((sum, item) => sum + cents(item.lineTotal), 0) / 100)
+    // A purchase total is every stock line the bill values, so a line with no
+    // quantity still reaches the purchases report. A sale total stays the lines
+    // it lists, so the receipt and the till agree.
+    const total =
+      kind === "purchase"
+        ? round2(amountLines.reduce((sum, line) => sum + cents(line.amount), 0) / 100)
+        : round2(usable.reduce((sum, item) => sum + cents(item.lineTotal), 0) / 100)
     const tax = round2(
       voucher.ledgerLines
         .filter((line) => {
