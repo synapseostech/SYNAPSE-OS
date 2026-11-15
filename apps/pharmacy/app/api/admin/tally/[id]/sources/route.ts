@@ -38,6 +38,12 @@ import {
 } from "@/lib/tally/chunks"
 import { tallyErrorResponse } from "@/lib/tally/http"
 
+// A customer-scale history is applied one stage step per request; a step of
+// 250 replayed movements takes ~8 s against a loopback database, so the
+// platform default (10-15 s on legacy Vercel functions) leaves no headroom.
+// 60 s is accepted on every Vercel plan.
+export const maxDuration = 60
+
 const db = () => supabaseAdmin as any
 const storage = () => ({ storage: db().storage }) as TallyStorageClient
 

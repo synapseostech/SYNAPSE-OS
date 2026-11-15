@@ -493,9 +493,18 @@ if (-not $From.Trim()) {
     $From = $startDate.ToString("yyyyMMdd")
 }
 
+# The first day of the company's financial year ("Financial year beginning
+# from"). Tally's default costing method, Average Cost, restarts every
+# financial year, so the portal cannot compare a closing stock value without
+# knowing where the years divide. It is recorded, never guessed: when Tally
+# does not say, the file simply omits it and the portal reports those values
+# as not comparable.
+$financialYearStart = Get-CompanyPeriod $Company "StartingFrom"
+
 Say ""
 Say "  Company : $Company"
 Say "  Period  : $From to $To"
+if ($financialYearStart) { Say ("  FY from : {0}" -f $financialYearStart.ToString("yyyy-MM-dd")) }
 Say "  Slices  : $MonthsPerFile month(s) per file"
 Say "  Folder  : $OutDir"
 Say ""
@@ -519,7 +528,7 @@ $mastersFile = Join-Path $OutDir "2-masters-$From-$To.xml"
 $masterPlan = @(
     @{ Type = "Ledger"; Methods = @("Name", "Parent", "OpeningBalance", "ClosingBalance", "BillWise", "BillAllocations", "Email", "Phone", "Mobile", "Address"); Fallback = @("Name", "Parent", "OpeningBalance", "ClosingBalance") },
     @{ Type = "Group"; Methods = @("Name", "Parent"); Fallback = @("Name", "Parent") },
-    @{ Type = "StockItem"; Methods = @("Name", "Parent", "BaseUnits", "OpeningBalance", "OpeningRate", "OpeningValue", "ClosingBalance", "ClosingValue", "BatchWise", "BatchAllocations"); Fallback = @("Name", "Parent", "BaseUnits", "OpeningBalance", "OpeningRate", "OpeningValue", "ClosingBalance", "ClosingValue") },
+    @{ Type = "StockItem"; Methods = @("Name", "Parent", "BaseUnits", "OpeningBalance", "OpeningRate", "OpeningValue", "ClosingBalance", "ClosingValue", "CostingMethod", "BatchWise", "BatchAllocations"); Fallback = @("Name", "Parent", "BaseUnits", "OpeningBalance", "OpeningRate", "OpeningValue", "ClosingBalance", "ClosingValue") },
     @{ Type = "StockGroup"; Methods = @("Name", "Parent"); Fallback = @("Name", "Parent") },
     @{ Type = "Unit"; Methods = @("Name", "Symbol"); Fallback = @("Name", "Symbol") },
     @{ Type = "Godown"; Methods = @("Name", "Parent"); Fallback = @("Name", "Parent") }
@@ -567,7 +576,9 @@ if ($masterRecords.Count -eq 0) {
     # what Tally already reported. Without it the file cannot be staged at all:
     # nothing in the folder would say which company the cut-over is for.
     $companyRecord = '<COMPANY NAME="' + (Escape-Xml $Company) + '"><COMPANYNAME>' + (Escape-Xml $Company) +
-        '</COMPANYNAME><SVFROMDATE>' + $From + '</SVFROMDATE><SVTODATE>' + $To + '</SVTODATE></COMPANY>'
+        '</COMPANYNAME><SVFROMDATE>' + $From + '</SVFROMDATE><SVTODATE>' + $To + '</SVTODATE>' +
+        $(if ($financialYearStart) { '<STARTINGFROM>' + $financialYearStart.ToString("yyyyMMdd") + '</STARTINGFROM>' } else { '' }) +
+        '</COMPANY>'
     $document = '<ENVELOPE><BODY><DATA>' + $companyRecord + $masterXml + '</DATA></BODY></ENVELOPE>'
     [System.IO.File]::WriteAllText($mastersFile, $document, (New-Object System.Text.UTF8Encoding $false))
     $mastersBytes = (Get-Item -LiteralPath $mastersFile).Length

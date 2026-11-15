@@ -31,6 +31,7 @@ import type {
   TallyInventoryLine,
   TallyLedger,
   TallyLedgerLine,
+  TallyStockItem,
   TallyVoucher,
   TallyXmlDocument,
   TallyXmlRowWarning,
@@ -162,6 +163,8 @@ export type TallyCutoverStockItem = {
   /** Exported closing figures: posted in closing mode, shown only in opening mode. */
   closingQuantity?: number
   closingValue?: number
+  /** Tally's costing method, as the master states it. Decides how closing value is compared. */
+  costingMethod?: string
   batches: TallyCutoverStockBatch[]
 }
 
@@ -289,6 +292,11 @@ export type TallyCutoverPlan = {
   conversionDate: string
   /** Replay only: the last date the replayed history covers. */
   cutoffDate?: string
+  /**
+   * First day of a financial year of the company, when the export states it.
+   * Tally's Average Cost restarts each financial year; see tally-replay.ts.
+   */
+  financialYearStart?: string
   /** Replay only: how same-day vouchers were ordered. Absent, never guessed. */
   ordering?: "date-then-export-order"
   /**
@@ -971,6 +979,28 @@ function dateThenExportOrder(
   }
 }
 
+/**
+ * Opening stock positions with a whole positive quantity and no batch expiry:
+ * the ones a replay accepting absent expiry receives without a date.
+ */
+function countOpeningWithoutExpiry(items: readonly TallyStockItem[]): number {
+  const seen = new Set<string>()
+  let count = 0
+  for (const item of items) {
+    const key = normaliseTallyKey(item.name)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    const quantity = item.openingQuantity
+    if (quantity === undefined || quantity <= 0 || !Number.isInteger(quantity)) continue
+    if (item.batches.length === 0) {
+      count += 1
+      continue
+    }
+    if (item.batches.some((batch) => !batch.expiryDate && (batch.quantity ?? 0) > 0)) count += 1
+  }
+  return count
+}
+
 export function normaliseTallyDocument(
   document: TallyXmlDocument,
   options: TallyNormaliseOptions = {},
@@ -1483,11 +1513,28 @@ export function normaliseTallyDocument(
     }
   }
 
-  if (batchExpiry === "not-supplied" && missingExpiry.receipts > 0) {
+  // Opening stock is held in the masters, not the vouchers. Under the same
+  // accepted absence it is replayed the same way, so it is counted into the
+  // same disclosure here, before the per-item findings can fill the list.
+  const openingWithoutExpiry =
+    mode === "replay" && batchExpiry === "not-supplied"
+      ? countOpeningWithoutExpiry(document.stockItems)
+      : 0
+  if (batchExpiry === "not-supplied" && (missingExpiry.receipts > 0 || openingWithoutExpiry > 0)) {
     const itemCount = missingExpiry.items.size
+    const receipts =
+      missingExpiry.receipts > 0
+        ? `${missingExpiry.receipts.toLocaleString("en-GB")} stock receipt${missingExpiry.receipts === 1 ? "" : "s"} across ${itemCount.toLocaleString("en-GB")} product${itemCount === 1 ? "" : "s"}`
+        : ""
+    const openings =
+      openingWithoutExpiry > 0
+        ? `${openingWithoutExpiry.toLocaleString("en-GB")} opening stock position${openingWithoutExpiry === 1 ? "" : "s"}`
+        : ""
+    const subject = [receipts, openings].filter(Boolean).join(" and ")
+    const plural = missingExpiry.receipts + openingWithoutExpiry !== 1
     addException(
       "REPLAY_BATCH_EXPIRY_NOT_SUPPLIED",
-      `${missingExpiry.receipts.toLocaleString("en-GB")} stock receipt${missingExpiry.receipts === 1 ? "" : "s"} across ${itemCount.toLocaleString("en-GB")} product${itemCount === 1 ? "" : "s"} state no batch expiry date. This import was prepared accepting that: each receipt keeps the batch name Tally states and is stored with no expiry, so imported stock cannot be expiry-tracked, allocated by expiry or recalled by batch expiry. Stock received after the cut-over is unaffected. No date was invented to fill the field.`,
+      `${subject} state${plural ? "" : "s"} no batch expiry date. This import was prepared accepting that: each keeps the batch name Tally states and is stored with no expiry, so imported stock cannot be expiry-tracked, allocated by expiry or recalled by batch expiry. Stock received after the cut-over is unaffected. No date was invented to fill the field.`,
       undefined,
       "warning",
     )
@@ -1656,12 +1703,15 @@ export function normaliseTallyDocument(
     const rate =
       (mode === "closing" ? undefined : item.openingRate) ??
       (quantity && quantity !== 0 && value !== undefined ? round2(value / quantity) : undefined)
+    // A replay prepared accepting that Tally holds no expiry replays opening
+    // stock without one, exactly as it does the receipts that follow; the
+    // batch keeps Tally's name and the database records the absence.
+    const acceptNoExpiry = mode === "replay" && batchExpiry === "not-supplied"
     let batches: TallyCutoverStockBatch[] = item.batches.map((batch) => {
       const expiryDate = batch.expiryDate
       const batchQuantity = batch.quantity
       const receivable =
-        Boolean(expiryDate) &&
-        Boolean(expiryDate && expiryDate >= expiryFloor) &&
+        (expiryDate ? expiryDate >= expiryFloor : acceptNoExpiry) &&
         batchQuantity !== undefined &&
         batchQuantity > 0 &&
         Number.isInteger(batchQuantity)
@@ -1691,11 +1741,23 @@ export function normaliseTallyDocument(
       batches = []
     }
 
+    // An item kept without batches in Tally opens as one unnamed batch, which
+    // Apply names deterministically, so the replay starts where Tally did.
+    if (
+      acceptNoExpiry &&
+      batches.length === 0 &&
+      quantity !== undefined &&
+      quantity > 0 &&
+      Number.isInteger(quantity)
+    ) {
+      batches = [{ quantity, receivable: true }]
+    }
+
     if (quantity !== undefined && quantity > 0) {
       const period = mode === "closing" ? "closing" : "opening"
       const hasExpiry = batches.some((batch) => batch.expiryDate)
       const expired = batches.filter((batch) => batch.expiryDate && batch.expiryDate < expiryFloor)
-      if (!hasExpiry) {
+      if (!hasExpiry && !acceptNoExpiry) {
         addException(
           "OPENING_STOCK_WITHOUT_EXPIRY",
           `Stock item "${item.name}" has ${period} quantity ${quantity} but no batch expiry. Its value stays in the ledger; no stock batch is created.`,
@@ -1750,6 +1812,7 @@ export function normaliseTallyDocument(
       value: value === undefined ? undefined : round2(value),
       closingQuantity: item.closingQuantity,
       closingValue: closingValue === undefined ? undefined : round2(closingValue),
+      ...(item.costingMethod ? { costingMethod: trimText(item.costingMethod, 40) } : {}),
       batches,
     })
   }
@@ -1960,6 +2023,7 @@ export function normaliseTallyDocument(
     companyKey,
     currency,
     conversionDate,
+    ...(document.financialYearStart ? { financialYearStart: document.financialYearStart } : {}),
     ...(mode === "replay"
       ? {
           cutoffDate,

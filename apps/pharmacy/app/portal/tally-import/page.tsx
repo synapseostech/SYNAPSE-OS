@@ -25,6 +25,7 @@ import { diagnosticFrom, reportTallyFailure } from "@/lib/tally/diagnostics"
 import type { TallyEditionDisclosure, TallyEditionProblem } from "@/lib/tally/editions"
 import { REPLAY_REASON_MAX, REPLAY_REASON_MIN } from "@/lib/tally/replay-gate"
 import { TALLY_SOURCE_LIMIT } from "@/lib/tally/storage"
+import { holdIdleLogout } from "@/hooks/use-idle-logout"
 import { cutoverBlockReason, track } from "@/lib/telemetry/events"
 
 export const dynamic = "force-dynamic"
@@ -1101,6 +1102,8 @@ body: JSON.stringify({
     if (!sessionId) return
     setBusy("applying")
     setReconcile(null)
+    // The operator is waiting on this, not idle; see holdIdleLogout.
+    const releaseIdleHold = holdIdleLogout()
 
     let guard = 0
     let previous = ""
@@ -1171,6 +1174,7 @@ body: JSON.stringify({
         description: "The connection dropped mid-apply. Reload the session to see where it stopped.",
       })
     } finally {
+      releaseIdleHold()
       setBusy("idle")
     }
   }

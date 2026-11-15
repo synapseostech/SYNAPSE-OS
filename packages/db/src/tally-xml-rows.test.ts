@@ -98,6 +98,40 @@ describe("parseTallyXmlRows", () => {
     assert.deepEqual(document.warnings, [])
   })
 
+  it("reads what Tally's closing valuation depends on: costing method and financial-year start", () => {
+    const document = parseTallyXmlRows(
+      tallyExport(`
+        <COMPANY NAME="Test Pharmacy"><COMPANYNAME>Test Pharmacy</COMPANYNAME>
+          <SVFROMDATE>20251001</SVFROMDATE><SVTODATE>20261031</SVTODATE><STARTINGFROM>20250701</STARTINGFROM>
+        </COMPANY>
+        <STOCKITEM NAME="Test Item A"><COSTINGMETHOD>Avg. Cost</COSTINGMETHOD></STOCKITEM>
+        <STOCKITEM NAME="Test Item B"></STOCKITEM>
+      `),
+    )
+    assert.equal(document.financialYearStart, "2025-07-01")
+    assert.equal(document.stockItems[0]?.costingMethod, "Avg. Cost")
+    assert.equal(document.stockItems[1]?.costingMethod, undefined)
+  })
+
+  it("reads a master's opening batch quantity from OPENINGBALANCE, as Tally writes it", () => {
+    const document = parseTallyXmlRows(
+      tallyExport(`
+        <STOCKITEM NAME="Test Item A">
+          <OPENINGBALANCE>12 Strip</OPENINGBALANCE>
+          <BATCHALLOCATIONS.LIST>
+            <GODOWNNAME>Main Location</GODOWNNAME>
+            <BATCHNAME>Primary Batch</BATCHNAME>
+            <OPENINGBALANCE>12 Strip</OPENINGBALANCE>
+            <OPENINGVALUE>-1200.00</OPENINGVALUE>
+          </BATCHALLOCATIONS.LIST>
+        </STOCKITEM>
+      `),
+    )
+    assert.equal(document.stockItems[0]?.openingQuantity, 12)
+    assert.equal(document.stockItems[0]?.batches[0]?.batchName, "Primary Batch")
+    assert.equal(document.stockItems[0]?.batches[0]?.quantity, 12)
+  })
+
   it("leaves the period empty when the packaged file states no dates", () => {
     const document = parseTallyXmlRows(
       `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA><COMPANY NAME="Test Pharmacy"><COMPANYNAME>Test Pharmacy</COMPANYNAME></COMPANY><TALLYMESSAGE><LEDGER NAME="Cash"/></TALLYMESSAGE></DATA></BODY></ENVELOPE>`,

@@ -80,6 +80,13 @@ export type TallyReplayReconciliationRow = {
   difference: number | null
   status: "match" | "difference" | "not-available"
   tolerance: number
+  /**
+   * How `actual` was valued, for a value row. `batch` is the replay's own batch
+   * values; `average-cost` and `zero` follow the item's Tally costing method.
+   */
+  basis?: TallyCostingBasis
+  /** Why a row reads as it does, when the figures alone do not say. */
+  note?: string
   /** The event a finding proved the divergence at, when one did. */
   firstDivergence?: { date: string; sourceId: string; movementId?: string }
   sourceIds: string[]
@@ -603,6 +610,153 @@ export function simulateReplay(
   }
 }
 
+/**
+ * How a closing value is compared with Tally's, decided by the item's costing
+ * method. Methods the replay does not model keep the replay's batch values, so
+ * a real difference stays visible instead of being explained away.
+ */
+export type TallyCostingBasis = "batch" | "average-cost" | "zero"
+
+export function costingBasis(method: string | undefined): TallyCostingBasis {
+  if (!method) return "batch"
+  const normalised = method.toLowerCase().replace(/[.\s]+/g, " ").trim()
+  if (normalised === "avg cost" || normalised === "average cost") return "average-cost"
+  if (normalised === "at zero cost" || normalised === "zero cost") return "zero"
+  return "batch"
+}
+
+export type TallyAverageCostPosition = {
+  quantity: number
+  /** Null when the closing value cannot be derived; `reason` says why. */
+  value: number | null
+  rate: number | null
+  /** First day of the financial year the average was taken over. */
+  periodStart?: string
+  reason?: string
+}
+
+function round5(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100_000) / 100_000
+}
+
+/** The latest date on or before `date` that falls on the financial year's start day. */
+export function financialYearStartFor(yearStart: string, date: string): string {
+  const monthDay = yearStart.slice(5)
+  const sameYear = `${date.slice(0, 4)}-${monthDay}`
+  return sameYear <= date ? sameYear : `${String(Number(date.slice(0, 4)) - 1).padStart(4, "0")}-${monthDay}`
+}
+
+/**
+ * Closing stock as Tally's Average Cost method values it.
+ *
+ * Tally takes an annual weighted average: the year's opening value plus every
+ * inward value, over the year's opening quantity plus every inward quantity.
+ * Sales leave the rate alone; a purchase return takes its quantity and value
+ * back out of the inward side. At each financial year boundary the year opens
+ * at the closing quantity times the closing rate. The rate is rounded to five
+ * decimals before it is applied, as Tally's own worked example shows.
+ *
+ * Inward means opening stock, purchases and stock-journal receipts. Sales
+ * returns and physical counts change the quantity, not the rate.
+ *
+ * Without the financial year's start the boundary cannot be placed, and no
+ * value is offered: a guessed year would make a match look like proof.
+ */
+export function averageCostPositions(plan: TallyCutoverPlan): Map<string, TallyAverageCostPosition> {
+  type Running = { quantity: number; inwardQuantity: number; inwardValue: number; periodStart?: string }
+  const running = new Map<string, Running>()
+  const yearStart = plan.financialYearStart
+  const end = plan.cutoffDate || plan.conversionDate
+
+  const rateOf = (entry: Running): number | null =>
+    entry.inwardQuantity > 0 ? round5(entry.inwardValue / entry.inwardQuantity) : null
+
+  const enterYear = (entry: Running, date: string) => {
+    if (!yearStart) return
+    const period = financialYearStartFor(yearStart, date)
+    if (entry.periodStart === period) return
+    if (entry.periodStart !== undefined) {
+      const rate = rateOf(entry)
+      entry.inwardQuantity = entry.quantity
+      entry.inwardValue = rate === null ? 0 : round2(entry.quantity * rate)
+    }
+    entry.periodStart = period
+  }
+
+  for (const event of buildReplayEvents(plan)) {
+    for (const movement of event.movements) {
+      const entry =
+        running.get(movement.stockItemName) ??
+        (running.set(movement.stockItemName, { quantity: 0, inwardQuantity: 0, inwardValue: 0 }),
+        running.get(movement.stockItemName)!)
+      enterYear(entry, movement.date)
+      const quantity = movement.quantityDelta
+      switch (movement.movementKind) {
+        case "opening":
+        case "purchase_in":
+        case "stock_journal_in":
+          entry.quantity += quantity
+          entry.inwardQuantity += quantity
+          entry.inwardValue = round2(entry.inwardValue + Math.abs(movement.amount))
+          break
+        case "return_out":
+          entry.quantity -= Math.abs(quantity)
+          entry.inwardQuantity -= Math.abs(quantity)
+          entry.inwardValue = round2(entry.inwardValue - Math.abs(movement.amount))
+          break
+        case "physical_adjust":
+          entry.quantity = quantity
+          break
+        default:
+          entry.quantity += quantity
+      }
+    }
+  }
+
+  const positions = new Map<string, TallyAverageCostPosition>()
+  for (const item of plan.stockItems) {
+    if (!running.has(item.sourceName)) {
+      running.set(item.sourceName, { quantity: 0, inwardQuantity: 0, inwardValue: 0 })
+    }
+  }
+  for (const [name, entry] of running) {
+    const quantity = round2(entry.quantity)
+    if (!yearStart) {
+      positions.set(name, {
+        quantity,
+        value: null,
+        rate: null,
+        reason:
+          "Tally values this item at Average Cost, which restarts every financial year. The export does not state when the financial year begins, so the closing value cannot be compared. Re-export with the current export script, which records it.",
+      })
+      continue
+    }
+    enterYear(entry, end)
+    const rate = rateOf(entry)
+    if (rate === null) {
+      positions.set(name, {
+        quantity,
+        value: quantity === 0 ? 0 : null,
+        rate: null,
+        periodStart: entry.periodStart,
+        ...(quantity === 0
+          ? {}
+          : {
+              reason: `Nothing was received for this item in the financial year from ${entry.periodStart}, so there is no inward average to value the ${quantity} on hand at.`,
+            }),
+      })
+      continue
+    }
+    positions.set(name, {
+      quantity,
+      value: round2(quantity * rate),
+      rate,
+      periodStart: entry.periodStart,
+    })
+  }
+  return positions
+}
+
 function stockRow(
   key: string,
   expected: number | null | undefined,
@@ -656,6 +810,11 @@ export function reconcileReplay(
 
   const simulatedItems = new Map(state.items.map((item) => [item.stockItemName, item]))
   const seenItems = new Set<string>()
+  // Each item's closing value on the basis its row compared, so the stock total
+  // is measured the same way. Null: the value could not be derived.
+  const actualValueByItem = new Map<string, number | null>()
+  let averageCostCache: Map<string, TallyAverageCostPosition> | undefined
+  const averageCost = () => (averageCostCache ??= averageCostPositions(plan))
 
   for (const item of plan.stockItems) {
     seenItems.add(item.sourceName)
@@ -685,9 +844,46 @@ export function reconcileReplay(
         : {}),
     })
     if (item.closingValue !== undefined) {
-      rows.push(
-        stockRow(`${item.sourceName} (value)`, item.closingValue, actual?.value, 0.01, "cents", sourceIds),
-      )
+      const basis = costingBasis(item.costingMethod)
+      const valueKey = `${item.sourceName} (value)`
+      if (basis === "batch") {
+        rows.push({
+          ...stockRow(valueKey, item.closingValue, actual?.value, 0.01, "cents", sourceIds),
+          basis,
+        })
+        actualValueByItem.set(item.sourceName, actual?.value ?? 0)
+      } else if (basis === "zero") {
+        rows.push({
+          ...stockRow(valueKey, item.closingValue, 0, 0.01, "cents", sourceIds),
+          basis,
+          note: "Tally values this item At Zero Cost.",
+        })
+        actualValueByItem.set(item.sourceName, 0)
+      } else {
+        const position = averageCost().get(item.sourceName)
+        if (!position || position.value === null) {
+          rows.push({
+            scope: "stock_item",
+            key: valueKey,
+            expected: round2(item.closingValue),
+            actual: null,
+            difference: null,
+            status: "not-available",
+            tolerance: 0.01,
+            sourceIds,
+            basis,
+            note: position?.reason ?? "The Average Cost position could not be derived.",
+          })
+          actualValueByItem.set(item.sourceName, null)
+        } else {
+          rows.push({
+            ...stockRow(valueKey, item.closingValue, position.value, 0.01, "cents", sourceIds),
+            basis,
+            note: `Valued as Tally's Average Cost: inward value over inward quantity for the financial year from ${position.periodStart}, ${position.rate} a unit.`,
+          })
+          actualValueByItem.set(item.sourceName, position.value)
+        }
+      }
     }
   }
 
@@ -706,23 +902,52 @@ export function reconcileReplay(
     })
   }
 
-  const actualStockValue = round2(state.items.reduce((total, item) => total + item.value, 0))
-  rows.push({
-    scope: "stock_total",
-    key: "stock value",
-    expected: plan.stock.closingValue,
-    actual: actualStockValue,
-    difference:
-      plan.stock.closingValue === null ? null : round2(actualStockValue - plan.stock.closingValue),
-    status:
-      plan.stock.closingValue === null
-        ? "not-available"
-        : Math.abs(actualStockValue - plan.stock.closingValue) <= 0.01
-          ? "match"
-          : "difference",
-    tolerance: 0.01,
-    sourceIds: [],
-  })
+  let underivable = 0
+  let summed = 0
+  for (const item of state.items) {
+    if (!actualValueByItem.has(item.stockItemName)) {
+      summed += item.value
+      continue
+    }
+    const value = actualValueByItem.get(item.stockItemName)
+    if (value === null || value === undefined) underivable += 1
+    else summed += value
+  }
+  for (const [name, value] of actualValueByItem) {
+    // An Average Cost item that never moved still carries a closing value.
+    if (!simulatedItems.has(name) && value !== null) summed += value
+  }
+  const actualStockValue = round2(summed)
+  if (underivable > 0) {
+    rows.push({
+      scope: "stock_total",
+      key: "stock value",
+      expected: plan.stock.closingValue,
+      actual: null,
+      difference: null,
+      status: "not-available",
+      tolerance: 0.01,
+      sourceIds: [],
+      note: `${underivable} item${underivable === 1 ? "" : "s"} could not be valued the way Tally values ${underivable === 1 ? "it" : "them"}, so the stock total cannot be compared.`,
+    })
+  } else {
+    rows.push({
+      scope: "stock_total",
+      key: "stock value",
+      expected: plan.stock.closingValue,
+      actual: actualStockValue,
+      difference:
+        plan.stock.closingValue === null ? null : round2(actualStockValue - plan.stock.closingValue),
+      status:
+        plan.stock.closingValue === null
+          ? "not-available"
+          : Math.abs(actualStockValue - plan.stock.closingValue) <= 0.01
+            ? "match"
+            : "difference",
+      tolerance: 0.01,
+      sourceIds: [],
+    })
+  }
 
   const seenAccounts = new Set<string>()
   for (const account of plan.accounts) {
