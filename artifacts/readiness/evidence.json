@@ -1,11 +1,11 @@
 {
-  "timestamp": "2026-11-09T16:59:27.503Z",
+  "timestamp": "2026-11-16T03:31:33.283Z",
   "git": {
-    "branch": "feat/sadio-tally-migration",
-    "head": "dc8e2c9a6fc37c42d12a406f9ab9ea561af6a349"
+    "branch": "claude/tally-import-history",
+    "head": "c2e73582b82d688abc8576bda6599166c981d0d7"
   },
   "migrationCount": {
-    "count": 217,
+    "count": 218,
     "exitCode": 0
   },
   "suites": {
@@ -19,7 +19,7 @@
       "tests": 41,
       "pass": 41,
       "fail": 0,
-      "banner": "SECURITY GATES PASS cutoff=20261003160000 migrations=30 failures=0",
+      "banner": "SECURITY GATES PASS cutoff=20261003160000 migrations=31 failures=0",
       "exitCode": 0
     },
     "hardening": {
@@ -50,7 +50,7 @@
     }
   },
   "dbAcl": {
-    "definerFunctions": 97,
+    "definerFunctions": 101,
     "publicGrants": 0,
     "possibleImplicitPublic": 28,
     "liveCheck": "SKIPPED_NO_DATABASE_ACL_URL",
@@ -63,12 +63,7 @@
     "exitCode": 0
   },
   "disposableDb": {
-    "result": "pass",
-    "suite": "tally 13/13, refund 20/20, portal journey 14/14",
-    "engine": "PostgreSQL 15.19 (native)",
-    "target": "127.0.0.1:55322 project synapse-pharm-harness-636830; portal 127.0.0.1:3002 project synapse-pharm-portal-518014",
-    "migrations": 48,
-    "tests": 47,
-    "fail": 0
+    "result": "not_provided",
+    "note": "set SYNAPSE_DISPOSABLE_RESULT to a JSON object documenting a disposable-DB run"
   }
 }

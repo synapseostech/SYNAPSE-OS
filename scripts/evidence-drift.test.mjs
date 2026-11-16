@@ -32,7 +32,7 @@ const migrationFiles = readdirSync(join(root, "supabase", "migrations"))
   .sort().length
 
 const EXPECTED = {
-  gitHead: "dc8e2c9a6fc37c42d12a406f9ab9ea561af6a349",
+  gitHead: "c2e73582b82d688abc8576bda6599166c981d0d7",
   migrationCount: migrationFiles,
   rlsTests: 21,
   hardeningTests: 74,

@@ -198,25 +198,25 @@ This section records what happened after §10 was written, because §5, §6, B4,
 
 <!-- evidence:begin -->
 source: artifacts/readiness/evidence.json
-timestamp: 2026-11-09T16:59:27.503Z
-git.branch: feat/sadio-tally-migration
-git.head: dc8e2c9a6fc37c42d12a406f9ab9ea561af6a349
-migrationCount: 217
+timestamp: 2026-11-16T03:31:33.283Z
+git.branch: claude/tally-import-history
+git.head: c2e73582b82d688abc8576bda6599166c981d0d7
+migrationCount: 218
 suites.rls-tenant-isolation.tests: 21
-suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=30 failures=0
+suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=31 failures=0
 suites.security-gates.exitCode: 0
 suites.hardening.tests: 74
 suites.tenancy.tests: 59
 suites.workflow-safety.tests: 89
 suites.rls-matrix.tests: 10
-dbAcl.definerFunctions: 97
+dbAcl.definerFunctions: 101
 dbAcl.publicGrants: 0
 dbAcl.possibleImplicitPublic: 28
 dbAcl.liveCheck: SKIPPED_NO_DATABASE_ACL_URL
 routeIntegrity.pages: 289
 routeIntegrity.navLinks: 73
 routeIntegrity.roadmap: 77
-disposableDb.result: pass
+disposableDb.result: not_provided
 <!-- evidence:end -->
 
 `npm run verify:web` completed with a fresh `BUILD_ID` (see §6). Nothing was committed, pushed, merged, deployed, or applied to any deployed database, and no production connection was attempted.
