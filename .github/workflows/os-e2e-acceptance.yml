@@ -21,7 +21,9 @@ permissions:
 
 jobs:
   hospital-acceptance:
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as ci.yml's verify job: Playwright 1.55
+    # cannot install Chromium on ubuntu-latest (26.04).
+    runs-on: ubuntu-24.04
     environment: production-acceptance
     steps:
       - uses: actions/checkout@v4
