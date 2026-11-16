@@ -514,14 +514,18 @@ export function manifestProblems(manifest: TallyMigrationManifest): TallyManifes
 /**
  * What a set of staged files can be imported as, without asking the operator.
  *
- * A file that carries vouchers has history to post, so it is read as opening
- * balances and history. Masters alone carry only the balances the export closes
- * on, which is exactly the closing mode. Replay is never inferred: it rebuilds
- * stock movement by movement and gates on a reconciliation, so it stays a
- * decision the operator makes explicitly.
+ * A file that carries vouchers has history to post. Where the deployment has
+ * the replay switched on, that history is replayed movement by movement, so
+ * the pharmacy opens in Synapse with Tally's stock, batches and per-item
+ * movement history rather than only its ledger. The replay still gates on the
+ * operator: Apply stays closed until they confirm the sequence and answer every
+ * difference from Tally's closing position. Without the switch, vouchers are
+ * read as opening balances and history, as before. Masters alone carry only
+ * the balances the export closes on, which is exactly the closing mode.
  */
-export function tallyModeFor(hasVouchers: boolean): TallyImportMode {
-  return hasVouchers ? "opening" : "closing"
+export function tallyModeFor(hasVouchers: boolean, replayEnabled = false): TallyImportMode {
+  if (!hasVouchers) return "closing"
+  return replayEnabled ? "replay" : "opening"
 }
 
 /**

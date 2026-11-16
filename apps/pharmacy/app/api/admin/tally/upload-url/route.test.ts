@@ -162,6 +162,28 @@ describe("POST /api/admin/tally/upload-url", () => {
     expect(m.db.operations.some((operation) => operation.action === "insert")).toBe(false)
   })
 
+  it("lets a new import start once the session holding the lock was rolled back", async () => {
+    const base = sessions()
+    setup((operation) => {
+      if (operation.table === "pharmacy_tally_cutover_locks") {
+        return { data: { session_id: "rolled-back-session" }, error: null }
+      }
+      if (
+        operation.action === "select" &&
+        operation.table === "pharmacy_import_sessions" &&
+        filtersOf(operation).id === "rolled-back-session"
+      ) {
+        return { data: { reversed_at: "2026-11-15T10:00:00.000Z" }, error: null }
+      }
+      return base(operation)
+    })
+
+    const res = await post({ fileName: "tally.xml" })
+
+    expect(res.status).toBe(200)
+    expect((await res.json()).sessionId).toBe("session-1")
+  })
+
   it("creates a pending session and returns a signed upload target", async () => {
     setup(sessions())
 

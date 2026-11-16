@@ -48,6 +48,9 @@ export const FAKE_TALLY_MODES = [
 /** Which synthetic document a request asked for. */
 export function reportForRequest(body) {
   if (body.includes("<ID>List of Companies</ID>")) return "companies"
+  // The export script asks for one company date at a time (books beginning,
+  // financial year start); the company records in the masters answer it.
+  if (body.includes("<ID>Synapse Company Period</ID>")) return "masters:COMPANY"
   const collection = /<ID>Synapse\s+([A-Za-z]+)<\/ID>/.exec(body)?.[1]
   if (collection) return `masters:${collection}`
   if (body.includes("<ID>Voucher Register</ID>")) return "daybook"

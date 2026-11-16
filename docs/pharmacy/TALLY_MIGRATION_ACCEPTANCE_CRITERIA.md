@@ -154,6 +154,12 @@ per-item quantity exactly, per-item value and every ledger balance within
 carry is `not-available`, never a pass. Any real difference blocks completion
 and names the earliest divergent date and source voucher.
 
+Closing **value** is compared the way Tally values the item: Average Cost (Tally's
+default) per financial year, At Zero Cost at zero, any other method on the
+replay's batch values. An Average Cost value is `not-available` — not a pass —
+when the export does not state the financial-year start. See
+[TALLY_REPLAY_HARDENING_2026-11-15.md](./TALLY_REPLAY_HARDENING_2026-11-15.md).
+
 Evidence: `packages/db/src/tally-replay.ts` reconciliation rows; the
 `replay-closing` stage refuses `TALLY_REPLAY_CLOSING_MISMATCH`; the synthetic
 full-history fixture exercises the path. **Not yet proven on a customer

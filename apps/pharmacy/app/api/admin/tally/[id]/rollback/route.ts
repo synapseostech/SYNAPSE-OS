@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin, tallyHasCapability } from "@/lib/tally/auth"
-import { reverseTallyJournals } from "@/lib/tally/apply"
+import { reverseTallyJournals, tallyOpeningVoucher } from "@/lib/tally/apply"
 import { loadStagePlan } from "@/lib/tally/plan"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { logTallyEvent, logTallyFailure } from "@/lib/tally/http"
+import type { TallyCutoverVoucher } from "@synapse/db/tally-normalise"
 import type { TallyApplyDb, TallyPlanSummary } from "@/lib/tally/types"
 import type { TallyStorageClient } from "@/lib/tally/storage"
 import { reverseTallyReplaySession } from "@synapse/db/tally-replay-rpc"
@@ -103,18 +104,24 @@ export async function POST(
   }
 
   let posted = 0
+  let notPosted = 0
   const failures: Array<{ sourceId: string; code: string; message: string }> = []
+  const reverse = async (vouchers: TallyCutoverVoucher[]) => {
+    const result = await reverseTallyJournals(applyDb(), { tenantId, actorId, sessionId: id, vouchers })
+    posted += result.posted
+    notPosted += result.notPosted
+    failures.push(...result.failures)
+  }
   try {
     for (let index = 0; index < summary.chunkCount; index += 1) {
       const loaded = await loadStagePlan(storage(), tenantId, id, "journals", index)
-      const result = await reverseTallyJournals(applyDb(), {
-        tenantId,
-        actorId,
-        vouchers: loaded.chunk?.vouchers ?? [],
-      })
-      posted += result.posted
-      failures.push(...result.failures)
+      await reverse(loaded.chunk?.vouchers ?? [])
     }
+    // The opening position is a journal of its own, posted by the opening
+    // stage rather than a voucher chunk. A continuation never posted one, and
+    // the reversal skips a journal that is not in the ledger.
+    const opening = await loadStagePlan(storage(), tenantId, id, "opening-journal", 0)
+    if (opening.plan.opening?.lines?.length) await reverse([tallyOpeningVoucher(opening.plan)])
   } catch (error) {
     logTallyFailure("tally.rollback.failed", { sessionId: id, tenantId }, error)
     return NextResponse.json(
@@ -168,7 +175,7 @@ export async function POST(
     action: "IMPORT_TALLY_ROLLBACK",
     entity: "IMPORT_SESSION",
     entity_id: id,
-    details: `Tally cut-over rolled back: ${stock.data?.movementsReversed ?? 0} stock movements reversed, ${posted} reversing journals posted; company "${stock.data?.companyKey ?? summary.companyKey}", closed through ${stock.data?.throughDate ?? "not stated"}, session ${id}`,
+    details: `Tally cut-over rolled back: ${stock.data?.movementsReversed ?? 0} stock movements reversed, ${posted} reversing journals posted, ${notPosted} planned journals not in the ledger; company "${stock.data?.companyKey ?? summary.companyKey}", closed through ${stock.data?.throughDate ?? "not stated"}, session ${id}`,
   })
 
   if (auditError) {
@@ -188,5 +195,6 @@ export async function POST(
     reversedAt,
     stock: stock.data,
     journalsReversed: posted,
+    journalsNotPosted: notPosted,
   })
 }

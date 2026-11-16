@@ -372,6 +372,9 @@ export function consolidateTallyParts(
       ? { currency: parts.find((part) => part.currency)?.currency }
       : {}),
     financialPeriod: { from: input.period.from, to: input.period.to },
+    ...(parts.find((part) => part.financialYearStart)?.financialYearStart
+      ? { financialYearStart: parts.find((part) => part.financialYearStart)?.financialYearStart }
+      : {}),
     groups: groups.records,
     ledgers: ledgers.records,
     stockGroups: stockGroups.records,

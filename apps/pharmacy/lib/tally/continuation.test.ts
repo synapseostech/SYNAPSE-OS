@@ -24,6 +24,7 @@ type CheckpointRow = {
   company_key: string
   session_id: string
   through_date: string
+  reversed_at: string | null
 }
 
 function checkpoint(overrides: Partial<CheckpointRow> = {}): CheckpointRow {
@@ -33,6 +34,7 @@ function checkpoint(overrides: Partial<CheckpointRow> = {}): CheckpointRow {
     company_key: "company-guid",
     session_id: "session-1",
     through_date: "2026-03-31",
+    reversed_at: null,
     ...overrides,
   }
 }
@@ -95,6 +97,16 @@ describe("evaluateContinuation", () => {
   it("refuses a session that never closed against a checkpoint", async () => {
     const result = await evaluateContinuation(
       input({ client: checkpointClient([checkpoint({ session_id: "another-session" })]) }),
+    )
+    expect(result).toMatchObject({
+      kind: "invalid",
+      code: "TALLY_CONTINUATION_NO_CHECKPOINT",
+    })
+  })
+
+  it("will not continue from a checkpoint whose import was rolled back", async () => {
+    const result = await evaluateContinuation(
+      input({ client: checkpointClient([checkpoint({ reversed_at: "2026-11-15T10:00:00.000Z" })]) }),
     )
     expect(result).toMatchObject({
       kind: "invalid",

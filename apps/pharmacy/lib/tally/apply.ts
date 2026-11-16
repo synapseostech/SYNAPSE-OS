@@ -378,6 +378,12 @@ async function postJournal(
     accounts: Map<string, string>
     stage: TallyApplyStage
     progress: Progress
+    /**
+     * The import posting this journal. Set by the import stages so that, when
+     * the key already holds an entry a rollback reversed, the journal is
+     * posted again under this session's own key instead of being reused.
+     */
+    sessionId?: string
   },
 ): Promise<boolean> {
   const lines = input.lines
@@ -415,7 +421,7 @@ async function postJournal(
     return false
   }
 
-  const { error } = await db.rpc("post_pharmacy_accounting_journal", {
+  const { data, error } = await db.rpc("post_pharmacy_accounting_journal", {
     p_tenant_id: input.tenantId,
     p_source_type: input.sourceType,
     p_source_id: input.sourceId,
@@ -430,7 +436,63 @@ async function postJournal(
     input.progress.fail(input.stage, input.sourceId, parsed.code, parsed.humanMessage)
     return false
   }
+
+  // The RPC answers an existing key with that entry and writes nothing. That is
+  // the retry this importer relies on — unless a rollback has since reversed
+  // the entry. Counting it as posted then would leave the reversal standing
+  // and the period at zero, so the journal goes in again under a key that
+  // belongs to this import. A retry of this import finds that key in turn.
+  if (input.sessionId && (data as { replayed?: unknown } | null)?.replayed === true) {
+    const reversed = await journalReversed(db, input.tenantId, input.sourceType, input.sourceId)
+    if (reversed === null) {
+      input.progress.fail(
+        input.stage,
+        input.sourceId,
+        "JOURNAL_STATE_UNREADABLE",
+        "The journal already exists and whether a rollback reversed it could not be read, so it was not posted again.",
+      )
+      return false
+    }
+    if (reversed) {
+      return postJournal(db, {
+        ...input,
+        sourceId: tallySessionSourceId(input.sourceId, input.sessionId),
+        sessionId: undefined,
+      })
+    }
+  }
   return true
+}
+
+/** What a rollback posts against each imported journal. */
+const REVERSAL_SOURCE_TYPE = "tally_replay_reversal"
+
+/**
+ * The key an import posts under when the voucher's own key holds an entry a
+ * rollback reversed. It names the session, so a third import after a second
+ * rollback gets a key of its own too.
+ */
+export function tallySessionSourceId(sourceId: string, sessionId: string): string {
+  return `${sourceId}@${sessionId}`
+}
+
+/** Whether a reversing entry exists for this journal; null when it cannot be read. */
+async function journalReversed(
+  db: TallyApplyDb,
+  tenantId: string,
+  sourceType: string,
+  sourceId: string,
+): Promise<boolean | null> {
+  const { data, error } = await db
+    .from("pharmacy_accounting_journal_entries")
+    .select("id")
+    .eq("tenant_id", tenantId)
+    .eq("source_type", REVERSAL_SOURCE_TYPE)
+    .eq("source_id", `${sourceType}:${sourceId}`)
+    .limit(1)
+    .maybeSingle()
+  if (error) return null
+  return Boolean(data)
 }
 
 async function stageAccounts(
@@ -508,6 +570,69 @@ async function stageParties(
   }
 }
 
+/**
+ * A product's selling price and cost from what Tally holds.
+ *
+ * Cost is the latest purchase rate or Standard Cost, else the opening rate.
+ * Selling price is the Standard Selling Price or the latest sale rate. With no
+ * selling price at all the product sells at cost: the till accepts a zero
+ * price, so 0 would let stock go out free. The plan's PRICE_FROM_COST warning
+ * names how many products were priced this way so they can be set by hand.
+ */
+export function productPrices(item: TallyCutoverPlan["stockItems"][number]): {
+  price: number
+  cost: number
+  priceFromCost: boolean
+} {
+  const openingCost = item.rate ?? (item.value !== undefined && item.quantity ? item.value / item.quantity : 0)
+  const cost = money(item.purchaseCost?.amount ?? openingCost)
+  const selling = item.sellingPrice?.amount
+  return selling !== undefined && selling > 0
+    ? { price: money(selling), cost, priceFromCost: false }
+    : { price: cost, cost, priceFromCost: true }
+}
+
+/**
+ * Fills prices on a product that already exists, only where they are still the
+ * import's placeholder: an empty price, or a price that is a copy of cost (what
+ * earlier imports wrote). A price set by hand in the portal is never replaced.
+ */
+async function fillPlaceholderPrices(
+  db: TallyApplyDb,
+  tenantId: string,
+  productId: string,
+  item: TallyCutoverPlan["stockItems"][number],
+  progress: Progress,
+): Promise<void> {
+  const { price, cost, priceFromCost } = productPrices(item)
+  // Without a real selling price there is nothing better than what it holds.
+  if (priceFromCost && cost <= 0) return
+  const { data, error } = await db
+    .from("pharmacy_products")
+    .select("price, cost_price")
+    .eq("id", productId)
+    .eq("tenant_id", tenantId)
+    .maybeSingle()
+  if (error || !data) return
+  const currentPrice = Number(data.price ?? 0)
+  const currentCost = Number(data.cost_price ?? 0)
+  const update: Record<string, number> = {}
+  const placeholderPrice = currentPrice <= 0 || money(currentPrice) === money(currentCost)
+  // A cost-derived price only fills an empty one; it never replaces a price.
+  const fills = priceFromCost ? currentPrice <= 0 : placeholderPrice
+  if (price > 0 && fills && money(price) !== money(currentPrice)) update.price = price
+  if (cost > 0 && currentCost <= 0) update.cost_price = cost
+  if (Object.keys(update).length === 0) return
+  const { error: updateError } = await db
+    .from("pharmacy_products")
+    .update(update)
+    .eq("id", productId)
+    .eq("tenant_id", tenantId)
+  if (updateError) {
+    progress.fail("products", item.sku, "PRODUCT_PRICE_UPDATE_FAILED", updateError.message)
+  }
+}
+
 async function stageProducts(
   db: TallyApplyDb,
   plan: TallyCutoverPlan,
@@ -527,11 +652,10 @@ async function stageProducts(
     if (existingId) {
       known.bySku.set(sku, existingId)
       known.byName.set(productNameKey(item.name), existingId)
+      await fillPlaceholderPrices(db, tenantId, existingId, item, progress)
       continue
     }
-    // Tally exports cost, never a selling price. Cost is the only honest
-    // placeholder; the portal marks these products as needing a price.
-    const cost = money(item.rate ?? (item.value !== undefined && item.quantity ? item.value / item.quantity : 0))
+    const { price, cost } = productPrices(item)
     const { data, error } = await db
       .from("pharmacy_products")
       .insert({
@@ -539,7 +663,7 @@ async function stageProducts(
         name: item.name,
         sku: item.sku,
         category: "General",
-        price: cost,
+        price,
         cost_price: cost,
         quantity: 0,
         unit_of_measure: item.unit ?? "Tablet",
@@ -557,12 +681,30 @@ async function stageProducts(
   }
 }
 
+/**
+ * The opening position as the one journal the opening stage posts. A rollback
+ * reverses it with the vouchers, so both read its key from here.
+ */
+export function tallyOpeningVoucher(plan: TallyCutoverPlan): TallyCutoverVoucher {
+  return {
+    sourceType: "tally_opening",
+    sourceId: `${plan.companyKey}:opening:${plan.conversionDate}`,
+    kind: "journal",
+    date: plan.conversionDate,
+    number: undefined,
+    description: `Tally opening balances (${plan.company ?? "import"})`,
+    currency: plan.currency,
+    lines: plan.opening.lines,
+  } as TallyCutoverVoucher
+}
+
 async function stageOpeningJournal(
   db: TallyApplyDb,
   plan: TallyCutoverPlan,
   tenantId: string,
   actorId: string,
   progress: Progress,
+  sessionId: string,
 ): Promise<boolean> {
   if (plan.opening.difference !== 0) {
     progress.fail(
@@ -576,18 +718,20 @@ async function stageOpeningJournal(
   if (plan.opening.lines.length === 0) return true
 
   const accounts = await loadAccounts(db, tenantId)
+  const opening = tallyOpeningVoucher(plan)
   const posted = await postJournal(db, {
     tenantId,
-    sourceType: "tally_opening",
-    sourceId: `${plan.companyKey}:opening:${plan.conversionDate}`,
-    date: plan.conversionDate,
-    description: `Tally opening balances (${plan.company ?? "import"})`,
-    currency: plan.currency,
+    sourceType: opening.sourceType,
+    sourceId: opening.sourceId,
+    date: opening.date,
+    description: opening.description,
+    currency: opening.currency,
     actorId,
-    lines: plan.opening.lines,
+    lines: opening.lines,
     accounts,
     stage: "opening-journal",
     progress,
+    sessionId,
   })
   if (posted) progress.value.counts.openingJournal = plan.opening.lines.length
   return posted
@@ -857,6 +1001,36 @@ function outgoingAllocations(
   return allocations
 }
 
+/** Products whose movements one stock-history step applies at the same time. */
+export const REPLAY_PRODUCT_CONCURRENCY = 6
+
+/**
+ * Runs `work` over `items` with up to `limit` keys in flight. Items that share
+ * a key run one at a time in their original order; different keys interleave.
+ * A failure inside `work` is the caller's to record: this only schedules.
+ */
+export async function forEachInKeyOrder<T>(
+  items: readonly T[],
+  keyOf: (item: T) => string,
+  limit: number,
+  work: (item: T) => Promise<void>,
+): Promise<void> {
+  const queues = new Map<string, T[]>()
+  for (const item of items) {
+    const key = keyOf(item)
+    const queue = queues.get(key)
+    if (queue) queue.push(item)
+    else queues.set(key, [item])
+  }
+  const pending = [...queues.values()]
+  const worker = async () => {
+    for (let queue = pending.shift(); queue; queue = pending.shift()) {
+      for (const item of queue) await work(item)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, pending.length)) }, worker))
+}
+
 /**
  * The history stage: one movement chunk per request, applied through the replay
  * RPC in the order the preview showed. A resumed chunk re-sends movements the
@@ -884,7 +1058,12 @@ async function stageStockHistory(
       .map((finding) => finding.movementId),
   )
 
-  for (const movement of movements) {
+  // Movements of one product must apply in the preview's order: each sale
+  // draws on the batches the movements before it left. Different products
+  // never share a batch or a quantity, so they run side by side. That keeps
+  // the result identical to a strictly sequential replay while a step spends
+  // its time on several products' round trips at once instead of one.
+  const applyMovement = async (movement: (typeof movements)[number]): Promise<void> => {
     const productId = productIds.get(movement.stockItemName)
     if (!productId) {
       progress.fail(
@@ -893,7 +1072,7 @@ async function stageStockHistory(
         "PRODUCT_MISSING",
         `"${movement.stockItemName}" has no product in this pharmacy, so its stock movement was not replayed.`,
       )
-      continue
+      return
     }
 
     let allocations: TallyReplayAllocationInput[]
@@ -902,7 +1081,7 @@ async function stageStockHistory(
       // delta against what the database holds now, so the write stays a signed
       // movement like every other one.
       const delta = Math.round(movement.quantityDelta) - (await loadProductQuantity(db, tenantId, productId))
-      if (delta === 0) continue
+      if (delta === 0) return
       if (delta > 0) {
         // Stock the count found that the book did not have has no batch of its
         // own; it goes into the physical-count bucket.
@@ -964,7 +1143,7 @@ async function stageStockHistory(
         error.code,
         `${movement.stockItemName} on ${movement.date}: ${error.humanMessage}`,
       )
-      continue
+      return
     }
     if (data?.replayed) {
       progress.value.counts.movementsReplayed =
@@ -973,6 +1152,14 @@ async function stageStockHistory(
       progress.value.counts.stockMovements = (progress.value.counts.stockMovements ?? 0) + 1
     }
   }
+
+  // Keyed by product, not by name: two Tally names can resolve to one product.
+  await forEachInKeyOrder(
+    movements,
+    (movement) => productIds.get(movement.stockItemName) ?? `name:${movement.stockItemName}`,
+    REPLAY_PRODUCT_CONCURRENCY,
+    applyMovement,
+  )
 }
 
 /**
@@ -1456,6 +1643,7 @@ async function stageVoucherChunk(
   actorId: string,
   maps: IdMaps,
   progress: Progress,
+  sessionId: string,
   costs?: Record<string, TallyReplayLineCost>,
 ): Promise<void> {
   // A mirror is the portal's copy of the sale the voucher posted. If the journal
@@ -1477,6 +1665,7 @@ async function stageVoucherChunk(
       accounts: maps.accounts,
       stage: "journals",
       progress,
+      sessionId,
     })
     journalPosted.set(voucher.sourceId, posted)
     if (posted) progress.value.counts.journals += 1
@@ -1583,7 +1772,7 @@ export async function applyTallyChunk(
         progress.advance("opening-stock")
         break
       }
-      const posted = await stageOpeningJournal(db, input.plan, tenantId, input.actorId, progress)
+      const posted = await stageOpeningJournal(db, input.plan, tenantId, input.actorId, progress, input.sessionId)
       // History must not post on top of an opening position that never landed.
       if (posted) progress.advance("opening-stock")
       break
@@ -1642,6 +1831,7 @@ export async function applyTallyChunk(
         input.actorId,
         maps,
         progress,
+        input.sessionId,
         input.replayTarget?.costs,
       )
       const next = input.progress.offset + 1
@@ -1683,7 +1873,50 @@ export async function applyTallyChunk(
 
 export type TallyJournalReversal = {
   posted: number
+  /** Vouchers in the plan with no journal in the ledger: nothing to reverse. */
+  notPosted: number
   failures: Array<{ sourceId: string; code: string; message: string }>
+}
+
+/** Keys looked up per read: each is a voucher key twice, so the URL stays short. */
+const REVERSAL_LOOKUP_BATCH = 50
+
+/**
+ * Which key holds each voucher's journal in the ledger: the session's own key
+ * when this import re-posted over a reversed entry, else the voucher's key.
+ * A voucher with neither was never posted, and is left out.
+ */
+async function postedJournalKeys(
+  db: TallyApplyDb,
+  tenantId: string,
+  sessionId: string,
+  vouchers: TallyCutoverVoucher[],
+): Promise<Map<TallyCutoverVoucher, string>> {
+  const found = new Map<TallyCutoverVoucher, string>()
+  for (let index = 0; index < vouchers.length; index += REVERSAL_LOOKUP_BATCH) {
+    const batch = vouchers.slice(index, index + REVERSAL_LOOKUP_BATCH)
+    const keys = batch.flatMap((voucher) => [
+      voucher.sourceId,
+      tallySessionSourceId(voucher.sourceId, sessionId),
+    ])
+    const { data, error } = await db
+      .from("pharmacy_accounting_journal_entries")
+      .select("source_type, source_id")
+      .eq("tenant_id", tenantId)
+      .in("source_id", keys)
+    if (error) throw stepFailed("journals", "posted journals", error)
+    const existing = new Set(
+      ((data ?? []) as Array<{ source_type: string; source_id: string }>).map(
+        (row) => `${row.source_type}\u0000${row.source_id}`,
+      ),
+    )
+    for (const voucher of batch) {
+      const own = tallySessionSourceId(voucher.sourceId, sessionId)
+      if (existing.has(`${voucher.sourceType}\u0000${own}`)) found.set(voucher, own)
+      else if (existing.has(`${voucher.sourceType}\u0000${voucher.sourceId}`)) found.set(voucher, voucher.sourceId)
+    }
+  }
+  return found
 }
 
 /**
@@ -1691,27 +1924,39 @@ export type TallyJournalReversal = {
  *
  * Debits and credits are swapped and the entry keeps the voucher's own date, so
  * the period the import posted to nets back to zero instead of the reversal
- * landing in a later period. The source key is the same one the stock reversal
- * uses, and the journal RPC is idempotent on it, so a retried rollback posts
- * each reversing entry once.
+ * landing in a later period. The journal RPC is idempotent on the reversal's
+ * key, so a retried rollback posts each reversing entry once.
+ *
+ * Only journals that are in the ledger are reversed. A voucher the import
+ * refused has no entry, and reversing it anyway would post an entry with
+ * nothing to cancel. When this session re-posted a voucher over a reversed
+ * entry from an earlier import, its own key is the one reversed.
  */
 export async function reverseTallyJournals(
   db: TallyApplyDb,
   input: {
     tenantId: string
     actorId: string
+    sessionId: string
     vouchers: TallyCutoverVoucher[]
   },
 ): Promise<TallyJournalReversal> {
   const progress = new Progress(emptyProgress())
   const accounts = await loadAccounts(db, input.tenantId)
+  const keys = await postedJournalKeys(db, input.tenantId, input.sessionId, input.vouchers)
   let posted = 0
+  let notPosted = 0
 
   for (const voucher of input.vouchers) {
+    const key = keys.get(voucher)
+    if (!key) {
+      notPosted += 1
+      continue
+    }
     const reversed = await postJournal(db, {
       tenantId: input.tenantId,
-      sourceType: "tally_replay_reversal",
-      sourceId: `${voucher.sourceType}:${voucher.sourceId}`,
+      sourceType: REVERSAL_SOURCE_TYPE,
+      sourceId: `${voucher.sourceType}:${key}`,
       date: voucher.date,
       description: `Reversal of the Tally import: ${voucher.description}`,
       currency: voucher.currency,
@@ -1731,6 +1976,7 @@ export async function reverseTallyJournals(
 
   return {
     posted,
+    notPosted,
     failures: progress.value.failures.map((failure) => ({
       sourceId: failure.key,
       code: failure.code,

@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertTriangle,
@@ -29,6 +30,7 @@ import { isIsoDay, kindFromFileName, periodFromFileName } from "@/lib/tally/file
 import type { TallyPlaybackIndex } from "@/lib/tally/types"
 import { REPLAY_REASON_MAX, REPLAY_REASON_MIN } from "@/lib/tally/replay-gate"
 import { TALLY_SOURCE_LIMIT } from "@/lib/tally/storage"
+import { holdIdleLogout } from "@/hooks/use-idle-logout"
 import { cutoverBlockReason, track } from "@/lib/telemetry/events"
 
 export const dynamic = "force-dynamic"
@@ -1232,6 +1234,8 @@ export default function TallyImportPage() {
     if (!sessionId) return
     setBusy("applying")
     setReconcile(null)
+    // The operator is waiting on this, not idle; see holdIdleLogout.
+    const releaseIdleHold = holdIdleLogout()
 
     let guard = 0
     let previous = ""
@@ -1302,6 +1306,7 @@ export default function TallyImportPage() {
         description: "The connection dropped mid-apply. Reload the session to see where it stopped.",
       })
     } finally {
+      releaseIdleHold()
       setBusy("idle")
     }
   }
@@ -1316,8 +1321,14 @@ export default function TallyImportPage() {
           className="rounded-md border border-border bg-muted/40 px-4 py-3 text-sm"
         >
           {cutoverAccess === "checking" && "Checking Tally cut-over access…"}
-          {cutoverAccess === "complete" &&
-            "Tally cut-over is already complete for this pharmacy. The import is locked."}
+          {cutoverAccess === "complete" && (
+            <>
+              Tally cut-over is already complete for this pharmacy. The import is locked.{" "}
+              <Link href="/portal/tally-import/history" className="font-medium text-primary underline">
+                Review what was imported
+              </Link>
+            </>
+          )}
           {cutoverAccess === "denied" &&
             "Only the pharmacy administrator can access the Tally cut-over workspace."}
           {cutoverAccess === "disabled" &&
@@ -1334,7 +1345,14 @@ export default function TallyImportPage() {
             Synapse until the pharmacy administrator explicitly applies the validated plan.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {cutoverAccess !== "denied" && (
+            <Button variant="outline" asChild>
+              <Link href="/portal/tally-import/history">
+                <History className="h-4 w-4" /> Import history
+              </Link>
+            </Button>
+          )}
           <Button variant="outline" asChild>
             <a href="/api/admin/tally/template" download>
               <Download className="h-4 w-4" /> Excel template

@@ -191,6 +191,31 @@ async function authenticateTally(
   return auth
 }
 
+function adminOnly(auth: TallyAuth): TallyAuthResult {
+  if (tallyIsAdmin(auth)) return auth
+  return {
+    ok: false,
+    response: NextResponse.json(
+      {
+        error: "Only the pharmacy administrator can run the Tally cut-over.",
+        code: "TALLY_ADMIN_ONLY",
+      },
+      { status: 403 },
+    ),
+  }
+}
+
+/**
+ * Read-only review of what Tally imports wrote. Administrator-only like the
+ * cut-over itself, but not behind the cut-over kill switch: the switch stops
+ * new writes, and turning it off after go-live must not hide the history.
+ */
+export async function requireTallyHistoryAccess(request: NextRequest): Promise<TallyAuthResult> {
+  const auth = await authenticateTally(request, "inventory.read")
+  if (!auth.ok) return auth
+  return adminOnly(auth)
+}
+
 /**
  * Tally cut-over routes are administrator-only: the cut-over writes the whole
  * chart of accounts, stock and opening balances for the tenant.
@@ -201,17 +226,5 @@ export async function requireTallyAdmin(
 ): Promise<TallyAuthResult> {
   const auth = await requireTallyPermission(request, capability)
   if (!auth.ok) return auth
-  if (!tallyIsAdmin(auth)) {
-    return {
-      ok: false,
-      response: NextResponse.json(
-        {
-          error: "Only the pharmacy administrator can run the Tally cut-over.",
-          code: "TALLY_ADMIN_ONLY",
-        },
-        { status: 403 },
-      ),
-    }
-  }
-  return auth
+  return adminOnly(auth)
 }

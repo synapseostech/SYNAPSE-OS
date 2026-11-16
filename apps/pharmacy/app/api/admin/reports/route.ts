@@ -1,3 +1,4 @@
+import { READ_ALL_MAX_ROWS, readAllRows } from "@/lib/supabase/read-all"
 import { NextRequest, NextResponse } from "next/server"
 import { requirePharmacyPermission } from "@/lib/api-auth"
 import { supabaseAdmin } from "@/lib/supabase/admin"
@@ -91,6 +92,7 @@ export async function GET(request: NextRequest) {
     // ── SALES REPORT ─────────────────────────────────────────────────────────
     if (reportType === "sales") {
       const [txResult, itemsResult, posResult, posItemsResult, taxLinesResult] = await Promise.all([
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_transactions")
           .select(
@@ -100,7 +102,8 @@ export async function GET(request: NextRequest) {
           .eq("status", "COMPLETED")
           .gte("created_at", dateFromISO)
           .lte("created_at", dateToISO)
-          .order("created_at", { ascending: false }),
+          .order("created_at", { ascending: false })),
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_transaction_items")
           .select(
@@ -109,7 +112,8 @@ export async function GET(request: NextRequest) {
           .eq("tenant_id", tenantId)
           .eq("pharmacy_transactions.status", "COMPLETED")
           .gte("pharmacy_transactions.created_at", dateFromISO)
-          .lte("pharmacy_transactions.created_at", dateToISO),
+          .lte("pharmacy_transactions.created_at", dateToISO)),
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_pos_sales")
           .select(
@@ -119,7 +123,8 @@ export async function GET(request: NextRequest) {
           .eq("status", "completed")
           .gte("created_at", dateFromISO)
           .lte("created_at", dateToISO)
-          .order("created_at", { ascending: false }),
+          .order("created_at", { ascending: false })),
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_pos_sale_items")
           .select(
@@ -128,10 +133,11 @@ export async function GET(request: NextRequest) {
           .eq("tenant_id", tenantId)
           .eq("pharmacy_pos_sales.status", "completed")
           .gte("pharmacy_pos_sales.created_at", dateFromISO)
-          .lte("pharmacy_pos_sales.created_at", dateToISO),
+          .lte("pharmacy_pos_sales.created_at", dateToISO)),
         // Line-level tax lives in its own query so a database without the
         // column (before 20261102110000) loses only the breakdown, not the
         // POS revenue that the report above still reads.
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_pos_sale_items")
           .select(
@@ -140,7 +146,7 @@ export async function GET(request: NextRequest) {
           .eq("tenant_id", tenantId)
           .eq("pharmacy_pos_sales.status", "completed")
           .gte("pharmacy_pos_sales.created_at", dateFromISO)
-          .lte("pharmacy_pos_sales.created_at", dateToISO),
+          .lte("pharmacy_pos_sales.created_at", dateToISO)),
       ])
 
       if (txResult.error) throw txResult.error
@@ -512,12 +518,14 @@ export async function GET(request: NextRequest) {
         stockMovementsResult,
       ] = await Promise.all([
         // All active products (for totals, value calc, category grouping)
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_products")
           .select("id, name, sku, category, quantity, cost_price, price, reorder_level, expiry_date, is_active")
           .eq("tenant_id", tenantId)
-          .eq("is_active", true),
+          .eq("is_active", true)),
         // Low stock (between 1 and threshold)
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_products")
           .select("*")
@@ -525,15 +533,17 @@ export async function GET(request: NextRequest) {
           .eq("is_active", true)
           .gt("quantity", 0)
           .lte("quantity", lowStockThreshold)
-          .order("quantity", { ascending: true }),
+          .order("quantity", { ascending: true })),
         // Out of stock
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_products")
           .select("*")
           .eq("tenant_id", tenantId)
           .eq("is_active", true)
-          .lte("quantity", 0),
+          .lte("quantity", 0)),
         // Expiring in 30 days
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_products")
           .select("*")
@@ -541,14 +551,15 @@ export async function GET(request: NextRequest) {
           .eq("is_active", true)
           .gte("expiry_date", nowISO)
           .lte("expiry_date", thirtyDaysFromNow)
-          .order("expiry_date", { ascending: true }),
+          .order("expiry_date", { ascending: true })),
         // Already expired
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_products")
           .select("*")
           .eq("tenant_id", tenantId)
           .eq("is_active", true)
-          .lt("expiry_date", nowISO),
+          .lt("expiry_date", nowISO)),
         // Recent stock adjustments in range
         (supabaseAdmin as any)
           .from("pharmacy_stock_adjustments")
@@ -657,7 +668,8 @@ export async function GET(request: NextRequest) {
       const { listLedgerSalesForHistory } = await import("@/lib/pos/sale-ledger")
       const ledgerRows = await listLedgerSalesForHistory({
         tenantId,
-        limit: 5000,
+        // Every sale in the period: profit over a truncated list is wrong.
+        limit: READ_ALL_MAX_ROWS,
         fromIso: dateFromISO,
         toIso: dateToISO,
       })
@@ -757,7 +769,8 @@ export async function GET(request: NextRequest) {
     }
 
     if (reportType === "purchases") {
-      const { data: purchases, error } = await (supabaseAdmin as any)
+      const { data: purchases, error } = await readAllRows<any>(() =>
+        (supabaseAdmin as any)
         .from("pharmacy_purchases")
         .select(
           "id, purchase_no, supplier_id, total, amount_paid, balance, payment_status, status, purchase_date, received_by, created_at, pharmacy_suppliers(name), pharmacy_purchase_items(product_id, product_name, quantity, unit_cost, line_total, batch_number)",
@@ -765,7 +778,7 @@ export async function GET(request: NextRequest) {
         .eq("tenant_id", tenantId)
         .gte("purchase_date", dateFromISO.slice(0, 10))
         .lte("purchase_date", dateToISO.slice(0, 10))
-        .order("purchase_date", { ascending: false })
+        .order("purchase_date", { ascending: false }))
 
       if (error) {
         // Same rule as /api/ready (PR-003): the client gets a message, the log
@@ -831,6 +844,7 @@ export async function GET(request: NextRequest) {
     // reported separately and never summed into a single "refunded" figure.
     if (reportType === "refunds") {
       const [voidsResult, ledgerResult, orderResult] = await Promise.all([
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_pos_sales")
           .select(
@@ -840,14 +854,15 @@ export async function GET(request: NextRequest) {
           .eq("status", "voided")
           .gte("voided_at", dateFromISO)
           .lte("voided_at", dateToISO)
-          .order("voided_at", { ascending: false }),
+          .order("voided_at", { ascending: false })),
+readAllRows(() =>
         (supabaseAdmin as any)
           .from("pharmacy_credit_ledger")
           .select("idempotency_key, amount")
           .eq("tenant_id", tenantId)
           .eq("type", "refund")
           .gte("created_at", dateFromISO)
-          .lte("created_at", dateToISO),
+          .lte("created_at", dateToISO)),
         (supabaseAdmin as any)
           .from("pharmacy_transactions")
           .select("id", { count: "exact", head: true })

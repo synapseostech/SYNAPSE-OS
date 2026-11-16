@@ -25,7 +25,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: {
     from: (table: string) => {
       const builder: Record<string, unknown> = {}
-      for (const op of ["select", "eq", "gte", "lte", "order", "in"]) {
+      for (const op of ["select", "eq", "gte", "lte", "order", "in", "range"]) {
         builder[op] = (...args: unknown[]) => {
           m.calls.push({ table, op, args })
           return builder

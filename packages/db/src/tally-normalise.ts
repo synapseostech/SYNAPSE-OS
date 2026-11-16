@@ -31,6 +31,7 @@ import type {
   TallyInventoryLine,
   TallyLedger,
   TallyLedgerLine,
+  TallyStockItem,
   TallyVoucher,
   TallyXmlDocument,
   TallyXmlRowWarning,
@@ -75,6 +76,7 @@ export type TallyExceptionCode =
   | "STOCK_LINE_WITHOUT_QUANTITY"
   | "CREDIT_SALE_NOT_MIRRORED"
   | "COST_UNKNOWN"
+  | "PRICE_FROM_COST"
   | "PURCHASE_LINE_SKIPPED"
   | "REPLAY_PERIOD_REQUIRED"
   | "REPLAY_PERIOD_INVALID"
@@ -162,7 +164,28 @@ export type TallyCutoverStockItem = {
   /** Exported closing figures: posted in closing mode, shown only in opening mode. */
   closingQuantity?: number
   closingValue?: number
+  /** Tally's costing method, as the master states it. Decides how closing value is compared. */
+  costingMethod?: string
+  /**
+   * What the item sells for: Tally's Standard Selling Price when the master
+   * states one, else the rate on its latest sales voucher line. Absent when
+   * neither exists, and never filled with cost.
+   */
+  sellingPrice?: TallyCutoverPrice
+  /**
+   * What the item last cost: Tally's Standard Cost when stated, else the rate
+   * on its latest purchase voucher line.
+   */
+  purchaseCost?: TallyCutoverPrice
   batches: TallyCutoverStockBatch[]
+}
+
+/** A price and where it came from, so the review can say how it was set. */
+export type TallyCutoverPrice = {
+  amount: number
+  source: "standard-price" | "standard-cost" | "last-sale" | "last-purchase"
+  /** The voucher date or the list entry's effective date. */
+  date?: string
 }
 
 /**
@@ -289,6 +312,11 @@ export type TallyCutoverPlan = {
   conversionDate: string
   /** Replay only: the last date the replayed history covers. */
   cutoffDate?: string
+  /**
+   * First day of a financial year of the company, when the export states it.
+   * Tally's Average Cost restarts each financial year; see tally-replay.ts.
+   */
+  financialYearStart?: string
   /** Replay only: how same-day vouchers were ordered. Absent, never guessed. */
   ordering?: "date-then-export-order"
   /**
@@ -976,6 +1004,92 @@ function dateThenExportOrder(
   }
 }
 
+/**
+ * Opening stock positions with a whole positive quantity and no batch expiry:
+ * the ones a replay accepting absent expiry receives without a date.
+ */
+function countOpeningWithoutExpiry(items: readonly TallyStockItem[]): number {
+  const seen = new Set<string>()
+  let count = 0
+  for (const item of items) {
+    const key = normaliseTallyKey(item.name)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    const quantity = item.openingQuantity
+    if (quantity === undefined || quantity <= 0 || !Number.isInteger(quantity)) continue
+    if (item.batches.length === 0) {
+      count += 1
+      continue
+    }
+    if (item.batches.some((batch) => !batch.expiryDate && (batch.quantity ?? 0) > 0)) count += 1
+  }
+  return count
+}
+
+/**
+ * Gives each stock item its selling price and purchase cost.
+ *
+ * Tally's own Standard Selling Price and Standard Cost win when the master
+ * states them: they are what the pharmacy set. Otherwise the latest voucher
+ * line is the price the pharmacy actually charged or paid. "Latest" is by
+ * voucher date, and on the same date the later line in the export, which is
+ * Tally's own order. Nothing here invents a price: an item with neither keeps
+ * none, and the import flags it instead of copying cost into price.
+ */
+function attachPrices(
+  items: TallyCutoverStockItem[],
+  masters: readonly TallyStockItem[],
+  sales: readonly TallyCutoverSale[],
+  purchases: readonly TallyCutoverPurchase[],
+): void {
+  const latest = (
+    rows: ReadonlyArray<{ date: string; items: ReadonlyArray<{ stockItemName: string; rate: number }> }>,
+  ) => {
+    const found = new Map<string, { amount: number; date: string }>()
+    for (const row of rows) {
+      for (const line of row.items) {
+        if (!(line.rate > 0)) continue
+        const key = normaliseTallyKey(line.stockItemName)
+        const current = found.get(key)
+        if (!current || row.date >= current.date) found.set(key, { amount: round2(line.rate), date: row.date })
+      }
+    }
+    return found
+  }
+  const lastSale = latest(
+    sales.map((sale) => ({
+      date: sale.date,
+      items: sale.items.map((item) => ({ stockItemName: item.stockItemName, rate: item.unitPrice })),
+    })),
+  )
+  const lastPurchase = latest(
+    purchases.map((purchase) => ({
+      date: purchase.date,
+      items: purchase.items.map((item) => ({ stockItemName: item.stockItemName, rate: item.unitCost })),
+    })),
+  )
+  const master = new Map(masters.map((item) => [normaliseTallyKey(item.name), item]))
+
+  for (const item of items) {
+    const key = normaliseTallyKey(item.sourceName)
+    const stated = master.get(key)
+    const sale = lastSale.get(key)
+    const purchase = lastPurchase.get(key)
+    const sellingPrice: TallyCutoverPrice | undefined = stated?.standardPrice
+      ? { amount: round2(stated.standardPrice.rate), source: "standard-price", ...(stated.standardPrice.date ? { date: stated.standardPrice.date } : {}) }
+      : sale
+        ? { amount: sale.amount, source: "last-sale", date: sale.date }
+        : undefined
+    const purchaseCost: TallyCutoverPrice | undefined = stated?.standardCost
+      ? { amount: round2(stated.standardCost.rate), source: "standard-cost", ...(stated.standardCost.date ? { date: stated.standardCost.date } : {}) }
+      : purchase
+        ? { amount: purchase.amount, source: "last-purchase", date: purchase.date }
+        : undefined
+    if (sellingPrice) item.sellingPrice = sellingPrice
+    if (purchaseCost) item.purchaseCost = purchaseCost
+  }
+}
+
 export function normaliseTallyDocument(
   document: TallyXmlDocument,
   options: TallyNormaliseOptions = {},
@@ -1498,11 +1612,28 @@ export function normaliseTallyDocument(
     }
   }
 
-  if (batchExpiry === "not-supplied" && missingExpiry.receipts > 0) {
+  // Opening stock is held in the masters, not the vouchers. Under the same
+  // accepted absence it is replayed the same way, so it is counted into the
+  // same disclosure here, before the per-item findings can fill the list.
+  const openingWithoutExpiry =
+    mode === "replay" && batchExpiry === "not-supplied"
+      ? countOpeningWithoutExpiry(document.stockItems)
+      : 0
+  if (batchExpiry === "not-supplied" && (missingExpiry.receipts > 0 || openingWithoutExpiry > 0)) {
     const itemCount = missingExpiry.items.size
+    const receipts =
+      missingExpiry.receipts > 0
+        ? `${missingExpiry.receipts.toLocaleString("en-GB")} stock receipt${missingExpiry.receipts === 1 ? "" : "s"} across ${itemCount.toLocaleString("en-GB")} product${itemCount === 1 ? "" : "s"}`
+        : ""
+    const openings =
+      openingWithoutExpiry > 0
+        ? `${openingWithoutExpiry.toLocaleString("en-GB")} opening stock position${openingWithoutExpiry === 1 ? "" : "s"}`
+        : ""
+    const subject = [receipts, openings].filter(Boolean).join(" and ")
+    const plural = missingExpiry.receipts + openingWithoutExpiry !== 1
     addException(
       "REPLAY_BATCH_EXPIRY_NOT_SUPPLIED",
-      `${missingExpiry.receipts.toLocaleString("en-GB")} stock receipt${missingExpiry.receipts === 1 ? "" : "s"} across ${itemCount.toLocaleString("en-GB")} product${itemCount === 1 ? "" : "s"} state no batch expiry date. This import was prepared accepting that: each receipt keeps the batch name Tally states and is stored with no expiry, so imported stock cannot be expiry-tracked, allocated by expiry or recalled by batch expiry. Stock received after the cut-over is unaffected. No date was invented to fill the field.`,
+      `${subject} state${plural ? "" : "s"} no batch expiry date. This import was prepared accepting that: each keeps the batch name Tally states and is stored with no expiry, so imported stock cannot be expiry-tracked, allocated by expiry or recalled by batch expiry. Stock received after the cut-over is unaffected. No date was invented to fill the field.`,
       undefined,
       "warning",
     )
@@ -1676,12 +1807,15 @@ export function normaliseTallyDocument(
     const rate =
       (mode === "closing" ? undefined : item.openingRate) ??
       (quantity && quantity !== 0 && value !== undefined ? round2(value / quantity) : undefined)
+    // A replay prepared accepting that Tally holds no expiry replays opening
+    // stock without one, exactly as it does the receipts that follow; the
+    // batch keeps Tally's name and the database records the absence.
+    const acceptNoExpiry = mode === "replay" && batchExpiry === "not-supplied"
     let batches: TallyCutoverStockBatch[] = item.batches.map((batch) => {
       const expiryDate = batch.expiryDate
       const batchQuantity = batch.quantity
       const receivable =
-        Boolean(expiryDate) &&
-        Boolean(expiryDate && expiryDate >= expiryFloor) &&
+        (expiryDate ? expiryDate >= expiryFloor : acceptNoExpiry) &&
         batchQuantity !== undefined &&
         batchQuantity > 0 &&
         Number.isInteger(batchQuantity)
@@ -1711,11 +1845,23 @@ export function normaliseTallyDocument(
       batches = []
     }
 
+    // An item kept without batches in Tally opens as one unnamed batch, which
+    // Apply names deterministically, so the replay starts where Tally did.
+    if (
+      acceptNoExpiry &&
+      batches.length === 0 &&
+      quantity !== undefined &&
+      quantity > 0 &&
+      Number.isInteger(quantity)
+    ) {
+      batches = [{ quantity, receivable: true }]
+    }
+
     if (quantity !== undefined && quantity > 0) {
       const period = mode === "closing" ? "closing" : "opening"
       const hasExpiry = batches.some((batch) => batch.expiryDate)
       const expired = batches.filter((batch) => batch.expiryDate && batch.expiryDate < expiryFloor)
-      if (!hasExpiry) {
+      if (!hasExpiry && !acceptNoExpiry) {
         addException(
           "OPENING_STOCK_WITHOUT_EXPIRY",
           `Stock item "${item.name}" has ${period} quantity ${quantity} but no batch expiry. Its value stays in the ledger; no stock batch is created.`,
@@ -1770,6 +1916,7 @@ export function normaliseTallyDocument(
       value: value === undefined ? undefined : round2(value),
       closingQuantity: item.closingQuantity,
       closingValue: closingValue === undefined ? undefined : round2(closingValue),
+      ...(item.costingMethod ? { costingMethod: trimText(item.costingMethod, 40) } : {}),
       batches,
     })
   }
@@ -1986,11 +2133,26 @@ export function normaliseTallyDocument(
     }
   }
 
+  attachPrices(stockItems, document.stockItems, sales, purchases)
+  const unpriced = stockItems.filter((item) => !item.sellingPrice)
+  if (unpriced.length > 0) {
+    addException(
+      "PRICE_FROM_COST",
+      `${unpriced.length.toLocaleString("en-GB")} of ${stockItems.length.toLocaleString("en-GB")} stock item${stockItems.length === 1 ? "" : "s"} have no Standard Selling Price in Tally and no sale in the exported history (${unpriced
+        .slice(0, 5)
+        .map((item) => item.name)
+        .join(", ")}${unpriced.length > 5 ? ", …" : ""}). They are imported selling at their cost so nothing is sold below cost; set their selling price after the import.`,
+      undefined,
+      "warning",
+    )
+  }
+
   return {
     company,
     companyKey,
     currency,
     conversionDate,
+    ...(document.financialYearStart ? { financialYearStart: document.financialYearStart } : {}),
     // Replay carries every movement; opening carries only the dated stock
     // adjustments and leaves the trade history to the mirror.
     ...(mode === "replay"

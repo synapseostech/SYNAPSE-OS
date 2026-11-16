@@ -53,6 +53,10 @@ async function readCheckpointRow(
     .select("id, company_key, session_id, through_date")
     .eq("tenant_id", tenantId)
     .eq(column, value)
+    // A rolled-back session's checkpoint no longer closes its period, so it is
+    // neither something to continue from nor a claim on the company
+    // (20261116120000_pharmacy_tally_replay_checkpoint_reversal).
+    .is("reversed_at", null)
     .order("through_date", { ascending: false })
     .limit(1)
     .maybeSingle()

@@ -118,8 +118,27 @@ export type TallyStockItem = {
   openingValue?: number
   closingQuantity?: number
   closingValue?: number
+  /**
+   * Tally's costing method for the item, as the master states it ("Avg. Cost",
+   * "FIFO", ...). It decides how Tally values closing stock, so the replay
+   * cannot compare a closing value without it. Absent when not exported.
+   */
+  costingMethod?: string
+  /**
+   * The latest entry of the item's Standard Selling Price list (STANDARDPRICELIST),
+   * and of its Standard Cost list (STANDARDCOSTLIST). Absent when the master
+   * has none or the export did not ask for them.
+   */
+  standardPrice?: TallyDatedRate
+  standardCost?: TallyDatedRate
   batchWise: boolean
   batches: TallyBatchAllocation[]
+}
+
+/** One entry of a Tally dated rate list: the rate applies from `date`. */
+export type TallyDatedRate = {
+  date?: string
+  rate: number
 }
 
 export type TallyBillAllocation = {
@@ -228,6 +247,12 @@ export type TallyXmlDocument = {
   companyGuid?: string
   currency?: string
   financialPeriod: { from?: string; to?: string }
+  /**
+   * The first day of a financial year of this company (Tally's "Financial year
+   * beginning from"). Average Cost restarts each financial year, so closing
+   * values are only comparable when the year boundary is known.
+   */
+  financialYearStart?: string
   groups: TallyGroup[]
   ledgers: TallyLedger[]
   stockGroups: TallyStockGroup[]
@@ -496,7 +521,12 @@ function readLedgerLine(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyLed
 }
 
 function readBatch(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyBatchAllocation {
-  const quantityRaw = textOf(node, "ACTUALQTY") ?? textOf(node, "BILLEDQTY")
+  // A voucher's batch line states ACTUALQTY/BILLEDQTY. A stock item master's
+  // opening allocation states OPENINGBALANCE instead (Tally's master
+  // integration format); reading only the voucher tags left every batch-wise
+  // opening position without a quantity, so none was received.
+  const quantityRaw =
+    textOf(node, "ACTUALQTY") ?? textOf(node, "BILLEDQTY") ?? textOf(node, "OPENINGBALANCE")
   const quantity = parseLeadingNumber(quantityRaw)
   if (quantityRaw !== undefined && quantity === undefined) addWarning(warnings, "QUANTITY_UNREADABLE")
   const expiryRaw = textOf(node, "EXPIRYDATE")
@@ -697,9 +727,32 @@ function readStockItem(node: XmlNode, warnings: TallyXmlRowWarning[]): TallyStoc
       0,
     ),
     closingValue: elementValue(node, ["CLOSINGVALUE"], parseTallyAmount, 0),
+    costingMethod: textOf(node, "COSTINGMETHOD")?.trim() || undefined,
+    ...latestRate(node, "STANDARDPRICELIST.LIST", "standardPrice"),
+    ...latestRate(node, "STANDARDCOSTLIST.LIST", "standardCost"),
     batchWise: (textOf(node, "ISBATCHWISEON") ?? "").toLowerCase() === "yes",
     batches: childrenNamed(node, "BATCHALLOCATIONS.LIST").map((batch) => readBatch(batch, warnings)),
   }
+}
+
+/**
+ * The entry in force from a Tally dated rate list: the latest dated entry, or
+ * the last one listed when none is dated. A zero or unreadable rate is not a
+ * price, so it is skipped rather than reported as free.
+ */
+function latestRate<K extends "standardPrice" | "standardCost">(
+  node: XmlNode,
+  list: string,
+  key: K,
+): Partial<Record<K, TallyDatedRate>> {
+  let best: TallyDatedRate | undefined
+  for (const entry of childrenNamed(node, list)) {
+    const rate = parseLeadingNumber(textOf(entry, "RATE"))
+    if (rate === undefined || !Number.isFinite(rate) || rate <= 0) continue
+    const date = parseTallyRowDate(textOf(entry, "DATE"))
+    if (!best || (date ?? "") >= (best.date ?? "")) best = { ...(date ? { date } : {}), rate }
+  }
+  return best ? ({ [key]: best } as Partial<Record<K, TallyDatedRate>>) : {}
 }
 
 function readCompany(node: XmlNode): {
@@ -708,6 +761,7 @@ function readCompany(node: XmlNode): {
   currency?: string
   from?: string
   to?: string
+  financialYearStart?: string
 } {
   return {
     company: textOf(node, "COMPANYNAME") ?? attrOf(node, "NAME"),
@@ -715,6 +769,7 @@ function readCompany(node: XmlNode): {
     currency: textOf(node, "CURRENCYNAME"),
     from: parseTallyRowDate(textOf(node, "SVFROMDATE")),
     to: parseTallyRowDate(textOf(node, "SVTODATE")),
+    financialYearStart: parseTallyRowDate(textOf(node, "STARTINGFROM") ?? attrOf(node, "STARTINGFROM")),
   }
 }
 
@@ -820,6 +875,7 @@ export function parseTallyXmlRows(input: Uint8Array | string, fileName = "tally.
       if (company.currency) document.currency = company.currency
       if (company.from) document.financialPeriod.from = company.from
       if (company.to) document.financialPeriod.to = company.to
+      if (company.financialYearStart) document.financialYearStart = company.financialYearStart
     }
   }
 

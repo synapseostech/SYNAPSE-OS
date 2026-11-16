@@ -30,6 +30,7 @@ type Chain = {
   eq: (column: string, value: unknown) => Chain
   in: (column: string, values: unknown[]) => Chain
   is: (column: string, value: unknown) => Chain
+  like: (column: string, pattern: string) => Chain
   gte: (column: string, value: unknown) => Chain
   lte: (column: string, value: unknown) => Chain
   order: (column: string, options?: { ascending?: boolean }) => Chain
@@ -86,6 +87,10 @@ export function fakeSupabase(resolve: (operation: FakeOperation) => FakeResult) 
       },
       is: (column, value) => {
         operation.filters.push([column, value])
+        return chain
+      },
+      like: (column, pattern) => {
+        operation.filters.push([`${column}:like`, pattern])
         return chain
       },
       gte: (column, value) => {

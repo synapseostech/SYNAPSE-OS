@@ -648,3 +648,178 @@ describe("reconcileReplay", () => {
     })
   })
 })
+
+describe("reconcileReplay — Tally's costing method", () => {
+  // Tally's default costing method is Average Cost: annual weighted average,
+  // inward value over inward quantity since the financial year began. Sales do
+  // not move the rate. A replay that values by moving batch average reaches a
+  // different closing value as soon as a purchase price changes after a sale.
+  const priceChangeAfterSale = (overrides: Partial<TallyCutoverPlan> = {}) =>
+    basePlan({
+      conversionDate: "2026-04-01",
+      cutoffDate: "2026-04-30",
+      financialYearStart: "2025-04-01",
+      stockItems: [stockItem({ costingMethod: "Avg. Cost", closingQuantity: 15, closingValue: 2250 })],
+      movements: [
+        movement({ sourceId: "p1", date: "2026-04-02", quantityDelta: 10, rate: 100, amount: 1000, batchNumber: "Primary Batch" }),
+        movement({
+          sourceId: "s1",
+          kind: "sales",
+          movementKind: "sale_out",
+          date: "2026-04-05",
+          quantityDelta: -5,
+          rate: 150,
+          amount: 750,
+          batchNumber: "Primary Batch",
+        }),
+        movement({ sourceId: "p2", date: "2026-04-10", quantityDelta: 10, rate: 200, amount: 2000, batchNumber: "Primary Batch" }),
+      ],
+      stock: { openingValue: null, closingValue: 2250, itemsWithOpeningValue: 0, itemsWithClosingValue: 1, itemCount: 1 },
+      ...overrides,
+    })
+
+  it("values an Average Cost item at the period's inward average, as Tally does", () => {
+    const plan = priceChangeAfterSale()
+    const reconciliation = reconcileReplay(simulateReplay(plan), plan)
+    const rows = new Map(reconciliation.rows.map((row) => [row.key, row]))
+
+    assert.equal(rows.get("Paracetamol 500mg")?.status, "match")
+    // (1,000 + 2,000) / 20 = 150 a unit, 15 on hand: 2,250. The moving batch
+    // average would say 2,500.
+    assert.equal(rows.get("Paracetamol 500mg (value)")?.actual, 2250)
+    assert.equal(rows.get("Paracetamol 500mg (value)")?.status, "match")
+    assert.equal(rows.get("Paracetamol 500mg (value)")?.basis, "average-cost")
+    assert.equal(rows.get("stock value")?.status, "match")
+    assert.equal(reconciliation.blocking, 0)
+  })
+
+  it("would have reported the moving batch average as a difference, which Tally never had", () => {
+    // The same history with no costing method stated keeps the replay's own
+    // batch values: exactly the false difference an Average Cost item produced.
+    const plan = priceChangeAfterSale({
+      stockItems: [stockItem({ closingQuantity: 15, closingValue: 2250 })],
+    })
+    const row = reconcileReplay(simulateReplay(plan), plan).rows.find(
+      (entry) => entry.key === "Paracetamol 500mg (value)",
+    )
+    assert.equal(row?.basis, "batch")
+    assert.equal(row?.actual, 2500)
+    assert.equal(row?.status, "difference")
+  })
+
+  it("reads the method however Tally spells it", () => {
+    for (const method of ["Avg. Cost", "avg cost", "Average Cost", " AVG.  COST "]) {
+      const plan = priceChangeAfterSale({
+        stockItems: [stockItem({ costingMethod: method, closingQuantity: 15, closingValue: 2250 })],
+      })
+      const row = reconcileReplay(simulateReplay(plan), plan).rows.find(
+        (entry) => entry.key === "Paracetamol 500mg (value)",
+      )
+      assert.equal(row?.status, "match", method)
+    }
+  })
+
+  it("refuses to compare an Average Cost value when the financial year start is unknown", () => {
+    const plan = priceChangeAfterSale({ financialYearStart: undefined })
+    const reconciliation = reconcileReplay(simulateReplay(plan), plan)
+    const value = reconciliation.rows.find((entry) => entry.key === "Paracetamol 500mg (value)")
+    const total = reconciliation.rows.find((entry) => entry.key === "stock value")
+
+    // Never a pass, never a guessed year.
+    assert.equal(value?.status, "not-available")
+    assert.equal(value?.actual, null)
+    assert.match(value?.note ?? "", /financial year/)
+    assert.equal(total?.status, "not-available")
+    // Quantity is still compared exactly.
+    assert.equal(
+      reconciliation.rows.find((entry) => entry.key === "Paracetamol 500mg")?.status,
+      "match",
+    )
+    assert.equal(reconciliation.blocking, 0)
+  })
+
+  it("restarts the average at each financial year, opening at the prior year's closing rate", () => {
+    // Financial years from 1 July. Year to June: 10 @ 100 and 10 @ 300 in,
+    // 15 sold: 5 left at 200 = 1,000. Year two opens at 5 @ 200; 5 @ 400 in: (1,000 + 2,000) / 10
+    // = 300; 2 sold, 8 left = 2,400. One average over both years would give
+    // (1,000 + 3,000 + 2,000) / 25 = 240, 1,920.
+    const plan = basePlan({
+      conversionDate: "2025-06-01",
+      cutoffDate: "2025-07-31",
+      financialYearStart: "2020-07-01",
+      stockItems: [stockItem({ costingMethod: "Avg. Cost", closingQuantity: 8, closingValue: 2400 })],
+      movements: [
+        movement({ sourceId: "p1", date: "2025-06-02", quantityDelta: 10, rate: 100, amount: 1000, batchNumber: "Primary Batch" }),
+        movement({ sourceId: "p2", date: "2025-06-03", quantityDelta: 10, rate: 300, amount: 3000, batchNumber: "Primary Batch" }),
+        movement({ sourceId: "s1", kind: "sales", movementKind: "sale_out", date: "2025-06-04", quantityDelta: -15, amount: 3000, batchNumber: "Primary Batch" }),
+        movement({ sourceId: "p3", date: "2025-07-02", quantityDelta: 5, rate: 400, amount: 2000, batchNumber: "Primary Batch" }),
+        movement({ sourceId: "s2", kind: "sales", movementKind: "sale_out", date: "2025-07-03", quantityDelta: -2, amount: 600, batchNumber: "Primary Batch" }),
+      ],
+      stock: { openingValue: null, closingValue: 2400, itemsWithOpeningValue: 0, itemsWithClosingValue: 1, itemCount: 1 },
+    })
+
+    const row = reconcileReplay(simulateReplay(plan), plan).rows.find(
+      (entry) => entry.key === "Paracetamol 500mg (value)",
+    )
+    assert.equal(row?.actual, 2400)
+    assert.equal(row?.status, "match")
+    assert.match(row?.note ?? "", /2025-07-01/)
+  })
+
+  it("takes a purchase return back out of the inward side", () => {
+    // 10 @ 100 and 10 @ 200 in, 5 of the 200s returned: (3,000 - 1,000) / 15.
+    const plan = priceChangeAfterSale({
+      stockItems: [stockItem({ costingMethod: "Avg. Cost", closingQuantity: 15, closingValue: 2000 })],
+      movements: [
+        movement({ sourceId: "p1", date: "2026-04-02", quantityDelta: 10, rate: 100, amount: 1000, batchNumber: "Primary Batch" }),
+        movement({ sourceId: "p2", date: "2026-04-03", quantityDelta: 10, rate: 200, amount: 2000, batchNumber: "Primary Batch" }),
+        movement({ sourceId: "dn", kind: "purchase_return", movementKind: "return_out", date: "2026-04-04", quantityDelta: -5, rate: 200, amount: -1000, batchNumber: "Primary Batch" }),
+      ],
+      stock: { openingValue: null, closingValue: 2000, itemsWithOpeningValue: 0, itemsWithClosingValue: 1, itemCount: 1 },
+    })
+    const row = reconcileReplay(simulateReplay(plan), plan).rows.find(
+      (entry) => entry.key === "Paracetamol 500mg (value)",
+    )
+    assert.equal(row?.actual, 2000)
+    assert.equal(row?.status, "match")
+  })
+
+  it("rounds the rate to five decimals before valuing, as Tally's worked example does", () => {
+    // Tally's own FAQ: 425,720.00 over 5,335 units is 79.79756 a unit, and
+    // the closing value it shows is 425,719.98, not 425,720.00.
+    const plan = priceChangeAfterSale({
+      stockItems: [stockItem({ costingMethod: "Avg. Cost", closingQuantity: 5335, closingValue: 425_719.98 })],
+      movements: [
+        movement({ sourceId: "p1", date: "2026-04-02", quantityDelta: 5335, rate: 79.8, amount: 425_720, batchNumber: "Primary Batch" }),
+      ],
+      stock: { openingValue: null, closingValue: 425_719.98, itemsWithOpeningValue: 0, itemsWithClosingValue: 1, itemCount: 1 },
+    })
+    const row = reconcileReplay(simulateReplay(plan), plan).rows.find(
+      (entry) => entry.key === "Paracetamol 500mg (value)",
+    )
+    assert.equal(row?.actual, 425_719.98)
+    assert.equal(row?.status, "match")
+  })
+
+  it("still names a real Average Cost difference", () => {
+    const plan = priceChangeAfterSale({
+      stockItems: [stockItem({ costingMethod: "Avg. Cost", closingQuantity: 15, closingValue: 2100 })],
+    })
+    const reconciliation = reconcileReplay(simulateReplay(plan), plan)
+    const row = reconciliation.rows.find((entry) => entry.key === "Paracetamol 500mg (value)")
+    assert.equal(row?.status, "difference")
+    assert.equal(row?.difference, 150)
+    assert.ok(reconciliation.blocking >= 1)
+  })
+
+  it("compares an At Zero Cost item at zero", () => {
+    const plan = priceChangeAfterSale({
+      stockItems: [stockItem({ costingMethod: "At Zero Cost", closingQuantity: 15, closingValue: 0 })],
+      stock: { openingValue: null, closingValue: 0, itemsWithOpeningValue: 0, itemsWithClosingValue: 1, itemCount: 1 },
+    })
+    const reconciliation = reconcileReplay(simulateReplay(plan), plan)
+    assert.equal(reconciliation.rows.find((entry) => entry.key === "Paracetamol 500mg (value)")?.status, "match")
+    assert.equal(reconciliation.rows.find((entry) => entry.key === "stock value")?.status, "match")
+  })
+})
+

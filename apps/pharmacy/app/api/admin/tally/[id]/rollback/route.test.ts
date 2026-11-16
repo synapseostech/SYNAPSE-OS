@@ -23,6 +23,10 @@ vi.mock("@synapse/db/tally-replay-rpc", () => ({
 }))
 vi.mock("@/lib/tally/apply", () => ({
   reverseTallyJournals: m.reverseJournals,
+  tallyOpeningVoucher: (plan: { companyKey: string; conversionDate: string }) => ({
+    sourceType: "tally_opening",
+    sourceId: `${plan.companyKey}:opening:${plan.conversionDate}`,
+  }),
 }))
 vi.mock("@/lib/tally/plan", () => ({ loadStagePlan: m.loadStagePlan }))
 vi.mock("@/lib/tally/http", () => ({
@@ -100,10 +104,18 @@ beforeEach(() => {
   m.auth = ADMIN
   useDb(session())
   m.reverseSession.mockResolvedValue(reversedOk())
-  m.reverseJournals.mockResolvedValue({ posted: 3, failures: [] })
-  m.loadStagePlan.mockResolvedValue({
-    chunk: { vouchers: [{ sourceType: "voucher", sourceId: "v1" }] },
-  })
+  m.reverseJournals.mockResolvedValue({ posted: 3, notPosted: 0, failures: [] })
+  m.loadStagePlan.mockImplementation(async (_storage, _tenant, _session, stage: string) =>
+    stage === "opening-journal"
+      ? {
+          plan: {
+            companyKey: "company-guid",
+            conversionDate: "2025-04-01",
+            opening: { lines: [{ accountCode: "1000", debit: 500, credit: 0 }] },
+          },
+        }
+      : { chunk: { vouchers: [{ sourceType: "voucher", sourceId: "v1" }] } },
+  )
 })
 
 describe("POST tally rollback", () => {
@@ -172,11 +184,16 @@ describe("POST tally rollback", () => {
     const response = await POST(request(), params)
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toMatchObject({ done: true, journalsReversed: 6 })
+    expect(await response.json()).toMatchObject({ done: true, journalsReversed: 9, journalsNotPosted: 0 })
     expect(m.reverseSession).toHaveBeenCalledWith(expect.anything(), "tenant-1", "session-1")
-    expect(m.loadStagePlan).toHaveBeenCalledTimes(2)
+    expect(m.loadStagePlan).toHaveBeenCalledTimes(3)
     expect(m.loadStagePlan).toHaveBeenNthCalledWith(1, expect.anything(), "tenant-1", "session-1", "journals", 0)
     expect(m.loadStagePlan).toHaveBeenNthCalledWith(2, expect.anything(), "tenant-1", "session-1", "journals", 1)
+    expect(m.loadStagePlan).toHaveBeenNthCalledWith(3, expect.anything(), "tenant-1", "session-1", "opening-journal", 0)
+    // Every reversal names the session, so a re-import's own entries are the ones found.
+    for (const call of m.reverseJournals.mock.calls) {
+      expect(call[1]).toMatchObject({ tenantId: "tenant-1", sessionId: "session-1" })
+    }
 
     const update = fake.operations.find(
       (operation) =>
@@ -197,16 +214,38 @@ describe("POST tally rollback", () => {
     })
   })
 
+  it("reverses the opening balance journal too, not only the Day Book", async () => {
+    await POST(request(), params)
+    const opening = m.reverseJournals.mock.calls.find((call) =>
+      call[1].vouchers.some((voucher: { sourceType: string }) => voucher.sourceType === "tally_opening"),
+    )
+    expect(opening?.[1].vouchers).toEqual([
+      { sourceType: "tally_opening", sourceId: "company-guid:opening:2025-04-01" },
+    ])
+  })
+
+  it("has no opening journal to reverse when the plan carried no opening lines", async () => {
+    m.loadStagePlan.mockImplementation(async (_storage, _tenant, _session, stage: string) =>
+      stage === "opening-journal"
+        ? { plan: { companyKey: "company-guid", conversionDate: "2025-04-01", opening: { lines: [] } } }
+        : { chunk: { vouchers: [{ sourceType: "voucher", sourceId: "v1" }] } },
+    )
+    const response = await POST(request(), params)
+    expect(response.status).toBe(200)
+    expect(m.reverseJournals).toHaveBeenCalledTimes(2)
+  })
+
   it("stops short of marking the session when a reversing journal is refused", async () => {
     const fake = useDb(session())
     m.reverseJournals
       .mockResolvedValueOnce({
         posted: 0,
+        notPosted: 0,
         failures: [
           { sourceId: "voucher:v1", code: "ACCOUNTING_PERIOD_CLOSED", message: "Closed period." },
         ],
       })
-      .mockResolvedValue({ posted: 3, failures: [] })
+      .mockResolvedValue({ posted: 3, notPosted: 0, failures: [] })
     const response = await POST(request(), params)
 
     expect(response.status).toBe(500)

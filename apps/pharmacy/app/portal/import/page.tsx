@@ -203,6 +203,10 @@ export default function ImportPage() {
             <Link href="/portal/tally-import" className="text-primary underline underline-offset-2">
               open the cut-over
             </Link>
+            , and what an applied one wrote is in the{" "}
+            <Link href="/portal/tally-import/history" className="text-primary underline underline-offset-2">
+              Tally import history
+            </Link>
             . Stock files can also be analyzed directly in the{" "}
             <Link
               href="/portal/import-assistant"

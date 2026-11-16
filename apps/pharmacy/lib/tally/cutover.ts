@@ -20,6 +20,15 @@ export type TallyApplyLease = {
   token: string | null
 }
 
+/**
+ * The session that holds this pharmacy's cut-over, or null when none does.
+ *
+ * The lock row outlives a rollback: it still names the session that was
+ * reversed. That session no longer holds anything — its stock and journals are
+ * undone and findCompletedCutover already reads past it — so a lock naming a
+ * reversed session is free, and the next import may start. The database's own
+ * claim hands the lock over once the old lease has lapsed.
+ */
 export async function findTallyCutoverOwner(tenantId: string): Promise<string | null> {
   const { data, error } = await db()
     .from("pharmacy_tally_cutover_locks")
@@ -30,7 +39,19 @@ export async function findTallyCutoverOwner(tenantId: string): Promise<string | 
   if (error) {
     throw new Error(`TALLY_CUTOVER_STATUS_UNAVAILABLE: ${error.message}`)
   }
-  return typeof data?.session_id === "string" ? data.session_id : null
+  const sessionId = typeof data?.session_id === "string" ? data.session_id : null
+  if (!sessionId) return null
+
+  const { data: session, error: sessionError } = await db()
+    .from("pharmacy_import_sessions")
+    .select("reversed_at:ai_mapping->>reversedAt")
+    .eq("id", sessionId)
+    .eq("tenant_id", tenantId)
+    .maybeSingle()
+  if (sessionError) {
+    throw new Error(`TALLY_CUTOVER_STATUS_UNAVAILABLE: ${sessionError.message}`)
+  }
+  return typeof session?.reversed_at === "string" && session.reversed_at ? null : sessionId
 }
 
 export async function acquireTallyApplyLease(

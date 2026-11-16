@@ -18,6 +18,7 @@ import {
   replaceChunkResult,
   splitChunk,
   splitPeriod,
+  tallyModeFor,
   summariseExtraction,
   voucherChunkId,
   voucherDatesOutsidePeriod,
@@ -212,6 +213,22 @@ describe("replaceChunkResult", () => {
       attempts: 2,
       startedAt: AT,
     })
+  })
+})
+
+describe("tallyModeFor", () => {
+  it("replays a history export where the deployment allows replay", () => {
+    expect(tallyModeFor(true, true)).toBe("replay")
+  })
+
+  it("reads a history export as opening balances and history when replay is off", () => {
+    expect(tallyModeFor(true, false)).toBe("opening")
+    expect(tallyModeFor(true)).toBe("opening")
+  })
+
+  it("reads a masters-only export as its closing balances either way", () => {
+    expect(tallyModeFor(false, true)).toBe("closing")
+    expect(tallyModeFor(false, false)).toBe("closing")
   })
 })
 

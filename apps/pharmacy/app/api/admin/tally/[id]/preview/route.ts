@@ -36,6 +36,12 @@ import { buildTallyPreview } from "@/lib/tally/preview"
 import { editionDisclosure, editionProblems, normaliseTallyEdition } from "@/lib/tally/editions"
 import { tallyErrorResponse } from "@/lib/tally/http"
 
+// A customer-scale history is applied one stage step per request; a step of
+// 250 replayed movements takes ~8 s against a loopback database, so the
+// platform default (10-15 s on legacy Vercel functions) leaves no headroom.
+// 60 s is accepted on every Vercel plan.
+export const maxDuration = 60
+
 const db = () => supabaseAdmin as any
 const storage = () => ({ storage: db().storage }) as TallyStorageClient
 
@@ -204,13 +210,15 @@ export async function POST(
 
   try {
     // The export answers the mode question: vouchers it carries are history,
-    // a masters-only export carries the balances it closes on. A replay is the
-    // one decision an export cannot imply, so a session that settled on one
-    // keeps it; opening and closing are re-read every time, because adding the
-    // history files to a session first read as balances must not leave it
-    // closing.
+    // replayed where the deployment allows it (else opening balances and
+    // history), and a masters-only export carries the balances it closes on.
+    // A session that settled on replay keeps it; the others are re-read every
+    // time, because adding the history files to a session first read as
+    // balances must not leave it closing.
     const settledMode = (hasVouchers: boolean): TallyImportMode =>
-      requestedMode ?? (mapping.mode === "replay" ? "replay" : undefined) ?? tallyModeFor(hasVouchers)
+      requestedMode ??
+      (mapping.mode === "replay" ? "replay" : undefined) ??
+      tallyModeFor(hasVouchers, tallyReplayEnabled())
 
     // A session whose files were staged one by one is previewed once, over
     // every stored chunk at the end. Its manifest is what the sources route

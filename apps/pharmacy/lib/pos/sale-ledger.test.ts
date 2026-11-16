@@ -23,7 +23,7 @@ function chain(table: string) {
         : []
   const q: any = {
     select: (s: string) => ((selects[table] = s), q),
-    eq: () => q, in: () => q, gte: () => q, lte: () => q, order: () => q, limit: () => q,
+    eq: () => q, in: () => q, gte: () => q, lte: () => q, order: () => q, limit: () => q, range: () => q,
     ilike: (column: string, pattern: string) => (ilikeCalls.push({ table, column, pattern }), q),
     then: (res: (v: unknown) => unknown) => {
       const s = selects[table] ?? ""
