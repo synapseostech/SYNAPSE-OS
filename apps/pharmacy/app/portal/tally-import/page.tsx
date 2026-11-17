@@ -144,7 +144,6 @@ type ReplayRow = {
   status: "match" | "difference" | "not-available"
   tolerance: number
   firstDivergence?: { date: string; sourceId: string; movementId?: string }
-  sourceIds: string[]
 }
 
 /** One thing the replay differs on, or the simulation refuses to accept. */
@@ -454,6 +453,7 @@ export default function TallyImportPage() {
   // Replay only: the operator's explicit decision that the export states no
   // batch expiry. It is never inferred from the file.
   const [batchExpiry, setBatchExpiry] = useState<"source" | "not-supplied">("source")
+  const [negativeStock, setNegativeStock] = useState<"refused" | "allowed">("refused")
   const [cutoverAccess, setCutoverAccess] = useState<"checking" | "ready" | "complete" | "denied" | "disabled" | "error">("checking")
   const [scriptPort, setScriptPort] = useState("")
   const [scriptCompany, setScriptCompany] = useState("")
@@ -765,6 +765,7 @@ export default function TallyImportPage() {
     setReplacePrompt(null)
     setConversionDate("")
     setBatchExpiry("source")
+    setNegativeStock("refused")
     setMode("opening")
     clearReview()
     if (fileInput.current) fileInput.current.value = ""
@@ -865,7 +866,7 @@ export default function TallyImportPage() {
         body: JSON.stringify({
           ...(period ? { period } : companyPeriod ? { period: companyPeriod } : {}),
           ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
-          ...(mode === "replay" ? { batchExpiry } : {}),
+          ...(mode === "replay" ? { batchExpiry, negativeStock } : {}),
         }),
       })
       const data = await previewResponse.json()
@@ -1189,7 +1190,7 @@ export default function TallyImportPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...(scriptCompany.trim() ? { company: scriptCompany.trim() } : {}),
-          ...(mode === "replay" ? { batchExpiry } : {}),
+          ...(mode === "replay" ? { batchExpiry, negativeStock } : {}),
         }),
       })
       const data = await response.json()
@@ -1528,6 +1529,25 @@ Export from Tally, then add the files
                     so it cannot be expiry-tracked, allocated by expiry or recalled by batch
                     expiry. Stock received after the cut-over is unaffected. Leave this off if
                     the export states expiries — the import then refuses a receipt without one.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 rounded-md border border-dashed p-3 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={negativeStock === "allowed"}
+                  onChange={(event) => setNegativeStock(event.target.checked ? "allowed" : "refused")}
+                  disabled={cutoverAccess !== "ready" || busy !== "idle"}
+                />
+                <span>
+                  This Tally company allowed negative stock
+                  <span className="block text-xs text-muted-foreground">
+                    Tally lets a sale go below zero when the company is set up that way. Tick this
+                    only if it was: the replay then carries each negative exactly as Tally did and
+                    lists every one as a warning, and the closing check still compares the result
+                    with Tally&apos;s own closing stock. Left off, each negative blocks Apply. Preview
+                    again after changing it.
                   </span>
                 </span>
               </label>

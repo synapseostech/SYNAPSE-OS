@@ -570,10 +570,18 @@ describe("simulateReplay", () => {
 
 describe("reconcileReplay", () => {
   it("compares each item's closing quantity and value with Tally's", () => {
+    // A stated method the replay does not model is compared on batch values.
     const plan = basePlan({
       stockItems: [
-        stockItem({ closingQuantity: 6, closingValue: 600 }),
-        stockItem({ sourceName: "Amoxicillin", sku: "AMOX", name: "Amoxicillin", closingQuantity: 3, closingValue: 300 }),
+        stockItem({ closingQuantity: 6, closingValue: 600, costingMethod: "FIFO" }),
+        stockItem({
+          sourceName: "Amoxicillin",
+          sku: "AMOX",
+          name: "Amoxicillin",
+          closingQuantity: 3,
+          closingValue: 300,
+          costingMethod: "FIFO",
+        }),
       ],
       movements: [
         movement({ stockItemName: "Paracetamol 500mg", date: "2026-04-02", quantityDelta: 6, amount: 600 }),
@@ -693,18 +701,38 @@ describe("reconcileReplay — Tally's costing method", () => {
     assert.equal(reconciliation.blocking, 0)
   })
 
-  it("would have reported the moving batch average as a difference, which Tally never had", () => {
-    // The same history with no costing method stated keeps the replay's own
-    // batch values: exactly the false difference an Average Cost item produced.
+  it("does not call the moving batch average a difference when the export states no method", () => {
+    // The same history with no costing method stated: batch values say 2,500,
+    // which is exactly the false difference an Average Cost item produced.
     const plan = priceChangeAfterSale({
       stockItems: [stockItem({ closingQuantity: 15, closingValue: 2250 })],
     })
-    const row = reconcileReplay(simulateReplay(plan), plan).rows.find(
-      (entry) => entry.key === "Paracetamol 500mg (value)",
-    )
-    assert.equal(row?.basis, "batch")
+    const reconciliation = reconcileReplay(simulateReplay(plan), plan)
+    const row = reconciliation.rows.find((entry) => entry.key === "Paracetamol 500mg (value)")
+    assert.equal(row?.basis, "unknown")
     assert.equal(row?.actual, 2500)
-    assert.equal(row?.status, "difference")
+    assert.equal(row?.difference, null)
+    assert.equal(row?.status, "not-available")
+    assert.equal(reconciliation.rows.find((entry) => entry.key === "stock value")?.status, "not-available")
+    assert.equal(reconciliation.blocking, 0)
+  })
+
+  it("still shows a match when the export states no method and the batch value is Tally's", () => {
+    const plan = priceChangeAfterSale({
+      stockItems: [stockItem({ closingQuantity: 15, closingValue: 2500 })],
+      stock: {
+        openingValue: null,
+        closingValue: 2500,
+        itemsWithOpeningValue: 0,
+        itemsWithClosingValue: 1,
+        itemCount: 1,
+      },
+    })
+    const reconciliation = reconcileReplay(simulateReplay(plan), plan)
+    const row = reconciliation.rows.find((entry) => entry.key === "Paracetamol 500mg (value)")
+    assert.equal(row?.basis, "unknown")
+    assert.equal(row?.status, "match")
+    assert.equal(reconciliation.rows.find((entry) => entry.key === "stock value")?.status, "match")
   })
 
   it("reads the method however Tally spells it", () => {

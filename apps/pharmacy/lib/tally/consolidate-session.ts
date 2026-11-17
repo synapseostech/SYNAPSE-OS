@@ -7,7 +7,11 @@
  * from drifting — a change to how chunks become a document lands for both.
  */
 
-import { normaliseTallyDocument, type TallyBatchExpiry } from "@synapse/db/tally-normalise"
+import {
+  normaliseTallyDocument,
+  type TallyBatchExpiry,
+  type TallyNegativeStock,
+} from "@synapse/db/tally-normalise"
 import type { TallyAccountOverrides } from "@synapse/db/tally-map"
 import { applyTallyStockSheet, type TallyStockSheet, type TallyStockSheetMerge } from "./stock-sheet"
 import { consolidateTallyParts, type TallyConsolidation } from "./consolidate"
@@ -68,6 +72,8 @@ export async function consolidateStoredChunks(
     stockSheet?: TallyStockSheet
     /** Whether the source states batch expiry dates. */
     batchExpiry?: TallyBatchExpiry
+    /** Whether the source Tally allowed negative stock (replay only). */
+    negativeStock?: TallyNegativeStock
   },
 ): Promise<TallyConsolidatedPlan> {
   const consolidation = await readStoredDocument(client, input)
@@ -83,6 +89,7 @@ export async function consolidateStoredChunks(
     accountOverrides: input.accountOverrides,
     productSkuOverrides: input.productSkuOverrides,
     batchExpiry: input.batchExpiry,
+    negativeStock: input.negativeStock,
   })
 
   return { plan, consolidation: { ...consolidation, document }, ...(merge ? { stockSheet: merge } : {}) }

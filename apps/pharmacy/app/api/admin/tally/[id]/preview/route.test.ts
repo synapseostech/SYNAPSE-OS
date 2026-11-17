@@ -282,6 +282,34 @@ describe("POST /api/admin/tally/[id]/preview", () => {
     expect(m.normalise).not.toHaveBeenCalled()
   })
 
+  it("passes the operator's negative-stock statement to the normaliser", async () => {
+    const res = await post({ negativeStock: "allowed" })
+
+    expect(res.status).toBe(200)
+    expect(m.normalise).toHaveBeenCalledWith(
+      { currency: "UGX", vouchers: [] },
+      expect.objectContaining({ negativeStock: "allowed" }),
+    )
+  })
+
+  it("refuses negative stock unless the operator states it", async () => {
+    const res = await post({})
+
+    expect(res.status).toBe(200)
+    expect(m.normalise).toHaveBeenCalledWith(
+      { currency: "UGX", vouchers: [] },
+      expect.objectContaining({ negativeStock: "refused" }),
+    )
+  })
+
+  it("refuses a negative-stock statement it does not understand", async () => {
+    const res = await post({ negativeStock: "yes" })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe("TALLY_NEGATIVE_STOCK_INVALID")
+    expect(m.normalise).not.toHaveBeenCalled()
+  })
+
   it("normalises once, stores the plan and returns the review payload", async () => {
     const res = await post({ conversionDate: "2026-04-01" })
     const body = await res.json()

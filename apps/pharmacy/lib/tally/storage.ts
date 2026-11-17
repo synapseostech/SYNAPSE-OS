@@ -17,7 +17,13 @@ export const TALLY_BUCKET = PHARMACY_IMPORT_BUCKET
  * must move together or a file passes one gate and fails the next.
  */
 export const TALLY_SOURCE_LIMIT = 50 * 1024 * 1024
-export const TALLY_JSON_LIMIT = 20 * 1024 * 1024
+/**
+ * One plan artifact's ceiling, under the bucket's per-file limit above. The
+ * replay target carries a reconciliation row per item and account and a cost
+ * per sale line, so it grows with the history: SADIO's fourteen months (25,929
+ * vouchers, 2,025 items) write 21.85 MB. 45 MB leaves room for about twice that.
+ */
+export const TALLY_JSON_LIMIT = 45 * 1024 * 1024
 
 export type TallySourceExtension = "xml" | "xlsx" | "xls" | "csv" | "zip"
 

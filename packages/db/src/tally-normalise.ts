@@ -325,6 +325,12 @@ export type TallyCutoverPlan = {
    * without an expiry instead of leaving it to be inferred from empty fields.
    */
   batchExpiry?: TallyBatchExpiry
+  /**
+   * Replay only: whether the source Tally allowed negative stock. `allowed` is
+   * an operator statement, never inferred; the replay then carries negative
+   * quantities exactly as Tally did and lists each one as a warning.
+   */
+  negativeStock?: TallyNegativeStock
   accounts: TallyCutoverAccount[]
   parties: TallyCutoverParty[]
   mode: TallyCutoverMode
@@ -386,12 +392,20 @@ export type TallyNormaliseOptions = {
    * carries one aggregate warning saying so.
    */
   batchExpiry?: TallyBatchExpiry
+  /**
+   * Whether the source Tally allowed negative stock. `allowed` is an explicit
+   * operator statement: Tally lets a sale go below zero when the company is
+   * set up that way, and a replay of such books meets those negatives on every
+   * line that did. Absent or `refused`, each negative blocks Apply.
+   */
+  negativeStock?: TallyNegativeStock
   /** Today in Africa/Kampala (YYYY-MM-DD). Defaults to the current date. */
   today?: string
 }
 
 /** Whether the source carries batch expiry dates. */
 export type TallyBatchExpiry = "source" | "not-supplied"
+export type TallyNegativeStock = "refused" | "allowed"
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const MAX_EXCEPTIONS = 500
@@ -829,11 +843,15 @@ function captureReplayMovements({
     const lineQuantity = line.quantity
 
     if (lineQuantity === undefined || !Number.isFinite(lineQuantity)) {
+      // A line Tally holds with a value but no quantity moved no stock in
+      // Tally either: its closing quantity never counted it. Replaying it as
+      // nothing is what Tally did, so this is said, not blocked. Its value is
+      // still in the voucher's journal.
       addException(
         "REPLAY_MOVEMENT_WITHOUT_QUANTITY",
-        `Stock line "${line.stockItemName}" on "${voucherLabel(voucher)}" has no readable quantity, so its movement cannot be replayed.`,
+        `Stock line "${line.stockItemName}" on "${voucherLabel(voucher)}" has no quantity, so it moves no stock, as in Tally. Its value stays in the voucher's journal.`,
         `${sourceId}:L${lineIndex}`,
-        "blocking",
+        "warning",
       )
       continue
     }
@@ -1087,6 +1105,32 @@ function attachPrices(
         : undefined
     if (sellingPrice) item.sellingPrice = sellingPrice
     if (purchaseCost) item.purchaseCost = purchaseCost
+  }
+}
+
+/**
+ * Gives every mirrored sale or purchase its own number. Tally can restart
+ * voucher numbering (SADIO reuses 9,299 sale numbers, day by day), and the
+ * mirror keys a row by its number, so a repeat was refused and dropped from
+ * the reports. A number used once keeps `TALLY-<n>`; a repeated one carries
+ * its date, and a repeat on the same date a counter in export order. The
+ * same export always yields the same numbers, so a resumed Apply matches.
+ */
+function distinctMirrorNumbers<K extends "transactionNumber" | "purchaseNumber">(
+  entries: Array<{ date: string } & Record<K, string>>,
+  key: K,
+): void {
+  const uses = new Map<string, number>()
+  for (const entry of entries) uses.set(entry[key], (uses.get(entry[key]) ?? 0) + 1)
+  const taken = new Set<string>()
+  for (const entry of entries) if (uses.get(entry[key]) === 1) taken.add(entry[key])
+  for (const entry of entries) {
+    if (uses.get(entry[key]) === 1) continue
+    const dated = `${entry[key]}-${entry.date.replaceAll("-", "")}`
+    let candidate = dated
+    for (let counter = 2; taken.has(candidate); counter += 1) candidate = `${dated}-${counter}`
+    taken.add(candidate)
+    ;(entry as Record<K, string>)[key] = candidate
   }
 }
 
@@ -2147,6 +2191,9 @@ export function normaliseTallyDocument(
     )
   }
 
+  distinctMirrorNumbers(sales, "transactionNumber")
+  distinctMirrorNumbers(purchases, "purchaseNumber")
+
   return {
     company,
     companyKey,
@@ -2165,6 +2212,7 @@ export function normaliseTallyDocument(
         ? { movements: replayMovements }
         : {}),
     batchExpiry,
+    ...(mode === "replay" && options.negativeStock === "allowed" ? { negativeStock: "allowed" as const } : {}),
     mode,
     accounts: cutoverAccounts,
     parties,

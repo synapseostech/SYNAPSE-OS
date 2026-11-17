@@ -141,11 +141,14 @@ suite("the SADIO PHARMACY archive", () => {
     })
 
     expect(plan.batchExpiry).toBe("not-supplied")
-    // Accepting the absent expiry removes that blocker only. The five
-    // quantity-less lines still block, because no policy can supply a quantity.
-    const blocking = plan.exceptions.filter((entry) => entry.severity === "blocking")
-    expect(blocking).toHaveLength(5)
-    expect(blocking.every((entry) => entry.code === "REPLAY_MOVEMENT_WITHOUT_QUANTITY")).toBe(true)
+    // Accepting the absent expiry removes that blocker. The five quantity-less
+    // lines moved no stock in Tally either, so they are listed as warnings.
+    expect(plan.exceptions.filter((entry) => entry.severity === "blocking")).toEqual([])
+    const quantityless = plan.exceptions.filter(
+      (entry) => entry.code === "REPLAY_MOVEMENT_WITHOUT_QUANTITY",
+    )
+    expect(quantityless).toHaveLength(5)
+    expect(quantityless.every((entry) => entry.severity === "warning")).toBe(true)
     expect(
       plan.exceptions.some((entry) => entry.code === "REPLAY_MOVEMENT_EXPIRY_MISSING"),
     ).toBe(false)

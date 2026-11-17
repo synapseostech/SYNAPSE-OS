@@ -225,11 +225,13 @@ suite("the SADIO PHARMACY export folder", () => {
     expect(adjustments[0]?.date).toBe("2025-11-16")
     expect(adjustments.at(-1)?.date).toBe("2026-11-04")
 
-    // One physical stock line states no quantity. It is named as blocking
-    // rather than counted as zero; the rest of the voucher still applies.
-    const openingBlocking = opening.exceptions.filter((entry) => entry.severity === "blocking")
-    expect(openingBlocking).toHaveLength(1)
-    expect(openingBlocking[0]?.code).toBe("REPLAY_MOVEMENT_WITHOUT_QUANTITY")
+    // One physical stock line states no quantity. It moved no stock in Tally
+    // either, so it is named as a warning; the rest of the voucher applies.
+    expect(opening.exceptions.filter((entry) => entry.severity === "blocking")).toEqual([])
+    const openingQuantityless = opening.exceptions.filter(
+      (entry) => entry.code === "REPLAY_MOVEMENT_WITHOUT_QUANTITY",
+    )
+    expect(openingQuantityless.map((entry) => entry.severity)).toEqual(["warning"])
 
     // Unaccepted, every receipt with no batch expiry is refused, so no
     // purchase movement is built at all.
@@ -244,6 +246,7 @@ suite("the SADIO PHARMACY export folder", () => {
       OPENING_STOCK_WITHOUT_EXPIRY: 1_112,
       COST_UNKNOWN: 1,
       STOCK_LINE_WITHOUT_QUANTITY: 3,
+      PRICE_FROM_COST: 1,
     })
 
     // Accepting the absent expiry is an explicit, disclosed decision: it is the
@@ -262,18 +265,16 @@ suite("the SADIO PHARMACY export folder", () => {
       REPLAY_BATCH_EXPIRY_NOT_SUPPLIED: 1,
       REPLAY_INVENTORY_ON_NON_TRADE_VOUCHER: 1,
       REPLAY_MOVEMENT_WITHOUT_QUANTITY: 5,
-      OPENING_STOCK_WITHOUT_EXPIRY: 1_112,
       COST_UNKNOWN: 1,
       STOCK_LINE_WITHOUT_QUANTITY: 3,
+      PRICE_FROM_COST: 1,
     })
-    const acceptedBlocking = accepted.exceptions.filter((entry) => entry.severity === "blocking")
-    expect(acceptedBlocking).toHaveLength(5)
-    expect(new Set(acceptedBlocking.map((entry) => entry.code))).toEqual(
-      new Set(["REPLAY_MOVEMENT_WITHOUT_QUANTITY"]),
-    )
+    // With the expiry accepted nothing in the plan itself blocks: the five
+    // quantity-less lines are warnings, and negatives are the replay's call.
+    expect(accepted.exceptions.filter((entry) => entry.severity === "blocking")).toEqual([])
   })
 
-  it("reconciles the ledger, and shows stock parity needs batch expiry", { timeout: 300_000 }, async () => {
+  it("reconciles the ledger, and blocks only on what differs from Tally", { timeout: 300_000 }, async () => {
     const { document } = await readFolder()
     const plan = replay(document, "not-supplied")
     const reconciliation = reconcileReplay(simulateReplay(plan), plan)
@@ -309,7 +310,7 @@ suite("the SADIO PHARMACY export folder", () => {
       explained[bucket] += 1
     }
     expect(explained).toEqual({
-      openingOnly: 318,
+      openingOnly: 0,
       openingWithPhysical: 1,
       physicalOnly: 1,
       neither: 0,
@@ -318,12 +319,12 @@ suite("the SADIO PHARMACY export folder", () => {
     expect(plan.stockItems).toHaveLength(2025)
     expect(plan.stockItems.filter((item) => (item.quantity ?? 0) !== 0)).toHaveLength(1_112)
     expect(physical.size).toBe(1_131)
-    // The masters carry no batch allocation on a stock item and no expiry, so
-    // no opening batch is receivable and none of the 1,112 opening positions is
-    // seeded. That is the whole of the stock difference.
+    // The masters carry no expiry. With the absent expiry accepted, each of the
+    // 1,112 opening positions is seeded as a receivable batch, which is why no
+    // item differs by its opening alone.
     expect(
       plan.stockItems.filter((item) => item.batches.some((batch) => batch.receivable)),
-    ).toEqual([])
+    ).toHaveLength(1_112)
 
     const byScope = reconciliation.rows.reduce<Record<string, Record<string, number>>>(
       (acc, row) => {
@@ -334,8 +335,11 @@ suite("the SADIO PHARMACY export folder", () => {
       {},
     )
     expect(byScope).toEqual({
-      stock_item: { match: 1_939, difference: 2_111 },
-      stock_total: { difference: 1 },
+      // 2,023 quantities and 413 values match. The export states no costing
+      // method, so the 1,612 values that miss Tally's are not-available, and
+      // with them the stock total.
+      stock_item: { match: 2_436, "not-available": 1_612, difference: 2 },
+      stock_total: { "not-available": 1 },
       account: { match: 55, difference: 1 },
     })
 
@@ -359,7 +363,31 @@ suite("the SADIO PHARMACY export folder", () => {
       difference: 4,
     })
 
-    expect(reconciliation.blocking).toBe(8_233)
+    expect(differing.map((row) => row.key).sort()).toEqual([
+      "Supirocin Ointment (A)",
+      "Vicryl No.1 Round Bodied",
+    ])
+
+    // 3,506 negatives, the two quantities and the accumulated profit.
+    expect(reconciliation.blocking).toBe(3_509)
+
+    // SADIO's Tally allowed negative stock. Stated, the negatives are carried
+    // as Tally carried them and listed as warnings; the closing check is
+    // unchanged and still blocks on what differs from Tally.
+    const stated = normaliseTallyDocument(document, {
+      mode: "replay",
+      conversionDate: PERIOD.from,
+      today: TODAY,
+      batchExpiry: "not-supplied",
+      negativeStock: "allowed",
+    })
+    expect(stated.negativeStock).toBe("allowed")
+    const carried = simulateReplay(stated, { allowNegativeStock: true })
+    expect(carried.findings.filter((entry) => entry.severity === "blocking")).toEqual([])
+    expect(
+      carried.findings.filter((entry) => entry.code === "REPLAY_NEGATIVE_STOCK").length,
+    ).toBe(3_506)
+    expect(reconcileReplay(carried, stated).blocking).toBe(3)
   })
 
   it("hands the operator every opening item on the stock sheet, with nothing guessed", { timeout: 300_000 }, async () => {

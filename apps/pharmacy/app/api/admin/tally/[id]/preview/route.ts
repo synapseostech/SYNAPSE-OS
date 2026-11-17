@@ -100,6 +100,7 @@ export async function POST(
     edition?: unknown
     company?: unknown
     batchExpiry?: unknown
+    negativeStock?: unknown
   } = {}
   try {
     const text = await request.text()
@@ -111,6 +112,7 @@ export async function POST(
         edition?: unknown
         company?: unknown
         batchExpiry?: unknown
+        negativeStock?: unknown
       }
     }
   } catch {
@@ -127,6 +129,18 @@ export async function POST(
     )
   }
   const batchExpiry = body.batchExpiry === "not-supplied" ? "not-supplied" : "source"
+  if (
+    body.negativeStock !== undefined &&
+    body.negativeStock !== "refused" &&
+    body.negativeStock !== "allowed"
+  ) {
+    return NextResponse.json(
+      { error: "negativeStock must be \"refused\" or \"allowed\"", code: "TALLY_NEGATIVE_STOCK_INVALID" },
+      { status: 400 },
+    )
+  }
+  // Only ever the operator's statement about their Tally, never inferred.
+  const negativeStock = body.negativeStock === "allowed" ? "allowed" : "refused"
   // The company the operator entered, used only when the file names none.
   const bodyCompany = typeof body.company === "string" ? body.company.trim() : ""
   if (body.company !== undefined && typeof body.company !== "string") {
@@ -269,6 +283,7 @@ export async function POST(
         accountOverrides: mapping.accountOverrides,
         productSkuOverrides: mapping.productSkuOverrides,
         batchExpiry,
+        negativeStock,
         ...(stockSheet ? { stockSheet } : {}),
       })
       plan = consolidated.plan
@@ -310,6 +325,7 @@ export async function POST(
         accountOverrides: mapping.accountOverrides,
         productSkuOverrides: mapping.productSkuOverrides,
         batchExpiry,
+        negativeStock,
       })
     }
 

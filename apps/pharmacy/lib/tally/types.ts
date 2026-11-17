@@ -12,6 +12,9 @@ import type {
   TallyReplayState,
 } from "@synapse/db/tally-replay"
 
+/** A reconciliation row as the session summary keeps it: no voucher list. */
+export type TallyReplayReconciliationSummaryRow = Omit<TallyReplayReconciliationRow, "sourceIds">
+
 /** What PostgREST returns for a refused write; `code` is the SQLSTATE. */
 export type TallyDbError = {
   message: string
@@ -148,6 +151,11 @@ export type TallyPlanSummary = {
    * on summaries prepared before this choice existed.
    */
   batchExpiry?: "source" | "not-supplied"
+  /**
+   * Replay only: `allowed` when the operator stated the source Tally allowed
+   * negative stock. Absent means each negative blocks Apply.
+   */
+  negativeStock?: "allowed"
   format: "xml" | "xlsx" | "xls" | "csv"
   counts: {
     ledgers: number
@@ -206,7 +214,12 @@ export type TallyPlanSummary = {
     /** Movement chunks Apply walks through in the `stock-history` stage. */
     movementChunkCount: number
     perDay: TallyReplayDayCount[]
-    reconciliation: TallyReplayReconciliationRow[]
+    /**
+     * Every row the review shows, without the vouchers each one touched. The
+     * session saves this summary at every Apply step, and those lists made a
+     * full history's summary about 10 MB; they stay in the replay target.
+     */
+    reconciliation: TallyReplayReconciliationSummaryRow[]
     /** Rows whose difference is real, plus blocking simulation findings. */
     blocking: number
     warnings: number

@@ -1134,7 +1134,10 @@ async function stageStockHistory(
       godown: movement.godown ?? null,
       allocation: movement.allocation,
       allocations,
-      allowNegative: negativeAllowed.has(movement.movementId),
+      // Stated for the whole export, it covers every movement: the database
+      // then goes negative exactly where Tally did. Otherwise only movements
+      // the reviewed preview showed as negative may.
+      allowNegative: plan.negativeStock === "allowed" || negativeAllowed.has(movement.movementId),
     })
     if (error) {
       progress.fail(

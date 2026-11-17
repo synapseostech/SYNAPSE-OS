@@ -48,6 +48,7 @@ type StaticPlan = Pick<
   | "cutoffDate"
   | "ordering"
   | "mode"
+  | "negativeStock"
   | "accounts"
   | "parties"
   | "stockItems"
@@ -147,7 +148,9 @@ export function buildReplayTarget(
   preparedAt: string,
 ): TallyReplayTarget {
   const events = buildReplayEvents(plan)
-  const simulation = simulateReplay(plan)
+  // The operator's statement that the source Tally allowed negative stock:
+  // each negative stays listed, as a warning, instead of blocking Apply.
+  const simulation = simulateReplay(plan, { allowNegativeStock: plan.negativeStock === "allowed" })
   const reconciliation = reconcileReplay(simulation, plan)
 
   const perDay = new Map<string, TallyReplayDayCount>()
@@ -314,6 +317,7 @@ export function summarisePlan(
     conversionDate: plan.conversionDate,
     mode: plan.mode,
     batchExpiry: plan.batchExpiry ?? "source",
+    ...(plan.negativeStock === "allowed" ? { negativeStock: "allowed" as const } : {}),
     format,
     counts: plan.counts,
     opening: {
@@ -333,7 +337,10 @@ export function summarisePlan(
             movementCount: replay.movementCount,
             movementChunkCount: Math.ceil(replay.movementCount / chunkSize),
             perDay: replay.perDay,
-            reconciliation: replay.reconciliation,
+            // The vouchers behind each row stay in the replay target. Kept
+            // here, they made the summary every Apply checkpoint rewrites
+            // ~10 MB for SADIO, past the database's statement timeout.
+            reconciliation: replay.reconciliation.map(({ sourceIds: _sourceIds, ...row }) => row),
             blocking: replay.blocking,
             warnings: replay.warnings,
           },
@@ -393,6 +400,7 @@ export async function writeTallyPlan(
     cutoffDate: plan.cutoffDate,
     ordering: plan.ordering,
     mode: plan.mode,
+    ...(plan.negativeStock ? { negativeStock: plan.negativeStock } : {}),
     accounts: plan.accounts,
     parties: plan.parties,
     stockItems: plan.stockItems,

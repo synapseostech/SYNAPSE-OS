@@ -615,10 +615,17 @@ export function simulateReplay(
  * method. Methods the replay does not model keep the replay's batch values, so
  * a real difference stays visible instead of being explained away.
  */
-export type TallyCostingBasis = "batch" | "average-cost" | "zero"
+export type TallyCostingBasis = "batch" | "average-cost" | "zero" | "unknown"
 
+/**
+ * How Tally values an item's closing stock, from the method its master states.
+ * An export that does not state one (any made before the script asked for
+ * CostingMethod) leaves it `unknown`: batch values are compared, but one that
+ * misses Tally's figure reads not-available rather than a difference, since
+ * Tally's own default is Average Cost and the gap may be the method alone.
+ */
 export function costingBasis(method: string | undefined): TallyCostingBasis {
-  if (!method) return "batch"
+  if (!method || !method.trim()) return "unknown"
   const normalised = method.toLowerCase().replace(/[.\s]+/g, " ").trim()
   if (normalised === "avg cost" || normalised === "average cost") return "average-cost"
   if (normalised === "at zero cost" || normalised === "zero cost") return "zero"
@@ -846,7 +853,26 @@ export function reconcileReplay(
     if (item.closingValue !== undefined) {
       const basis = costingBasis(item.costingMethod)
       const valueKey = `${item.sourceName} (value)`
-      if (basis === "batch") {
+      // No method stated: the replay's batch value still proves itself when it
+      // lands on Tally's figure. When it does not, the difference may be only
+      // the costing method, so it is not reported as one.
+      const unknownRow =
+        basis === "unknown"
+          ? stockRow(valueKey, item.closingValue, actual?.value, 0.01, "cents", sourceIds)
+          : null
+      if (unknownRow && unknownRow.status === "match") {
+        rows.push({ ...unknownRow, basis })
+        actualValueByItem.set(item.sourceName, actual?.value ?? 0)
+      } else if (unknownRow) {
+        rows.push({
+          ...unknownRow,
+          difference: null,
+          status: "not-available",
+          basis,
+          note: "The export does not state this item's costing method, so a value that differs from Tally's cannot be called a difference. Re-export with the current script to check stock values; quantities are compared regardless.",
+        })
+        actualValueByItem.set(item.sourceName, null)
+      } else if (basis === "batch") {
         rows.push({
           ...stockRow(valueKey, item.closingValue, actual?.value, 0.01, "cents", sourceIds),
           basis,

@@ -1386,6 +1386,35 @@ describe("replay write path", () => {
     expect(state.products.get("product-1")).toBe(-4)
   })
 
+  it("writes every shortage when the operator stated the source Tally allowed negative stock", async () => {
+    const { db, state } = replayDb()
+    const out = movement({
+      movementId: "company-guid:voucher-9:L0:B0",
+      sourceId: "company-guid:voucher-9",
+      kind: "sales",
+      movementKind: "sale_out",
+      quantityDelta: -4,
+      batchNumber: undefined,
+      expiryDate: undefined,
+      allocation: "fefo",
+    })
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      sessionId: "session-1",
+      replay: true,
+      // No finding names this movement: the statement covers the whole export.
+      plan: { ...replayPlan([out]), negativeStock: "allowed" },
+      progress: stockHistoryProgress(),
+      movementTotalChunks: 1,
+      replayTarget: replayTarget(),
+    })
+
+    expect(result.progress.failures).toEqual([])
+    expect(result.progress.counts.stockMovements).toBe(1)
+    expect(state.products.get("product-1")).toBe(-4)
+  })
+
   it("takes a physical count down against the batches that hold the stock", async () => {
     const { db, state } = replayDb({
       quantity: 135,

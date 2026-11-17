@@ -206,10 +206,25 @@ describe("Average Cost item in a bridge-shaped export", () => {
     expect(reconciliation.blocking).toBe(0)
   })
 
-  it("is the difference the replay used to report: batch values say 2,500", () => {
-    // No costing method stated: the replay keeps its own batch values, which
-    // is what every export read before this change was compared on.
+  it("does not block on the 2,500 batch value when the export states no costing method", () => {
+    // An export made before the script asked for CostingMethod: batch values
+    // say 2,500 against Tally's 2,250, and the gap may be the method alone.
     const { reconciliation, row } = replay({ financialYearStart: "2025-07-01" })
+    expect(row(ITEM)).toMatchObject({ expected: 15, actual: 15, status: "match" })
+    expect(row(`${ITEM} (value)`)).toMatchObject({
+      expected: 2250,
+      actual: 2500,
+      difference: null,
+      status: "not-available",
+      basis: "unknown",
+    })
+    expect(row(`${ITEM} (value)`)?.note).toMatch(/costing method/)
+    expect(row("stock value")?.status).toBe("not-available")
+    expect(reconciliation.blocking).toBe(0)
+  })
+
+  it("still compares the batch value when the method is stated as anything it does not model", () => {
+    const { reconciliation, row } = replay({ financialYearStart: "2025-07-01", costingMethod: "FIFO" })
     expect(row(`${ITEM} (value)`)).toMatchObject({ actual: 2500, status: "difference", basis: "batch" })
     expect(reconciliation.blocking).toBeGreaterThan(0)
   })

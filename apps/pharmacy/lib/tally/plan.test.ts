@@ -265,6 +265,67 @@ describe("tally replay plan persistence", () => {
     ).toBe(29)
   })
 
+  it("keeps each row's vouchers in the replay target, not in the summary every checkpoint saves", async () => {
+    const { client } = memoryStorage()
+
+    const summary = await writeTallyPlan(client, TENANT, SESSION, replayPlan(), "xml")
+    const target = await readTallyReplayTarget(client, TENANT, SESSION)
+
+    const summaryRows = summary.replay?.reconciliation ?? []
+    expect(summaryRows.length).toBeGreaterThan(0)
+    expect(summaryRows.length).toBe(target?.reconciliation.length)
+    expect(summaryRows.some((row) => "sourceIds" in row)).toBe(false)
+    expect(target?.reconciliation.some((row) => row.sourceIds.length > 0)).toBe(true)
+  })
+
+  it("carries the negative-stock statement to the closing target and the stage plans", async () => {
+    const short = (statement?: "allowed"): TallyCutoverPlan => {
+      const base = replayPlan()
+      return {
+        ...base,
+        ...(statement ? { negativeStock: statement } : {}),
+        stockItems: base.stockItems.map((item) => ({ ...item, closingQuantity: -5, closingValue: undefined })),
+        movements: [
+          {
+            movementId: "sale",
+            sourceId: "sale",
+            kind: "sales",
+            movementKind: "sale_out",
+            date: "2026-01-10",
+            sourceOrder: 0,
+            lineIndex: 0,
+            batchIndex: 0,
+            stockItemName: "Test Item A",
+            quantityDelta: -5,
+            rate: 100,
+            amount: 500,
+            allocation: "fefo",
+          },
+        ],
+      }
+    }
+    const severities = async (statement?: "allowed") => {
+      const { client } = memoryStorage()
+      const summary = await writeTallyPlan(client, TENANT, SESSION, short(statement), "xml")
+      const target = await readTallyReplayTarget(client, TENANT, SESSION)
+      const history = await loadStagePlan(client, TENANT, SESSION, "stock-history", 0)
+      return {
+        summary: summary.negativeStock,
+        stage: history.plan.negativeStock,
+        negatives: target?.findings
+          .filter((entry) => entry.code === "REPLAY_NEGATIVE_STOCK")
+          .map((entry) => entry.severity),
+      }
+    }
+
+    expect(await severities()).toEqual({ summary: undefined, stage: undefined, negatives: ["blocking"] })
+    expect(await severities("allowed")).toEqual({
+      summary: "allowed",
+      stage: "allowed",
+      negatives: ["warning"],
+    })
+  })
+
   it("adds no replay block to an opening plan", async () => {
     const { client } = memoryStorage()
 

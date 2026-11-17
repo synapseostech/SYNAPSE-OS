@@ -1117,6 +1117,33 @@ describe("normaliseTallyDocument — replay", () => {
     </VOUCHER>
   `
 
+  it("gives each mirrored sale its own number when Tally restarts its numbering", () => {
+    // Tally can restart sale numbers; the mirror keys a sale by its number, so
+    // a repeat used to be refused and vanished from the reports.
+    const again = (guid: string, date: string) =>
+      sale.replace("<GUID>sale-guid</GUID>", `<GUID>${guid}</GUID>`).replace("<DATE>20260120</DATE>", `<DATE>${date}</DATE>`)
+    const unique = sale
+      .replace("<GUID>sale-guid</GUID>", "<GUID>sale-unique</GUID>")
+      .replace("<VOUCHERNUMBER>S-010</VOUCHERNUMBER>", "<VOUCHERNUMBER>S-011</VOUCHERNUMBER>")
+    const result = plan(
+      `${balancedMasters}${sale}${again("sale-b", "20260121")}${again("sale-c", "20260121")}${unique}`,
+      { mode: "opening" },
+    )
+
+    assert.deepEqual(
+      result.sales.map((entry) => entry.transactionNumber),
+      ["TALLY-S-010-20260120", "TALLY-S-010-20260121", "TALLY-S-010-20260121-2", "TALLY-S-011"],
+    )
+    // Read again, the same export gives the same numbers, so a resumed Apply
+    // finds the rows it already wrote.
+    assert.deepEqual(
+      plan(`${balancedMasters}${sale}${again("sale-b", "20260121")}${again("sale-c", "20260121")}${unique}`, {
+        mode: "opening",
+      }).sales.map((entry) => entry.transactionNumber),
+      result.sales.map((entry) => entry.transactionNumber),
+    )
+  })
+
   it("captures purchases and sales as signed movements, in date order", () => {
     // The sale is exported first and dated later, so the sequence has to be
     // rebuilt rather than taken as the file's order.
@@ -1549,6 +1576,37 @@ describe("normaliseTallyDocument — replay", () => {
     assert.equal(aggregate.length, 1)
     assert.equal(aggregate[0]?.severity, "warning")
     assert.match(aggregate[0]?.message ?? "", /^1 stock receipt across 1 product/)
+  })
+
+  it("records that the source Tally allowed negative stock only when the operator says so", () => {
+    const stated = plan(`${balancedMasters}${purchase}`, { mode: "replay", negativeStock: "allowed" })
+    assert.equal(stated.negativeStock, "allowed")
+
+    assert.equal(plan(`${balancedMasters}${purchase}`, { mode: "replay" }).negativeStock, undefined)
+    assert.equal(
+      plan(`${balancedMasters}${purchase}`, { mode: "replay", negativeStock: "refused" }).negativeStock,
+      undefined,
+    )
+    // Only a replay carries movements, so only a replay can state it.
+    assert.equal(
+      plan(`${balancedMasters}${purchase}`, { mode: "opening", negativeStock: "allowed" }).negativeStock,
+      undefined,
+    )
+  })
+
+  it("replays a stock line with no quantity as no movement, as Tally did, and says so", () => {
+    const quantityless = purchase.replaceAll("<ACTUALQTY>20 Strip</ACTUALQTY>", "")
+    const result = plan(`${balancedMasters}${quantityless}`, { mode: "replay" })
+
+    assert.equal(result.movements?.length, 0)
+    const reported = result.exceptions.filter(
+      (entry) => entry.code === "REPLAY_MOVEMENT_WITHOUT_QUANTITY",
+    )
+    assert.deepEqual(
+      reported.map((entry) => entry.severity),
+      ["warning"],
+    )
+    assert.match(reported[0]?.message ?? "", /moves no stock, as in Tally/)
   })
 
   it("says nothing about missing expiry when the export does state it", () => {
