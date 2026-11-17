@@ -36,11 +36,11 @@ import { buildTallyPreview } from "@/lib/tally/preview"
 import { editionDisclosure, editionProblems, normaliseTallyEdition } from "@/lib/tally/editions"
 import { tallyErrorResponse } from "@/lib/tally/http"
 
-// A customer-scale history is applied one stage step per request; a step of
-// 250 replayed movements takes ~8 s against a loopback database, so the
-// platform default (10-15 s on legacy Vercel functions) leaves no headroom.
-// 60 s is accepted on every Vercel plan.
-export const maxDuration = 60
+// The preview reads every staged file in one request. SADIO's full export (15
+// files, 26,395 vouchers) took 87-118 s against a local production build, and
+// a 60 s limit cut it off online with a 504. synapse-pharm runs on Fluid
+// compute, where 300 s is accepted on every plan.
+export const maxDuration = 300
 
 const db = () => supabaseAdmin as any
 const storage = () => ({ storage: db().storage }) as TallyStorageClient
