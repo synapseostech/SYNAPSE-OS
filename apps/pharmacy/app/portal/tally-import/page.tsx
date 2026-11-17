@@ -30,6 +30,7 @@ import { isIsoDay, kindFromFileName, periodFromFileName } from "@/lib/tally/file
 import type { TallyPlaybackIndex } from "@/lib/tally/types"
 import { REPLAY_REASON_MAX, REPLAY_REASON_MIN } from "@/lib/tally/replay-gate"
 import { TALLY_SOURCE_LIMIT } from "@/lib/tally/storage"
+import { alreadyStaged, fetchRetrying, isNetworkFailure } from "@/lib/tally/upload-retry"
 import { holdIdleLogout } from "@/hooks/use-idle-logout"
 import { cutoverBlockReason, track } from "@/lib/telemetry/events"
 
@@ -909,7 +910,7 @@ export default function TallyImportPage() {
     deferUnnamed = false,
   ): Promise<StageOutcome> {
     const requestUpload = (sessionId: string | null) =>
-      fetch("/api/admin/tally/upload-url", {
+      fetchRetrying("/api/admin/tally/upload-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -937,7 +938,7 @@ export default function TallyImportPage() {
       return { ok: false }
     }
 
-    const put = await fetch(start.signedUrl as string, {
+    const put = await fetchRetrying(start.signedUrl as string, {
       method: "PUT",
       headers: {
         "Content-Type": selectedFile.name.toLowerCase().endsWith(".xls")
@@ -958,7 +959,7 @@ export default function TallyImportPage() {
     const period = periodFromFileName(selectedFile.name)
     const kind = kindFromFileName(selectedFile.name)
     const company = scriptCompany.trim()
-    const sourcesResponse = await fetch(`/api/admin/tally/${start.sessionId}/sources`, {
+    const sourcesResponse = await fetchRetrying(`/api/admin/tally/${start.sessionId}/sources`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1038,8 +1039,14 @@ export default function TallyImportPage() {
     // named the cut-over. Refusing the whole upload over the one file that
     // cannot answer the question is how a 13-file export used to stop at file 1.
     const unnamed: File[] = []
+    // Adding the same set again after an interruption resumes it: what the
+    // session already holds is not uploaded a second time.
+    const heldBefore = stagedFiles
+    let current: File | null = null
     try {
       for (const selectedFile of ordered) {
+        if (!replace && alreadyStaged(selectedFile, heldBefore)) continue
+        current = selectedFile
         const result = await stageOne(selectedFile, session, replace, true)
         if (!result.ok) {
           session = result.session ?? session
@@ -1082,6 +1089,7 @@ export default function TallyImportPage() {
         setStagedProblems(result.problems)
       }
       for (const selectedFile of unnamed) {
+        current = selectedFile
         const result = await stageOne(selectedFile, session, replace)
         if (!result.ok) {
           if (result.replaceChunkId) {
@@ -1093,6 +1101,24 @@ export default function TallyImportPage() {
         setStagedFiles(result.sources)
         setStagedProblems(result.problems)
       }
+    } catch (error) {
+      // Before this, a dropped connection surfaced only in the browser console:
+      // the operator saw staging stop and nothing else.
+      const interrupted = isNetworkFailure(error)
+      const fileName = current?.name ?? ""
+      setStageError({
+        fileName,
+        code: interrupted ? "TALLY_UPLOAD_INTERRUPTED" : "TALLY_UPLOAD_FAILED",
+        message: interrupted
+          ? `The connection dropped while adding ${fileName} and did not come back after several tries. Files already added are kept: choose Add files and review again to continue from here.`
+          : `Adding ${fileName} stopped unexpectedly. Files already added are kept: choose Add files and review again to continue.`,
+      })
+      toast({
+        variant: "destructive",
+        title: interrupted ? "The connection dropped" : "Adding the files stopped",
+        description: "Files already added are kept. Add the files again to continue.",
+      })
+      return
     } finally {
       setBusy("idle")
     }
@@ -1207,6 +1233,14 @@ export default function TallyImportPage() {
       }
       showPreview(data, session)
       toast({ title: "Files read — review the mapping before applying" })
+    } catch (error) {
+      // Not retried by itself: the server may still be reading the files, and
+      // a second read started beside it would write the same plan twice.
+      toast({
+        variant: "destructive",
+        title: isNetworkFailure(error) ? "The connection dropped while the files were read" : "Reading the files stopped",
+        description: "Nothing was applied. Wait a minute, then choose Read the files staged so far.",
+      })
     } finally {
       setBusy("idle")
     }
