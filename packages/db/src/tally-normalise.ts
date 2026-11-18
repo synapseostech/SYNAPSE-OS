@@ -982,10 +982,16 @@ function captureReplayMovements({
         }
       }
 
+      // A unit cost has no sign; the direction is carried by quantityDelta.
+      // Tally writes an inward purchase line as a debit, with a negative
+      // AMOUNT, so taking the amount as it stands costed every purchased batch
+      // at minus its price (SADIO, 1,322 batches) and every sale from it.
       const rate =
         part.quantity !== 0
-          ? round2(part.amount / Math.abs(part.quantity))
-          : round2(line.rate ?? 0)
+          ? round2(Math.abs(part.amount) / Math.abs(part.quantity))
+          : round2(Math.abs(line.rate ?? 0))
+      // Stock coming in adds its value to the batch, whatever Tally's sign.
+      const amount = direction === "in" ? Math.abs(part.amount) : part.amount
 
       movements.push({
         movementId,
@@ -1002,7 +1008,7 @@ function captureReplayMovements({
         expiryDate: part.expiryDate,
         godown: part.godown ?? (direction === "out" ? voucher.sourceGodown : voucher.destinationGodown),
         rate,
-        amount: round2(part.amount),
+        amount: round2(amount),
         allocation,
       })
     }

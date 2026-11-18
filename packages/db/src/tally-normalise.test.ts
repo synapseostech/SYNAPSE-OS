@@ -1178,6 +1178,36 @@ describe("normaliseTallyDocument — replay", () => {
     assert.equal(movements[1]?.movementId, `${result.vouchers[1]?.sourceId}:L0:B0`)
   })
 
+  it("values a purchase at a positive cost when Tally writes its stock line as a debit", () => {
+    // Tally's own export: an inward purchase line is deemed positive and its
+    // AMOUNT is negative (a debit). SADIO's export is shaped this way; its
+    // purchase batches were costed at minus their price, and every sale costed
+    // from them carried a negative cost of goods.
+    const tallyShaped = purchase
+      .replace(
+        "<RATE>100.00/Strip</RATE>\n        <AMOUNT>2000.00</AMOUNT>",
+        "<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>\n        <RATE>100.00/Strip</RATE>\n        <AMOUNT>-2000.00</AMOUNT>",
+      )
+      .replace(
+        "<ACTUALQTY>20 Strip</ACTUALQTY>\n          <AMOUNT>2000.00</AMOUNT>",
+        "<ACTUALQTY>20 Strip</ACTUALQTY>\n          <AMOUNT>-2000.00</AMOUNT>",
+      )
+    assert.notEqual(tallyShaped, purchase)
+
+    const result = plan(`${balancedMasters}${sale}${tallyShaped}`, { mode: "replay" })
+    const inward = (result.movements ?? []).find((entry) => entry.movementKind === "purchase_in")
+    assert.equal(inward?.rate, 100)
+    assert.equal(inward?.amount, 2000)
+
+    // The purchase batch holds its value at +2,000, and the sale (first expiry
+    // first: the opening batch B-001 at 1,000 a strip) costs a positive 3,000.
+    const simulation = simulateReplay(result)
+    const item = simulation.state.items.find((entry) => entry.stockItemName === "Test Item A")
+    assert.equal(item?.batches.find((entry) => entry.batchNumber === "B-002")?.value, 2000)
+    assert.ok((item?.batches ?? []).every((entry) => entry.value >= 0))
+    assert.deepEqual(Object.values(simulation.lineCosts), [{ amount: 3000, complete: true }])
+  })
+
   it("takes a stock journal's direction from the list each line sits in", () => {
     const result = plan(
       `
