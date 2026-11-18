@@ -29,6 +29,7 @@ import type { TallyEditionDisclosure, TallyEditionProblem } from "@/lib/tally/ed
 import { isIsoDay, kindFromFileName, periodFromFileName } from "@/lib/tally/file-names"
 import type { TallyPlaybackIndex } from "@/lib/tally/types"
 import { REPLAY_REASON_MAX, REPLAY_REASON_MIN } from "@/lib/tally/replay-gate"
+import { preflightAllowsApply } from "@/lib/tally/apply-readiness"
 import { TALLY_SOURCE_LIMIT } from "@/lib/tally/storage"
 import { alreadyStaged, fetchRetrying, isNetworkFailure } from "@/lib/tally/upload-retry"
 import { holdIdleLogout } from "@/hooks/use-idle-logout"
@@ -522,16 +523,19 @@ export default function TallyImportPage() {
     summary?.mode === "replay" && (!sequenceConfirmed || !replayView || replayUnanswered > 0)
   // Apply re-checks this on the server; the screen shows it so the operator
   // never presses a button that will be refused. The server reads the sequence
-  // acknowledgement only from what Apply submits, so its own replay-sequence
-  // verdict predates this checkbox and cannot flip here. Defer to it for every
-  // other blocking check, and let this screen's confirmation decide that one.
-  const failingBlocks = (preflightView?.checks ?? []).filter(
-    (check) => check.blocksApply && check.status !== "pass",
+  // confirmation and the written reasons only from what Apply submits, so its
+  // replay-sequence and replay-parity verdicts predate this screen's answers.
+  // Defer to it for every other blocking check; see preflightAllowsApply.
+  const preflightAllows = preflightAllowsApply(
+    preflightView,
+    summary?.mode === "replay"
+      ? {
+          sequenceConfirmed,
+          everyDifferenceAnswered: Boolean(replayView) && replayUnanswered === 0,
+          nothingUnknown: (replayView?.unknown.length ?? 0) === 0,
+        }
+      : null,
   )
-  const onlySequenceBlocks =
-    preflightView?.canApply === false &&
-    failingBlocks.length > 0 &&
-    failingBlocks.every((check) => check.id === "replay-sequence")
   const canApply =
     cutoverAccess === "ready" &&
     Boolean(summary) &&
@@ -540,7 +544,7 @@ export default function TallyImportPage() {
     !needsAcknowledgement &&
     !replayNeedsReview &&
     busy === "idle" &&
-    (preflightView?.canApply !== false || onlySequenceBlocks)
+    preflightAllows
 
   // The masters are named two ways: by the manifest gate once every file has
   // landed, and by the chunk still unread while the set is being staged.
