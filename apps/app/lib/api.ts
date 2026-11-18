@@ -1,6 +1,7 @@
 import Constants from 'expo-constants'
 import * as FileSystem from 'expo-file-system/legacy'
 import { router } from 'expo-router'
+import type { TallyPeriod, TallyPlaybackEvent, TallyPlaybackIndex } from './tally-import'
 
 /** Apex redirects POST to www; Android fetch often drops the body on that redirect. */
 function resolveApiBaseUrl(): string {
@@ -920,17 +921,39 @@ export function matchBankStatementLine(
 
 export type TallyUploadTarget = {
   sessionId: string
+  uploadId?: string
   bucket: string
   path: string
   token: string
   signedUrl: string
 }
 
+export type TallyImportMode = 'opening' | 'closing' | 'replay'
+export type TallyBatchExpiry = 'source' | 'not-supplied'
+export type TallyNegativeStock = 'refused' | 'allowed'
+
+/** One row of the replay's comparison with Tally's own closing figures. */
+export type TallyReplayRow = {
+  scope: 'stock_item' | 'stock_total' | 'account'
+  key: string
+  expected: number | null
+  actual: number | null
+  difference: number | null
+  status: 'match' | 'difference' | 'not-available'
+  tolerance: number
+  basis?: string
+  note?: string
+  firstDivergence?: { date: string; sourceId: string; movementId?: string }
+}
+
 export type TallyPlanSummary = {
   company?: string
   currency: string
   conversionDate: string
-  format: 'xml' | 'xlsx' | 'csv'
+  format: 'xml' | 'xlsx' | 'xls' | 'csv'
+  mode?: TallyImportMode
+  batchExpiry?: TallyBatchExpiry
+  negativeStock?: 'allowed'
   counts: {
     ledgers: number
     groups: number
@@ -943,13 +966,37 @@ export type TallyPlanSummary = {
     openingLines: number
   }
   opening: { date: string; totalDebit: number; totalCredit: number; difference: number }
+  replay?: {
+    cutoffDate: string
+    ordering: string
+    eventCount: number
+    movementCount: number
+    movementChunkCount: number
+    perDay: Array<{ date: string; events: number; movements: number; kinds: Record<string, number> }>
+    reconciliation: TallyReplayRow[]
+    blocking: number
+    warnings: number
+  }
+  playback?: TallyPlaybackIndex
   exceptions: Array<{ code: string; message: string; detail?: string; severity: 'blocking' | 'warning' }>
+  exceptionCounts?: Record<string, number>
   chunkCount: number
   warnings: string[]
 }
 
+export type TallyApplyStage =
+  | 'accounts'
+  | 'parties'
+  | 'products'
+  | 'opening-journal'
+  | 'opening-stock'
+  | 'stock-history'
+  | 'journals'
+  | 'replay-closing'
+  | 'complete'
+
 export type TallyApplyProgress = {
-  stage: 'accounts' | 'parties' | 'products' | 'opening-journal' | 'opening-stock' | 'journals' | 'complete'
+  stage: TallyApplyStage
   offset: number
   counts: {
     accounts: number
@@ -957,6 +1004,8 @@ export type TallyApplyProgress = {
     products: number
     openingJournal: number
     openingStock: number
+    stockMovements?: number
+    movementsReplayed?: number
     journals: number
     sales: number
     purchases: number
@@ -974,21 +1023,109 @@ export type TallyReconcileCheck = {
   note?: string
 }
 
+/** One thing the replay differs on, or the simulation refuses to accept. */
+export type TallyReplayBlocker = {
+  key: string
+  kind: 'difference' | 'finding'
+  label: string
+  expected: number | null
+  actual: number | null
+  difference: number | null
+  message: string
+  firstDivergence?: { date: string; sourceId: string; movementId?: string }
+}
+
+/** The gate Apply will check for a replay, as the session read returns it. */
+export type TallyReplayGate = {
+  preparedAt: string
+  conversionDate: string
+  cutoffDate: string
+  ordering: string
+  eventCount: number
+  movementCount: number
+  totals: { match: number; difference: number; notAvailable: number }
+  blocking: number
+  warnings: number
+  sequenceConfirmed: boolean
+  canApply: boolean
+  acknowledged: Array<{ key: string; reason: string }>
+  unknown: string[]
+  blockers: TallyReplayBlocker[]
+  missing: TallyReplayBlocker[]
+}
+
+/** One file already staged into the session, as the server lists it back. */
+export type TallyStagedFile = {
+  uploadId: string
+  fileName: string
+  kind: 'masters' | 'vouchers'
+  chunkId: string
+  range: TallyPeriod
+  recordsRead: number
+  bytes: number
+  stagedAt: string
+}
+
+export type TallyManifestView = {
+  period: TallyPeriod | null
+  periodSource?: 'source' | 'requested' | null
+  declaredPeriod?: TallyPeriod | null
+  coverage?: 'verified' | 'unverified' | null
+  problems: string[]
+}
+
+export type TallyPreflight = {
+  state: 'pre-cutover' | 'in-progress' | 'completed' | 'blocked'
+  canApply: boolean
+  checks: Array<{
+    id: string
+    label: string
+    status: 'pass' | 'fail' | 'warning' | 'unavailable'
+    detail: string
+    blocksApply: boolean
+  }>
+}
+
 export type TallySession = {
   id: string
   status: string
   fileName: string | null
   errorMessage: string | null
-  format: 'xml' | 'xlsx' | 'csv' | null
+  format: 'xml' | 'xlsx' | 'xls' | 'csv' | 'zip' | null
   conversionDate: string | null
+  mode?: TallyImportMode
   summary: TallyPlanSummary | null
+  manifest?: TallyManifestView | null
+  sources?: TallyStagedFile[]
+  unverifiedAcknowledged?: boolean
+  replay?: TallyReplayGate | null
+  cutoverPreflight?: TallyPreflight | null
   reconcile: TallyReconcileCheck[] | null
   progress: TallyApplyProgress | null
   failures: TallyApplyProgress['failures']
   failureCount: number
 }
 
-export function createTallyUpload(token: string, body: { fileName: string; fileSize?: number }) {
+export type TallyPreviewOptions = {
+  conversionDate?: string
+  company?: string
+  period?: TallyPeriod
+  batchExpiry?: TallyBatchExpiry
+  negativeStock?: TallyNegativeStock
+}
+
+export type TallyApplyAcknowledgement = {
+  acknowledgeUnverified?: boolean
+  acknowledgeReplay?: {
+    sequenceConfirmed: boolean
+    items: Array<{ key: string; reason: string }>
+  }
+}
+
+export function createTallyUpload(
+  token: string,
+  body: { fileName: string; fileSize?: number; sessionId?: string },
+) {
   return apiRequest<TallyUploadTarget & { error?: string }>('/api/admin/tally/upload-url', {
     method: 'POST',
     token,
@@ -999,25 +1136,72 @@ export function createTallyUpload(token: string, body: { fileName: string; fileS
 
 /** PUT the picked file straight to Storage; the API never carries the bytes. */
 export async function uploadTallySource(signedUrl: string, fileUri: string, contentType: string) {
-  const res = await FileSystem.uploadAsync(signedUrl, fileUri, {
-    httpMethod: 'PUT',
-    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
-    headers: { 'content-type': contentType, 'x-upsert': 'true' },
-  })
+  let res: FileSystem.FileSystemUploadResult
+  try {
+    res = await FileSystem.uploadAsync(signedUrl, fileUri, {
+      httpMethod: 'PUT',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: { 'content-type': contentType, 'x-upsert': 'true' },
+    })
+  } catch {
+    throw new Error('Network error. Check your connection and try again.')
+  }
   if (res.status < 200 || res.status >= 300) {
     throw new Error(`Upload failed (${res.status}). Check your connection and try again.`)
   }
 }
 
-export function previewTallyImport(token: string, sessionId: string, conversionDate?: string) {
-  return apiRequest<{ summary: TallyPlanSummary }>(
+/**
+ * Adopts one uploaded file into the session: the server parses it, files it
+ * under the chunk its own company and period imply, and lists what the
+ * session holds so far.
+ */
+export function stageTallySource(
+  token: string,
+  sessionId: string,
+  body: {
+    uploadId: string
+    fileName: string
+    period?: TallyPeriod
+    fallbackPeriod?: TallyPeriod
+    company?: string
+    kind?: 'masters' | 'vouchers'
+    replace?: boolean
+  },
+) {
+  return apiRequest<{
+    sources: TallyStagedFile[]
+    manifest?: { problems?: string[] }
+    duplicate?: boolean
+  }>(`/api/admin/tally/${encodeURIComponent(sessionId)}/sources`, {
+    method: 'POST',
+    token,
+    body,
+    service: 'pharmacy',
+    timeoutMs: 120_000,
+  })
+}
+
+export function previewTallyImport(
+  token: string,
+  sessionId: string,
+  options: TallyPreviewOptions = {},
+) {
+  const body: Record<string, unknown> = {}
+  if (options.conversionDate) body.conversionDate = options.conversionDate
+  if (options.company) body.company = options.company
+  if (options.period) body.period = options.period
+  if (options.batchExpiry) body.batchExpiry = options.batchExpiry
+  if (options.negativeStock) body.negativeStock = options.negativeStock
+  return apiRequest<{ summary: TallyPlanSummary; manifest?: TallyManifestView | null }>(
     `/api/admin/tally/${encodeURIComponent(sessionId)}/preview`,
     {
       method: 'POST',
       token,
-      body: conversionDate ? { conversionDate } : {},
+      body,
       service: 'pharmacy',
-      timeoutMs: 120_000,
+      // A full export is read in one request; the server allows it 300 s.
+      timeoutMs: 310_000,
     },
   )
 }
@@ -1029,7 +1213,11 @@ export function fetchTallySession(token: string, sessionId: string) {
   })
 }
 
-export function applyTallyChunk(token: string, sessionId: string) {
+export function applyTallyChunk(
+  token: string,
+  sessionId: string,
+  acknowledgement: TallyApplyAcknowledgement = {},
+) {
   return apiRequest<{
     done: boolean
     alreadyComplete?: boolean
@@ -1038,6 +1226,7 @@ export function applyTallyChunk(token: string, sessionId: string) {
   }>(`/api/admin/tally/${encodeURIComponent(sessionId)}/apply`, {
     method: 'POST',
     token,
+    body: acknowledgement,
     service: 'pharmacy',
     timeoutMs: 120_000,
   })
@@ -1048,6 +1237,83 @@ export function deleteTallySession(token: string, sessionId: string) {
     method: 'DELETE',
     token,
     service: 'pharmacy',
+  })
+}
+
+/** One page of the dated walkthrough the preview saved. */
+export function fetchTallyPlaybackChunk(token: string, sessionId: string, chunk: number) {
+  return apiRequest<{
+    chunk: number
+    totalChunks: number
+    last: boolean
+    events: TallyPlaybackEvent[]
+  }>(`/api/admin/tally/${encodeURIComponent(sessionId)}/playback?chunk=${chunk}`, {
+    token,
+    service: 'pharmacy',
+  })
+}
+
+export type TallyHistoryCheck = {
+  id: 'opening' | 'vouchers' | 'sales' | 'purchases'
+  label: string
+  planned: number | null
+  applied: number | null
+  found: number
+  status: 'match' | 'short' | 'over' | 'unknown'
+  note?: string
+}
+
+export type TallyHistorySession = {
+  id: string
+  status: string
+  reversedAt: string | null
+  continuationOf: string | null
+  fileName: string | null
+  createdAt: string | null
+  completedAt: string | null
+  company: string | null
+  mode: TallyImportMode
+  conversionDate: string | null
+  currency: string | null
+  period: TallyPeriod | null
+  appliedCounts: Partial<TallyApplyProgress['counts']> | null
+  failureCount: number
+}
+
+export type TallyHistorySummary = {
+  sessions: TallyHistorySession[]
+  ledger: Array<{ sourceType: string; label: string; count: number }>
+  journalsInForce: number
+  reversals: number
+  checks: TallyHistoryCheck[]
+  failureCount: number
+}
+
+/** What Tally imports wrote, side by side with what the ledger holds now. 404 = none yet. */
+export function fetchTallyHistory(token: string) {
+  return apiRequest<TallyHistorySummary>('/api/admin/tally/history', {
+    token,
+    service: 'pharmacy',
+  })
+}
+
+/**
+ * Undoes a completed Tally import with inverse stock movements and reversing
+ * journals; nothing is deleted. Refused once post-cut-over trading exists.
+ */
+export function rollbackTallyImport(token: string, sessionId: string) {
+  return apiRequest<{
+    done: boolean
+    alreadyReversed?: boolean
+    reversedAt: string
+    journalsReversed?: number
+    journalsNotPosted?: number
+    stock?: { movementsReversed?: number } | null
+  }>(`/api/admin/tally/${encodeURIComponent(sessionId)}/rollback`, {
+    method: 'POST',
+    token,
+    service: 'pharmacy',
+    timeoutMs: 300_000,
   })
 }
 
