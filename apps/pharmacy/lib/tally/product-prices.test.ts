@@ -62,14 +62,19 @@ function productsDb(existing: Array<{ id: string; name: string; sku: string; pri
   const from = (table: string) => {
     const filters: Array<[string, unknown]> = []
     let action: "select" | "insert" | "update" = "select"
-    let payload: Record<string, unknown> = {}
+    let payload: Record<string, unknown> | Array<Record<string, unknown>> = {}
     let window: [number, number] | null = null
     const run = () => {
       if (table !== "pharmacy_products") return { data: [], error: null }
       if (action === "insert") {
-        const row = { id: `new-${inserts.length + 1}`, ...payload }
-        inserts.push(row)
-        return { data: row, error: null }
+        // Like PostgREST: an array inserts every row and returns them all.
+        const values = Array.isArray(payload) ? payload : [payload]
+        const created = values.map((value) => {
+          const row = { id: `new-${inserts.length + 1}`, ...value }
+          inserts.push(row)
+          return row
+        })
+        return { data: Array.isArray(payload) ? created : created[0], error: null }
       }
       const match = rows.filter((row) => filters.every(([column, value]) => (row as any)[column] === value))
       if (action === "update") {
@@ -81,7 +86,7 @@ function productsDb(existing: Array<{ id: string; name: string; sku: string; pri
     }
     const chain: any = {
       select: () => chain,
-      insert: (values: Record<string, unknown>) => ((action = "insert"), (payload = values), chain),
+      insert: (values: Record<string, unknown> | Array<Record<string, unknown>>) => ((action = "insert"), (payload = values), chain),
       update: (values: Record<string, unknown>) => ((action = "update"), (payload = values), chain),
       eq: (column: string, value: unknown) => (filters.push([column, value]), chain),
       ilike: () => chain,
