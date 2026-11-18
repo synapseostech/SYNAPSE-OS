@@ -24,6 +24,8 @@ describe("readAppRelease", () => {
       minimumVersion: "1.2.0",
       apkUrl: "https://downloads.example.test/synapse-1.3.0.apk",
       notes: "Tally import history and faster reports.",
+      versionCode: null,
+      publishedAt: null,
     })
   })
 
@@ -32,6 +34,14 @@ describe("readAppRelease", () => {
     assert.equal(readAppRelease({ ...RELEASE, SYNAPSE_APP_LATEST_VERSION: "v1.3" }), null)
     assert.equal(readAppRelease({ ...RELEASE, SYNAPSE_APP_APK_URL: "http://insecure.example.test/a.apk" }), null)
     assert.equal(readAppRelease({ ...RELEASE, SYNAPSE_APP_APK_URL: "not a url" }), null)
+  })
+
+  it("announces nothing when the link is a page rather than the .apk itself", () => {
+    assert.equal(readAppRelease({ ...RELEASE, SYNAPSE_APP_APK_URL: "https://synapseos.tech/download" }), null)
+    assert.equal(
+      readAppRelease({ ...RELEASE, SYNAPSE_APP_APK_URL: "https://expo.dev/artifacts/eas/abc.apk" })?.apkUrl,
+      "https://expo.dev/artifacts/eas/abc.apk",
+    )
   })
 
   it("drops a minimum that is malformed or above the latest", () => {
@@ -43,5 +53,6 @@ describe("readAppRelease", () => {
     const notes = readAppRelease({ ...RELEASE, SYNAPSE_APP_RELEASE_NOTES: "x".repeat(400) })?.notes
     assert.equal(notes?.length, 280)
     assert.equal(readAppRelease({ ...RELEASE, SYNAPSE_APP_RELEASE_NOTES: "  " })?.notes, null)
+    assert.equal(readAppRelease({ ...RELEASE, SYNAPSE_APP_RELEASE_NOTES: "\nFirst line\nsecond" })?.notes, "First line")
   })
 })

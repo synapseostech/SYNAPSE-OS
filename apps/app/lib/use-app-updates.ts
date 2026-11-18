@@ -10,18 +10,30 @@
  *    APK downloads, and Android's installer finishes the update over the
  *    existing app, keeping its data.
  *
- * Both are checked on launch and when the app returns to the foreground, at
- * most every few hours. A failed check is silent: the app keeps working on the
- * version it has, and the next check tries again.
+ * The server is asked on launch and when the app returns to the foreground,
+ * at most every few hours. The APK decision itself is made again on every
+ * launch and resume from the last answer, which is kept on the device: so a
+ * prompt dismissed with "Not now" comes back a day later, and a required
+ * update covers the app even when it starts offline. A failed check is
+ * silent: the app keeps working on the version it has, and the next check
+ * tries again.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as Updates from 'expo-updates'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppState, Linking } from 'react-native'
 import { apiBaseUrl } from '@/lib/api'
-import { type AppRelease, type ApkUpdate, decideApkUpdate, shouldCheckForUpdates } from '@/lib/app-update'
+import {
+  type AppRelease,
+  type ApkUpdate,
+  decideApkUpdate,
+  parseDismissal,
+  serialiseDismissal,
+  shouldCheckForUpdates,
+} from '@/lib/app-update'
 
 const DISMISSED_KEY = 'synapse.update.dismissed-version'
+const RELEASE_KEY = 'synapse.update.last-release'
 const CHECK_TIMEOUT_MS = 10_000
 
 async function fetchRelease(): Promise<AppRelease | null> {
@@ -35,6 +47,15 @@ async function fetchRelease(): Promise<AppRelease | null> {
     return null
   } finally {
     clearTimeout(timer)
+  }
+}
+
+async function cachedRelease(): Promise<AppRelease | null> {
+  try {
+    const raw = await AsyncStorage.getItem(RELEASE_KEY)
+    return raw ? (JSON.parse(raw) as AppRelease) : null
+  } catch {
+    return null
   }
 }
 
@@ -58,7 +79,7 @@ export type AppUpdates = {
   restartReady: boolean
   /** Opens the APK download; Android's installer takes it from there. */
   installApk: () => void
-  /** Hides an optional APK prompt until a newer version ships. */
+  /** Hides an optional APK prompt for a day, or until a newer version ships. */
   dismissApk: () => void
   restartNow: () => void
 }
@@ -67,23 +88,28 @@ export function useAppUpdates(): AppUpdates {
   const [apk, setApk] = useState<ApkUpdate>({ kind: 'none' })
   const [restartReady, setRestartReady] = useState(false)
   const lastChecked = useRef<number | null>(null)
+  const release = useRef<AppRelease | null | undefined>(undefined)
   const running = useRef(false)
 
   const check = useCallback(async () => {
-    const now = Date.now()
-    if (running.current || !shouldCheckForUpdates(lastChecked.current, now)) return
+    if (running.current) return
     running.current = true
-    lastChecked.current = now
     try {
-      const [release, dismissed, ready] = await Promise.all([
-        fetchRelease(),
-        AsyncStorage.getItem(DISMISSED_KEY).catch(() => null),
-        fetchOverTheAir(),
-      ])
+      if (release.current === undefined) release.current = await cachedRelease()
+      const now = Date.now()
+      if (shouldCheckForUpdates(lastChecked.current, now)) {
+        lastChecked.current = now
+        const [fresh, ready] = await Promise.all([fetchRelease(), fetchOverTheAir()])
+        if (fresh) {
+          release.current = fresh
+          AsyncStorage.setItem(RELEASE_KEY, JSON.stringify(fresh)).catch(() => {})
+        }
+        if (ready) setRestartReady(true)
+      }
+      const dismissal = parseDismissal(await AsyncStorage.getItem(DISMISSED_KEY).catch(() => null))
       // Under the appVersion policy the runtime version is the native app
       // version, which is what an APK release replaces.
-      setApk(decideApkUpdate(Updates.runtimeVersion, release, dismissed))
-      if (ready) setRestartReady(true)
+      setApk(decideApkUpdate(Updates.runtimeVersion, release.current, dismissal, Date.now()))
     } finally {
       running.current = false
     }
@@ -99,12 +125,15 @@ export function useAppUpdates(): AppUpdates {
 
   const installApk = useCallback(() => {
     if (apk.kind === 'none') return
+    // The link is the .apk file itself (decideApkUpdate refuses anything
+    // else), so this starts the download; tapping the finished download opens
+    // Android's installer over the existing app.
     Linking.openURL(apk.apkUrl).catch(() => {})
   }, [apk])
 
   const dismissApk = useCallback(() => {
     if (apk.kind !== 'optional') return
-    AsyncStorage.setItem(DISMISSED_KEY, apk.version).catch(() => {})
+    AsyncStorage.setItem(DISMISSED_KEY, serialiseDismissal({ version: apk.version, at: Date.now() })).catch(() => {})
     setApk({ kind: 'none' })
   }, [apk])
 

@@ -124,6 +124,11 @@ jobs:
       - name: Lab Edge tests
         run: npm run test:lab-edge
 
+      - name: App release announcements and update prompt
+        run: |
+          npm run test:app-releases
+          npm run test:mobile-app
+
       - name: Expo type-check
         run: npm run type-check --workspace @synapse/app
 

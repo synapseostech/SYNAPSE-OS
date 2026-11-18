@@ -4,6 +4,15 @@
 #
 # Trigger: Actions → "EAS Android preview APK" → Run workflow
 # Or: gh workflow run eas-android-preview.yml -f ref=cursor/pharmacy-pilot-v1-9386
+#
+# When the build finishes, the workflow reports it to the web app
+# (POST /api/mobile/app-releases, signed with EAS_WEBHOOK_SECRET). The web app
+# records the release — installed APKs then offer it with its direct .apk link —
+# and emails that link once to every facility admin and opted-in address. An
+# EAS build webhook pointing at the same URL does the same for builds started
+# anywhere else; reporting one build twice is harmless.
+# Needs repo secret EAS_WEBHOOK_SECRET (same value as on the web deployment).
+# Optional repo variable SYNAPSE_RELEASE_WEBHOOK_URL overrides the target URL.
 
 name: EAS Android preview APK
 
@@ -22,6 +31,14 @@ on:
         description: Optional note (ignored by build; for humans)
         required: false
         default: pilot
+      release_notes:
+        description: One line shown in the in-app update prompt and the release email (defaults to the last commit message)
+        required: false
+        default: ""
+      minimum_version:
+        description: Optional x.y.z — installs older than this must update before they continue
+        required: false
+        default: ""
 
 jobs:
   apk:
@@ -52,13 +69,47 @@ jobs:
       - name: Build Android APK (non-interactive)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          PROFILE: ${{ inputs.profile }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           if [ -z "$EXPO_TOKEN" ]; then
             echo "Missing EXPO_TOKEN secret. Create an access token at https://expo.dev/settings/access-tokens"
             echo "and add it as a GitHub Actions secret named EXPO_TOKEN."
             exit 1
           fi
-          npx eas-cli build --platform android --profile "${{ inputs.profile }}" --non-interactive --wait
+          message=()
+          if [ -n "$RELEASE_NOTES" ]; then message=(--message "$RELEASE_NOTES"); fi
+          # --json prints the finished build (version, versionCode, artifact
+          # link) on stdout; progress still goes to stderr.
+          npx eas-cli build --platform android --profile "$PROFILE" --non-interactive --wait --json "${message[@]}" > ../../eas-build.json
+          node -e 'const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[0];console.log(`EAS build ${b.id}: ${b.appVersion} (${b.appBuildVersion}) ${b.status} ${b.artifacts?.buildUrl??""}`)' ../../eas-build.json
+
+      - name: Announce the release (in-app prompt and admin email)
+        env:
+          EAS_WEBHOOK_SECRET: ${{ secrets.EAS_WEBHOOK_SECRET }}
+          RELEASE_URL: ${{ vars.SYNAPSE_RELEASE_WEBHOOK_URL || 'https://synapseos.tech/api/mobile/app-releases' }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+          MINIMUM_VERSION: ${{ inputs.minimum_version }}
+        run: |
+          if [ -z "$EAS_WEBHOOK_SECRET" ]; then
+            echo "::warning::EAS_WEBHOOK_SECRET is not set: the build is not announced to installed apps or emailed. Add the secret, or rely on the EAS build webhook."
+            exit 0
+          fi
+          node -e '
+            const fs = require("fs")
+            const build = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[0]
+            const body = { build }
+            if (process.env.RELEASE_NOTES) body.notes = process.env.RELEASE_NOTES
+            if (process.env.MINIMUM_VERSION) body.minimumVersion = process.env.MINIMUM_VERSION
+            fs.writeFileSync(process.argv[2], JSON.stringify(body))
+          ' ../../eas-build.json ../../release-report.json
+          signature="sha1=$(openssl dgst -sha1 -hmac "$EAS_WEBHOOK_SECRET" -r ../../release-report.json | cut -d' ' -f1)"
+          curl --fail-with-body --silent --show-error --retry 3 --retry-all-errors \
+            -X POST "$RELEASE_URL" \
+            -H "content-type: application/json" \
+            -H "expo-signature: $signature" \
+            --data-binary @../../release-report.json
+          echo
 
       - name: Write source SHA metadata
         if: always()
