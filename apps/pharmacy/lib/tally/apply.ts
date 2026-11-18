@@ -244,7 +244,10 @@ function productNameKey(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, " ")
 }
 
-async function loadProducts(db: TallyApplyDb, tenantId: string): Promise<{ bySku: Map<string, string>; byName: Map<string, string> }> {
+async function loadProducts(
+  db: TallyApplyDb,
+  tenantId: string,
+): Promise<{ bySku: Map<string, string>; byName: Map<string, string>; byExactName: Map<string, string> }> {
   const rows = await loadAllRows<{
     id: string
     sku: string
@@ -256,6 +259,9 @@ async function loadProducts(db: TallyApplyDb, tenantId: string): Promise<{ bySku
     query.eq("tenant_id", tenantId),
   )
   const bySku = new Map<string, string>()
+  // The case-insensitive whole-name match an ILIKE on the name made, kept in
+  // memory: every product is already loaded, so no lookup per item is needed.
+  const byExactName = new Map<string, string>()
   const groupedByName = new Map<
     string,
     Array<{
@@ -267,6 +273,8 @@ async function loadProducts(db: TallyApplyDb, tenantId: string): Promise<{ bySku
   >()
   for (const row of rows) {
     bySku.set(row.sku.toLowerCase(), row.id)
+    const exact = row.name.toLowerCase()
+    if (!byExactName.has(exact)) byExactName.set(exact, row.id)
     const key = productNameKey(row.name)
     const group = groupedByName.get(key) ?? []
     group.push(row)
@@ -285,7 +293,7 @@ async function loadProducts(db: TallyApplyDb, tenantId: string): Promise<{ bySku
       byName.set(key, product.id)
     }
   }
-  return { bySku, byName }
+  return { bySku, byName, byExactName }
 }
 
 async function loadParties(db: TallyApplyDb, tenantId: string): Promise<{ customers: Map<string, string>; suppliers: Map<string, string> }> {
@@ -640,43 +648,102 @@ async function stageProducts(
   progress: Progress,
 ): Promise<void> {
   const known = await loadProducts(db, tenantId)
+  const productRow = (item: TallyCutoverPlan["stockItems"][number]) => {
+    const { price, cost } = productPrices(item)
+    return {
+      tenant_id: tenantId,
+      name: item.name,
+      sku: item.sku,
+      category: "General",
+      price,
+      cost_price: cost,
+      quantity: 0,
+      unit_of_measure: item.unit ?? "Tablet",
+      is_active: true,
+    }
+  }
+  const remember = (item: TallyCutoverPlan["stockItems"][number], id: string) => {
+    known.bySku.set(item.sku.trim().toLowerCase(), id)
+    known.byName.set(productNameKey(item.name), id)
+    known.byExactName.set(item.name.trim().toLowerCase(), id)
+  }
+
+  // New products are written in batches: one at a time, a customer-scale
+  // export (2,025 items) made ~4,000 round trips and outlived the request.
+  // An item whose SKU or name repeats one still waiting in the batch is held
+  // back and placed afterwards, so it reuses that product as it always did.
+  const pending: Array<TallyCutoverPlan["stockItems"][number]> = []
+  const pendingKeys = new Set<string>()
+  const held: Array<TallyCutoverPlan["stockItems"][number]> = []
+
   for (const item of plan.stockItems) {
     const sku = item.sku.trim().toLowerCase()
     if (known.bySku.has(sku)) continue
-    // An ILIKE on the raw name misses a portal product whose name differs only
-    // in whitespace, and would create a duplicate for it. The unique-name map
-    // was built with productNameKey, so consult it first.
-    const existingId =
-      known.byName.get(productNameKey(item.name)) ??
-      (await findByName(db, "pharmacy_products", tenantId, item.name))
+    const nameKey = productNameKey(item.name)
+    const exactKey = item.name.trim().toLowerCase()
+    if (pendingKeys.has(`sku:${sku}`) || pendingKeys.has(`name:${nameKey}`) || pendingKeys.has(`exact:${exactKey}`)) {
+      held.push(item)
+      continue
+    }
+    // The unique-name map catches a portal product whose name differs only in
+    // whitespace; the exact-name map is the case-insensitive match an ILIKE on
+    // the name made, read from the products already loaded.
+    const existingId = known.byName.get(nameKey) ?? known.byExactName.get(exactKey)
     if (existingId) {
-      known.bySku.set(sku, existingId)
-      known.byName.set(productNameKey(item.name), existingId)
+      remember(item, existingId)
       await fillPlaceholderPrices(db, tenantId, existingId, item, progress)
       continue
     }
-    const { price, cost } = productPrices(item)
+    pending.push(item)
+    pendingKeys.add(`sku:${sku}`).add(`name:${nameKey}`).add(`exact:${exactKey}`)
+  }
+
+  for (let start = 0; start < pending.length; start += INSERT_BATCH) {
+    const batch = pending.slice(start, start + INSERT_BATCH)
+    const { data, error } = await db.from("pharmacy_products").insert(batch.map(productRow)).select("id, sku")
+    const rows = (data ?? []) as Array<{ id: string; sku: string }>
+    if (!error && rows.length === batch.length) {
+      const idBySku = new Map(rows.map((row) => [row.sku.trim().toLowerCase(), row.id]))
+      for (const item of batch) {
+        const id = idBySku.get(item.sku.trim().toLowerCase())
+        if (!id) {
+          progress.fail("products", item.sku, "PRODUCT_CREATE_FAILED", "Insert returned no row for this SKU")
+          continue
+        }
+        remember(item, id)
+        progress.value.counts.products += 1
+      }
+      continue
+    }
+    // One bad row refuses the whole batch; write it row by row so each item
+    // that can land does, and each that cannot is named.
+    for (const item of batch) await insertProduct(item)
+  }
+
+  for (const item of held) {
+    const sku = item.sku.trim().toLowerCase()
+    if (known.bySku.has(sku)) continue
+    const existingId =
+      known.byName.get(productNameKey(item.name)) ?? known.byExactName.get(item.name.trim().toLowerCase())
+    if (existingId) {
+      remember(item, existingId)
+      await fillPlaceholderPrices(db, tenantId, existingId, item, progress)
+      continue
+    }
+    await insertProduct(item)
+  }
+
+  async function insertProduct(item: TallyCutoverPlan["stockItems"][number]) {
     const { data, error } = await db
       .from("pharmacy_products")
-      .insert({
-        tenant_id: tenantId,
-        name: item.name,
-        sku: item.sku,
-        category: "General",
-        price,
-        cost_price: cost,
-        quantity: 0,
-        unit_of_measure: item.unit ?? "Tablet",
-        is_active: true,
-      })
+      .insert(productRow(item))
       .select("id")
       .single()
     if (error || !data) {
       progress.fail("products", item.sku, "PRODUCT_CREATE_FAILED", error?.message ?? "Insert failed")
-      continue
+      return
     }
-    known.bySku.set(sku, (data as { id: string }).id)
-    known.byName.set(productNameKey(item.name), (data as { id: string }).id)
+    remember(item, (data as { id: string }).id)
     progress.value.counts.products += 1
   }
 }

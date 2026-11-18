@@ -368,6 +368,100 @@ describe("stageProducts", () => {
   })
 })
 
+describe("stageProducts batching", () => {
+  const item = (n: number, name = `Batch Item ${n}`) => ({
+    sourceName: name,
+    sku: `TALLY-B${n}`,
+    name,
+    batches: [],
+  })
+  const productInserts = (operations: Array<{ table: string; action: string; payload?: unknown }>) =>
+    operations.filter((operation) => operation.table === "pharmacy_products" && operation.action === "insert")
+  // Echoes inserted rows back with ids, as PostgREST does for insert().select().
+  const echo = (operation: { table: string; action: string; payload?: unknown }) => {
+    if (operation.table !== "pharmacy_products" || operation.action !== "insert") return undefined
+    const rows = Array.isArray(operation.payload) ? operation.payload : [operation.payload]
+    const data = (rows as Array<{ sku: string }>).map((row) => ({ id: `id-${row.sku}`, sku: row.sku }))
+    return { data: Array.isArray(operation.payload) ? data : data[0], error: null }
+  }
+
+  it("writes a customer-scale catalogue in a few batches, not one insert per item", async () => {
+    const { db, operations } = fakeDb(echo)
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ stockItems: Array.from({ length: 450 }, (_, n) => item(n)) }),
+      progress: { ...emptyProgress(), stage: "products" },
+    })
+
+    const inserts = productInserts(operations)
+    expect(inserts).toHaveLength(3)
+    expect(inserts.map((operation) => (operation.payload as unknown[]).length)).toEqual([200, 200, 50])
+    expect(result.progress.counts.products).toBe(450)
+    expect(result.progress.failures).toEqual([])
+    // No per-item name lookup either.
+    expect(operations.filter((operation) => operation.filters?.some(([column]) => column === "name"))).toEqual([])
+  })
+
+  it("reuses the batch's product for an item that repeats a name, as before", async () => {
+    const { db, operations } = fakeDb(echo)
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ stockItems: [item(1, "Same Name"), item(2, "same  name")] }),
+      progress: { ...emptyProgress(), stage: "products" },
+    })
+
+    const inserted = productInserts(operations).flatMap((operation) =>
+      Array.isArray(operation.payload) ? operation.payload : [operation.payload],
+    ) as Array<{ sku: string }>
+    expect(inserted.map((row) => row.sku)).toEqual(["TALLY-B1"])
+    expect(result.progress.counts.products).toBe(1)
+  })
+
+  it("matches an existing product by name case-insensitively without a lookup per item", async () => {
+    const { db, operations } = fakeDb((operation) => {
+      if (operation.table === "pharmacy_products" && operation.action === "select") {
+        return {
+          data: [{ id: "existing", sku: "PORTAL-1", name: "Amoxil 500", strength: "500mg", dosage_form: null, active_ingredient: null }],
+          error: null,
+        }
+      }
+      return echo(operation)
+    })
+    await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ stockItems: [item(1, "AMOXIL 500")] }),
+      progress: { ...emptyProgress(), stage: "products" },
+    })
+
+    expect(productInserts(operations)).toEqual([])
+  })
+
+  it("falls back to row-by-row when a batch is refused, naming only the rows that fail", async () => {
+    const { db } = fakeDb((operation) => {
+      if (operation.table !== "pharmacy_products" || operation.action !== "insert") return undefined
+      if (Array.isArray(operation.payload)) return { data: null, error: { message: "batch refused" } }
+      const row = operation.payload as { sku: string }
+      return row.sku === "TALLY-B2"
+        ? { data: null, error: { message: "duplicate key" } }
+        : { data: { id: `id-${row.sku}` }, error: null }
+    })
+    const result = await applyTallyChunk(db, {
+      tenantId: "tenant-1",
+      actorId: "user-1",
+      plan: plan({ stockItems: [item(1), item(2), item(3)] }),
+      progress: { ...emptyProgress(), stage: "products" },
+    })
+
+    expect(result.progress.counts.products).toBe(2)
+    expect(result.progress.failures).toEqual([
+      expect.objectContaining({ key: "TALLY-B2", code: "PRODUCT_CREATE_FAILED", message: "duplicate key" }),
+    ])
+  })
+})
+
 describe("opening journal", () => {
   it("does not advance to opening stock when the opening does not balance", async () => {
     const { db, operations } = fakeDb()
