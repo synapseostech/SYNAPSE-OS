@@ -39,6 +39,7 @@ import {
   needsStaging,
   orderForStaging,
   periodFromFileName,
+  preflightAllowsApply,
   replayAcknowledgement,
   replayReasonAnswered,
   tallyContentType,
@@ -585,12 +586,18 @@ export default function TallyImportScreen() {
   const failingPreflight = (preflight?.checks ?? []).filter(
     (check) => check.blocksApply && check.status !== 'pass',
   )
-  // The server judged the sequence before this screen's checkbox; Apply sends it.
-  const onlySequenceBlocks =
-    preflight?.canApply === false &&
-    failingPreflight.length > 0 &&
-    failingPreflight.every((check) => check.id === 'replay-sequence')
-  const preflightBlocks = preflight?.canApply === false && !onlySequenceBlocks
+  // The server judged the sequence and the differences before this screen's
+  // answers; Apply sends them and re-runs the same preflight.
+  const preflightBlocks = !preflightAllowsApply(
+    preflight,
+    isReplay
+      ? {
+          sequenceConfirmed,
+          everyDifferenceAnswered: Boolean(replayGate) && unanswered === 0,
+          nothingUnknown: (replayGate?.unknown.length ?? 0) === 0,
+        }
+      : null,
+  )
   const busy = phase === 'applying' || phase === 'uploading' || phase === 'previewing'
   const replayChoicesChanged =
     isReplay &&

@@ -228,3 +228,31 @@ export function stockLineLabel(line: TallyPlaybackStockLine): string {
   const verb = line.direction === 'out' ? 'out' : line.direction === 'in' ? 'in' : 'counted'
   return `${line.item} × ${line.quantity} ${verb}`
 }
+
+// ── Apply readiness ─────────────────────────────────────────────────────────
+
+/**
+ * Whether the screen may offer Apply, given the server's preflight. The
+ * preflight is read before the operator answers anything, and the server takes
+ * the sequence confirmation and the written reasons only from what Apply
+ * submits, so `replay-sequence` and `replay-parity` are judged from this
+ * screen's state. Every other failing blocking check still holds Apply.
+ * Mirrors apps/pharmacy/lib/tally/apply-readiness.ts.
+ */
+export function preflightAllowsApply(
+  preflight:
+    | { canApply: boolean; checks: Array<{ id: string; status: string; blocksApply: boolean }> }
+    | null
+    | undefined,
+  replay: { sequenceConfirmed: boolean; everyDifferenceAnswered: boolean; nothingUnknown: boolean } | null,
+): boolean {
+  if (!preflight || preflight.canApply) return true
+  const failing = preflight.checks.filter((check) => check.blocksApply && check.status !== 'pass')
+  if (failing.length === 0) return true
+  return failing.every((check) => {
+    if (!replay) return false
+    if (check.id === 'replay-sequence') return replay.sequenceConfirmed
+    if (check.id === 'replay-parity') return replay.everyDifferenceAnswered && replay.nothingUnknown
+    return false
+  })
+}

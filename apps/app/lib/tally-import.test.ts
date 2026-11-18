@@ -9,6 +9,7 @@ import {
   needsStaging,
   orderForStaging,
   periodFromFileName,
+  preflightAllowsApply,
   progressThrough,
   replayAcknowledgement,
   replayReasonAnswered,
@@ -170,5 +171,25 @@ describe("playback", () => {
   it("counts how far through the history a day sits", () => {
     assert.deepEqual(progressThrough(index, 1), { entries: 4, ratio: 4 / 6 })
     assert.deepEqual(progressThrough(index, 2), { entries: 6, ratio: 1 })
+  })
+})
+
+describe("apply readiness", () => {
+  const fail = (id: string) => ({ id, status: "fail", blocksApply: true })
+  const answered = { sequenceConfirmed: true, everyDifferenceAnswered: true, nothingUnknown: true }
+
+  it("lets answered differences and a confirmed sequence through", () => {
+    const preflight = { canApply: false, checks: [fail("replay-parity"), fail("replay-sequence")] }
+    assert.equal(preflightAllowsApply(preflight, answered), true)
+  })
+
+  it("holds Apply while a difference has no reason", () => {
+    const preflight = { canApply: false, checks: [fail("replay-parity")] }
+    assert.equal(preflightAllowsApply(preflight, { ...answered, everyDifferenceAnswered: false }), false)
+  })
+
+  it("never overrides a check the screen cannot answer", () => {
+    const preflight = { canApply: false, checks: [fail("replay-parity"), fail("company")] }
+    assert.equal(preflightAllowsApply(preflight, answered), false)
   })
 })
