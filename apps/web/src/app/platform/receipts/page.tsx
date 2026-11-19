@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import Link from "next/link";
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 import { formatDateTime } from "../_lib/platform-data";
 import { clearAuthorizedSignature, uploadAuthorizedSignature } from "./actions";
 import { DeleteDocumentLink } from "./_components/delete-document-link";
@@ -40,7 +40,7 @@ export default async function PlatformReceiptsPage({
 }: {
   searchParams: Promise<{ ok?: string; error?: string; kind?: string; q?: string }>;
 }) {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/receipts");
   const params = await searchParams;
   const filter: FilterKind =
     params.kind === "receipt" ||

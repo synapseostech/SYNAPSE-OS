@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { createServiceClient } from "../../../lib/supabase/server";
-import { requirePlatformAdmin, requirePlatformAccess } from "../../../lib/platform/auth";
+import { requirePlatformAccess, requirePlatformPage } from "../../../lib/platform/auth";
 
 const STAGES = [
   { key: "interest", label: "Interest" },
@@ -49,7 +49,7 @@ async function updateStage(formData: FormData) {
 }
 
 export default async function PlatformSalesPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/sales");
   const supabaseAdmin = createServiceClient();
 
   const { data: leads } = await (supabaseAdmin as any)

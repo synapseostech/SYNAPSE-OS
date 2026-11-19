@@ -4,16 +4,19 @@ import { signToken } from "@synapse/auth/tokens"
 import { createServiceClient } from "@/lib/supabase/server"
 import { logPlatformEvent } from "../../../platform/_lib/platform-data"
 import { createHash } from "node:crypto"
+import { stepUpResponse } from "@/lib/platform/step-up"
 
 const IMPERSONATION_TTL = "2h"
 const IMPERSONATION_TTL_MS = 2 * 60 * 60 * 1000
 
 export async function POST(req: NextRequest) {
-  // Impersonation mints a tenant session: require an explicit mutate capability,
-  // not merely any platform membership (observers/auditors have memberships).
-  const gate = await requirePlatformAdminApi("tenant.manage")
+  // Impersonation mints a tenant session: it needs its own capability (not
+  // merely any platform membership) and a fresh authenticator code.
+  const gate = await requirePlatformAdminApi("tenant.impersonate")
   if (!gate.ok) return gate.response
   const admin = gate.profile
+  const stepUp = await stepUpResponse(admin)
+  if (stepUp) return stepUp
 
   const body = await req.json().catch(() => ({}))
   const targetUserId = String(body.targetUserId ?? "").trim()

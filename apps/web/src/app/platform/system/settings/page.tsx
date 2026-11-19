@@ -1,7 +1,7 @@
-import { requirePlatformAdmin } from "../../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../../lib/platform/auth";
 
 export default async function SystemSettingsPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/system/settings");
 
   return (
     <main className="min-h-screen bg-base text-primary-color p-8">

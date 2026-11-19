@@ -3,7 +3,7 @@ export const dynamic = "force-dynamic";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createServiceClient } from "../../../../lib/supabase/server";
-import { requirePlatformAdmin } from "../../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../../lib/platform/auth";
 import { formatDateTime, safeRows } from "../../_lib/platform-data";
 
 type TenantRow = {
@@ -34,7 +34,7 @@ export default async function PlatformHospitalDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ runId?: string }>;
 }) {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/hospitals/[id]");
   const { id } = await params;
   const { runId } = await searchParams;
   const supabaseAdmin = createServiceClient();

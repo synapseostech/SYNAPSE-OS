@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { revalidatePath } from "next/cache";
 import { createServiceClient } from "../../../lib/supabase/server";
-import { requirePlatformAdmin, requirePlatformAccess } from "../../../lib/platform/auth";
+import { requirePlatformAccess, requirePlatformPage } from "../../../lib/platform/auth";
 import { formatDateTime, logPlatformEvent, safeRows } from "../_lib/platform-data";
 
 type TicketRow = {
@@ -91,7 +91,7 @@ function priorityClass(priority: string | null | undefined) {
 }
 
 export default async function PlatformSupportPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/support");
   const tickets = await safeRows<TicketRow>(
     "support_tickets",
     "id, title, description, priority, status, tenant_id, assigned_to, resolution_notes, created_at, updated_at",

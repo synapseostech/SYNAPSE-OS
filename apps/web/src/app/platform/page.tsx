@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import Link from "next/link";
-import { requirePlatformAdmin } from "../../lib/platform/auth";
+import { requirePlatformPage } from "../../lib/platform/auth";
 import {
   checkDatabaseLatency,
   dailyCountsFromRows,
@@ -480,7 +480,7 @@ async function getOverviewData(): Promise<OverviewCommandCenterData> {
 }
 
 export default async function PlatformOverviewPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform");
   const data = await getOverviewData();
   const overall = overallPlatformHealth(0);
   return (

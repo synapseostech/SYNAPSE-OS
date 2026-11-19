@@ -4,14 +4,21 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import {
   ADMIN_ROLES,
+  MFA_MANDATORY_ROLES,
   OBSERVER_ROLES,
   PLATFORM_ROLES,
+  ROLE_DESCRIPTIONS,
+  STEP_UP_CAPABILITIES,
+  manageableRoles,
+  roleCapabilities,
   roleLabel,
   statusLabel,
   type PlatformRole,
 } from "@/lib/platform/rbac";
 import type { PlatformMemberRow } from "@/lib/platform/membership.server";
+import { useStepUp } from "../_components/step-up";
 import {
+  changePlatformMemberRole,
   invitePlatformMember,
   resendPlatformInvitation,
   revokePlatformInvitation,
@@ -47,9 +54,10 @@ export function PlatformAccessClient({
   const [showInvite, setShowInvite] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
-  const manageable = PLATFORM_ROLES.filter(
-    (r) => r !== "SUPER_ADMIN" || actorRole === "SUPER_ADMIN"
-  );
+  const { withStepUp, dialog } = useStepUp();
+  // The roles this actor may grant (the server re-checks with assertCanManageRole).
+  const manageable = manageableRoles(actorRole);
+  const [inviteRole, setInviteRole] = useState<PlatformRole | "">(manageable[0] ?? "");
 
   const active = members.filter((m) => m.status === "ACTIVE");
   const suspended = members.filter((m) => m.status === "SUSPENDED");
@@ -59,7 +67,7 @@ export function PlatformAccessClient({
 
   function onInvite(formData: FormData) {
     startTransition(async () => {
-      const result = await invitePlatformMember(formData);
+      const result = await withStepUp(() => invitePlatformMember(formData));
       setMessage(result.ok ? `Invitation sent to ${result.email}` : result.error);
       if (result.ok) setShowInvite(false);
     });
@@ -67,17 +75,20 @@ export function PlatformAccessClient({
 
   return (
     <div className="space-y-6">
+      {dialog}
       <section className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#E8B84B]">Governance</p>
-          <h1 className="mt-2 text-2xl font-bold">Platform Access</h1>
+          <h1 className="mt-2 text-2xl font-bold">Platform staff</h1>
           <p className="mt-1 max-w-2xl text-sm text-slate-400">
-            Invite stakeholders, administrators, and observers. Manage roles, MFA, sessions, and password recovery
-            without exposing credentials.
+            Invite Synapse staff and observers and give each a role. Open a person to change their role, reset MFA,
+            revoke sessions or remove access. Sensitive changes ask for your authenticator code.
           </p>
         </div>
         <button
           type="button"
+          disabled={manageable.length === 0}
+          title={manageable.length === 0 ? "Your role cannot invite platform staff" : undefined}
           onClick={() => setShowInvite(true)}
           className="rounded-lg bg-[#F97316] px-4 py-2 text-sm font-semibold text-[#07070A]"
         >
@@ -118,11 +129,22 @@ export function PlatformAccessClient({
             </label>
             <label className="block text-sm">
               <span className="text-slate-400">Platform role</span>
-              <select name="platform_role" className="mt-1 w-full rounded-lg border border-slate-700 bg-[#07070A] px-3 py-2">
+              <select
+                name="platform_role"
+                value={inviteRole}
+                onChange={(e) => setInviteRole(e.target.value as PlatformRole)}
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-[#07070A] px-3 py-2"
+              >
                 {manageable.map((role) => (
                   <option key={role} value={role}>{roleLabel(role)}</option>
                 ))}
               </select>
+              {inviteRole ? (
+                <span className="mt-1 block text-xs text-slate-500">
+                  {ROLE_DESCRIPTIONS[inviteRole]}
+                  {MFA_MANDATORY_ROLES.includes(inviteRole) ? " Requires MFA; you will confirm with your authenticator." : ""}
+                </span>
+              ) : null}
             </label>
             <label className="block text-sm">
               <span className="text-slate-400">Access expiry (optional)</span>
@@ -168,7 +190,76 @@ export function PlatformAccessClient({
         }}
       />
       <MemberTable title="Suspended" rows={suspended} />
+      <RoleMatrix />
     </div>
+  );
+}
+
+const ROLE_SHORT: Record<PlatformRole, string> = {
+  SUPER_ADMIN: "Super",
+  PLATFORM_ADMIN: "Platform",
+  OPERATIONS_ADMIN: "Ops",
+  RELEASE_MANAGER: "Release",
+  SECURITY_ADMIN: "Security",
+  FINANCE_ADMIN: "Finance",
+  SUPPORT_ADMIN: "Support",
+  CLINICAL_GOVERNANCE: "Clinical",
+  STAKEHOLDER: "Stake",
+  BOARD_OBSERVER: "Board",
+  INVESTOR_OBSERVER: "Investor",
+  TECHNICAL_OBSERVER: "Tech",
+  AUDITOR: "Auditor",
+  READ_ONLY_OBSERVER: "Read-only",
+};
+
+/** Every role against every capability, read straight from rbac.ts. */
+function RoleMatrix() {
+  const caps = Array.from(new Set(PLATFORM_ROLES.flatMap((r) => roleCapabilities(r)))).sort();
+  return (
+    <details className="rounded-xl border border-slate-800 bg-[#111117]">
+      <summary className="cursor-pointer p-4 text-sm font-semibold">What each role can do</summary>
+      <div className="space-y-3 border-t border-slate-800 p-4">
+        <ul className="grid gap-2 text-sm md:grid-cols-2">
+          {PLATFORM_ROLES.map((role) => (
+            <li key={role}>
+              <span className="font-medium text-slate-200">{roleLabel(role)}</span>
+              {MFA_MANDATORY_ROLES.includes(role) ? <span className="ml-2 rounded bg-amber-500/10 px-1.5 text-[10px] text-amber-300">MFA</span> : null}
+              <span className="block text-xs text-slate-500">{ROLE_DESCRIPTIONS[role]}</span>
+            </li>
+          ))}
+        </ul>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-[11px]">
+            <thead>
+              <tr>
+                <th className="sticky left-0 bg-[#111117] px-2 py-1 text-left text-slate-500">Capability</th>
+                {PLATFORM_ROLES.map((role) => (
+                  <th key={role} className="px-1 py-1 font-medium text-slate-500" title={roleLabel(role)}>
+                    {ROLE_SHORT[role]}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {caps.map((cap) => (
+                <tr key={cap} className="border-t border-slate-800/60">
+                  <td className="sticky left-0 bg-[#111117] px-2 py-1 font-mono text-slate-300">
+                    {cap}
+                    {STEP_UP_CAPABILITIES.includes(cap) ? <span className="ml-1 text-amber-300" title="Needs a fresh authenticator code">●</span> : null}
+                  </td>
+                  {PLATFORM_ROLES.map((role) => (
+                    <td key={role} className="px-1 py-1 text-center">
+                      {roleCapabilities(role).includes(cap) ? <span className="text-emerald-400">✓</span> : <span className="text-slate-700">·</span>}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-slate-500"><span className="text-amber-300">●</span> also needs a fresh authenticator code at the moment of use.</p>
+      </div>
+    </details>
   );
 }
 
@@ -277,9 +368,13 @@ export function MemberDetailActions({
   const [pending, startTransition] = useTransition();
   const [tempPassword, setTempPassword] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const { withStepUp, dialog } = useStepUp();
+  const assignable = manageableRoles(actorRole);
+  const canChangeRole = assignable.includes(member.platformRole) && assignable.length > 1;
+  const [newRole, setNewRole] = useState<PlatformRole>(member.platformRole);
 
   function runAction(
-    action: (fd: FormData) => Promise<{ ok: boolean; error?: string; temporaryPassword?: string }>,
+    action: (fd: FormData) => Promise<{ ok: boolean; error?: string; temporaryPassword?: string; code?: string }>,
     extra?: Record<string, string>
   ) {
     startTransition(async () => {
@@ -288,7 +383,7 @@ export function MemberDetailActions({
       if (extra) {
         for (const [k, v] of Object.entries(extra)) fd.set(k, v);
       }
-      const result = await action(fd);
+      const result = await withStepUp(() => action(fd));
       if (result.temporaryPassword) setTempPassword(result.temporaryPassword);
       setMessage(result.ok ? "Action completed." : result.error ?? "Action failed.");
     });
@@ -296,7 +391,41 @@ export function MemberDetailActions({
 
   return (
     <div className="space-y-4">
+      {dialog}
       {message ? <p className="text-sm text-slate-300">{message}</p> : null}
+      {canChangeRole ? (
+        <form
+          className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-800 p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (newRole === member.platformRole) return;
+            const reason = window.prompt(`Reason for changing the role to ${roleLabel(newRole)}:`);
+            if (!reason) return;
+            runAction(changePlatformMemberRole, { platform_role: newRole, reason });
+          }}
+        >
+          <label className="text-sm">
+            <span className="block text-xs text-slate-400">Role</span>
+            <select
+              value={newRole}
+              onChange={(e) => setNewRole(e.target.value as PlatformRole)}
+              className="mt-1 rounded-lg border border-slate-700 bg-[#07070A] px-3 py-2"
+            >
+              {assignable.map((role) => (
+                <option key={role} value={role}>{roleLabel(role)}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="submit"
+            disabled={pending || newRole === member.platformRole}
+            className="rounded-lg border border-slate-700 px-3 py-2 text-sm disabled:opacity-50"
+          >
+            Change role
+          </button>
+          <p className="w-full text-xs text-slate-500">{ROLE_DESCRIPTIONS[newRole]} Needs your authenticator code.</p>
+        </form>
+      ) : null}
       {tempPassword ? (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
           <p className="font-semibold text-amber-200">Temporary password (shown once)</p>

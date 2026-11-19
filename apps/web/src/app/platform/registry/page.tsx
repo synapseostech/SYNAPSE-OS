@@ -1,12 +1,12 @@
 export const dynamic = "force-dynamic"
 
 import { ALL_CAPABILITIES, INTEGRATIONS, PRODUCT_MANIFEST } from "@synapse/config/manifest"
-import { requirePlatformAdmin } from "../../../lib/platform/auth"
+import { requirePlatformPage } from "../../../lib/platform/auth"
 import { PlatformPageHeader } from "../_components/platform-page-header"
 import { StatusBadge } from "../../../components/StatusBadge"
 
 export default async function ProductRegistryPage() {
-  await requirePlatformAdmin()
+  await requirePlatformPage("/platform/registry")
 
   return (
     <div className="space-y-6">

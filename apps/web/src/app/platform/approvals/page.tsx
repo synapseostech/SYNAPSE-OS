@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { createServiceClient } from "../../../lib/supabase/server";
-import { requirePlatformAdmin, requirePlatformAccess } from "../../../lib/platform/auth";
+import { requirePlatformAccess, requirePlatformPage } from "../../../lib/platform/auth";
 
 async function updatePilotStatus(formData: FormData) {
   "use server";
@@ -30,7 +30,7 @@ async function updateVerificationStatus(formData: FormData) {
 }
 
 export default async function PlatformApprovalsPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/approvals");
   const supabaseAdmin = createServiceClient();
 
   const [{ data: pilotApplications }, { data: verifications }] = await Promise.all([

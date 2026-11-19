@@ -8,11 +8,11 @@ import {
   type CommercialPlan,
 } from '@synapse/db/commercial-pricing'
 import { PRICING_STATES } from '@synapse/db/commercial-pricing'
-import { requirePlatformAccess } from '../../../../lib/platform/auth'
+import { requirePlatformPage } from '../../../../lib/platform/auth'
 import { updatePlanAction } from './actions'
 
 export default async function PlatformPricingPage() {
-  await requirePlatformAccess('platform.pricing.read')
+  await requirePlatformPage("/platform/commercial/pricing")
   let plans: CommercialPlan[] = []
   let loadError: string | null = null
   try {

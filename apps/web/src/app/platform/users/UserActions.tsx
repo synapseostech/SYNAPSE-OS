@@ -13,6 +13,7 @@ import {
   suspendUserAccount,
 } from './actions'
 import { platformNotices } from './notice-bus'
+import { fetchJson, useStepUp } from '../_components/step-up'
 
 type Props = {
   userId: string
@@ -34,6 +35,7 @@ export function UserActions({ userId, email, role, emailVerified, isDeleted, ver
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const [imitatePending, setImitatePending] = useState(false)
+  const { withStepUp, dialog: stepUpDialog } = useStepUp()
 
   const isPharmacyUser =
     role !== 'platform_admin' &&
@@ -144,13 +146,14 @@ export function UserActions({ userId, email, role, emailVerified, isDeleted, ver
       return
     }
     try {
-      const res = await fetch('/api/platform/impersonate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetUserId: userId }),
-      })
-      const data = await res.json()
-      if (!res.ok || !data.token) {
+      const data = await withStepUp(() =>
+        fetchJson('/api/platform/impersonate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetUserId: userId }),
+        }),
+      )
+      if (!data.ok || typeof data.token !== 'string') {
         tab.close()
         setError(data.error ?? 'Could not start impersonation session.')
         return
@@ -167,6 +170,7 @@ export function UserActions({ userId, email, role, emailVerified, isDeleted, ver
 
   return (
     <div className="flex flex-col items-end gap-1">
+      {stepUpDialog}
       <div className="flex flex-wrap items-center justify-end gap-1.5" role="group" aria-label={`Actions for ${email}`}>
         <Link
           href={`/platform/users/${userId}`}

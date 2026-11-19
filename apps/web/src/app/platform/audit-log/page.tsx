@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { FileSearch, LockKeyhole, Search } from "lucide-react";
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 import { formatDateTime, safeRows } from "../_lib/platform-data";
 
 type AuditRow = {
@@ -38,7 +38,7 @@ function categoryClass(action: string) {
 }
 
 export default async function PlatformAuditLogPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/audit-log");
 
   // Primary table is audit_log; fall back to audit_logs if the primary is empty
   let logs = await safeRows<AuditRow>(

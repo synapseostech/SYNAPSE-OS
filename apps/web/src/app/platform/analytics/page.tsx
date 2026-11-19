@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { Activity, BarChart3, Building2, CheckCircle2, Clock, TrendingUp, Users, Zap } from "lucide-react";
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 import { createServiceClient } from "../../../lib/supabase/server";
 import { formatDateTime } from "../_lib/platform-data";
 
@@ -38,7 +38,7 @@ type TenantRow = {
 };
 
 export default async function AnalyticsPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/analytics");
   const db = createServiceClient() as any;
 
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();

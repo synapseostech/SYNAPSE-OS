@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic'
 import Link from 'next/link'
 import { supabaseAdmin } from '@synapse/db/admin'
 import { CRM_STAGES, normalizeCrmStage } from '@synapse/db/commercial-crm'
-import { requirePlatformAccess } from '../../../../lib/platform/auth'
+import { requirePlatformPage } from '../../../../lib/platform/auth'
 import { updateLeadStageAction } from './actions'
 
 export default async function CommercialLeadsPage({
@@ -11,7 +11,7 @@ export default async function CommercialLeadsPage({
 }: {
   searchParams?: Promise<{ stage?: string; q?: string }>
 }) {
-  await requirePlatformAccess('platform.crm.read')
+  await requirePlatformPage("/platform/commercial/leads")
   const params = (await searchParams) ?? {}
   const stageFilter = params.stage ? normalizeCrmStage(params.stage) : null
   const q = (params.q ?? '').trim().toLowerCase()

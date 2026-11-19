@@ -1,12 +1,12 @@
 export const dynamic = "force-dynamic";
 
 import { supabaseAdmin } from "@synapse/db/admin";
-import { requirePlatformAccess } from "@/lib/platform/auth";
+import { requirePlatformPage } from "@/lib/platform/auth";
 import { listPlatformMembers } from "@/lib/platform/membership.server";
 import { PlatformAccessClient } from "./PlatformAccessClient";
 
 export default async function PlatformAccessPage() {
-  const actor = await requirePlatformAccess("user.read");
+  const actor = await requirePlatformPage("/platform/access");
   const members = await listPlatformMembers();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

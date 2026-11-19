@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { Megaphone, Radio, Send, Siren } from "lucide-react";
 import { createServiceClient } from "../../../lib/supabase/server";
-import { requirePlatformAdmin, requirePlatformAccess } from "../../../lib/platform/auth";
+import { requirePlatformAccess, requirePlatformPage } from "../../../lib/platform/auth";
 import { formatDate, safeCount, safeRows } from "../_lib/platform-data";
 import { UserBroadcastClient } from "./UserBroadcastClient";
 import { sendEmailBroadcast, sendSmsBroadcast } from "./actions";
@@ -55,7 +55,7 @@ function severityClass(severity: string | null | undefined) {
 }
 
 export default async function PlatformBroadcastsPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/broadcasts");
 
   const db = createServiceClient() as any;
 

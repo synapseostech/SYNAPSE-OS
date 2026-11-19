@@ -7,6 +7,7 @@ import { hashPassword, revokeAllUserSessions, validatePasswordStrength } from "@
 import { supabaseAdmin } from "@synapse/db/admin";
 import { logPlatformAccessEvent } from "@/lib/platform/access-audit";
 import { requirePlatformAccess } from "@/lib/platform/auth";
+import { stepUpResult } from "@/lib/platform/step-up";
 import { sendUserPasswordReset } from "@/lib/auth/password-reset.server";
 import {
   assertCanManageRole,
@@ -17,7 +18,7 @@ import {
   platformRoleRequiresMfa,
   validatePlatformRole,
 } from "@/lib/platform/membership.server";
-import { manageableRoles, type PlatformRole } from "@/lib/platform/rbac";
+import { MFA_MANDATORY_ROLES, manageableRoles, type PlatformRole } from "@/lib/platform/rbac";
 import { sendPlatformInviteEmail, sendPlatformRoleChangedEmail } from "@/lib/platform/access-email";
 
 const INVITE_TTL_HOURS = 72;
@@ -47,6 +48,11 @@ export async function invitePlatformMember(formData: FormData) {
   }
 
   assertCanManageRole(actor.platformRole, platformRole);
+  // Granting an admin-grade role is as sensitive as changing one.
+  if (MFA_MANDATORY_ROLES.includes(platformRole)) {
+    const stepUp = await stepUpResult(actor);
+    if (stepUp) return stepUp;
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = supabaseAdmin as any;
@@ -323,6 +329,8 @@ export async function reactivatePlatformMember(formData: FormData) {
 
 export async function changePlatformMemberRole(formData: FormData) {
   const actor = await requirePlatformAccess("user.role.manage");
+  const stepUp = await stepUpResult(actor);
+  if (stepUp) return stepUp;
   const userId = String(formData.get("user_id") ?? "").trim();
   const newRole = validatePlatformRole(String(formData.get("platform_role") ?? ""));
   const reason = String(formData.get("reason") ?? "").trim();
@@ -495,6 +503,8 @@ export async function revokePlatformMemberSessions(formData: FormData) {
 
 export async function resetPlatformMemberMfa(formData: FormData) {
   const actor = await requirePlatformAccess("user.mfa.manage");
+  const stepUp = await stepUpResult(actor);
+  if (stepUp) return stepUp;
   const userId = String(formData.get("user_id") ?? "").trim();
   const reason = String(formData.get("reason") ?? "").trim();
   if (!userId || !reason) return { ok: false as const, error: "User id and reason required." };
@@ -524,6 +534,8 @@ export async function resetPlatformMemberMfa(formData: FormData) {
 
 export async function revokePlatformMembership(formData: FormData) {
   const actor = await requirePlatformAccess("user.suspend");
+  const stepUp = await stepUpResult(actor);
+  if (stepUp) return stepUp;
   const userId = String(formData.get("user_id") ?? "").trim();
   const reason = String(formData.get("reason") ?? "").trim();
   if (!userId || !reason) return { ok: false as const, error: "User id and reason required." };

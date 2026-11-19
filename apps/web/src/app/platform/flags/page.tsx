@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { Flag, History, Save } from "lucide-react";
 import { createServiceClient } from "../../../lib/supabase/server";
-import { requirePlatformAdmin, requirePlatformAccess } from "../../../lib/platform/auth";
+import { requirePlatformAccess, requirePlatformPage } from "../../../lib/platform/auth";
 import { FEATURE_KEYS, formatDateTime, logPlatformEvent, safeRows } from "../_lib/platform-data";
 
 type TenantRow = {
@@ -73,7 +73,7 @@ function flagKey(tenantId: string | null | undefined, featureKey: string | null 
 }
 
 export default async function PlatformFlagsPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/flags");
 
   const [tenants, flags] = await Promise.all([
     safeRows<TenantRow>("tenants", "id, name, type, status", { orderBy: "name", ascending: true, limit: 80 }),

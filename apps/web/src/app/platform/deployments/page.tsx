@@ -1,13 +1,13 @@
 export const dynamic = "force-dynamic";
 
 import Link from "next/link";
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 import { getProductionTruth } from "../../../lib/platform/production-truth";
 import { getHospitalPilotRc1Pulse } from "../../../lib/platform/rc1-pulse";
 import { PlatformPageHeader } from "../_components/platform-page-header";
 
 export default async function DeploymentsPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/deployments");
   const truth = await getProductionTruth();
   const rc1 = getHospitalPilotRc1Pulse();
   const prodDeploy = truth.vercelDeployments.deployments[0];

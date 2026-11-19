@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { Bot, LockKeyhole, Mail, MessageSquare, ServerCog, ShieldCheck, ToggleLeft, Video } from "lucide-react";
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 
 const settingsGroups = [
   {
@@ -44,7 +44,7 @@ const settingsGroups = [
 ];
 
 export default async function PlatformSettingsPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/settings");
   const adminEmails = (process.env.ADMIN_EMAILS ?? "").split(",").map((email) => email.trim()).filter(Boolean);
 
   return (

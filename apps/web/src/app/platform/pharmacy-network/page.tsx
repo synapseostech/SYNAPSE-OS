@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { MapPinned, Power, Trash2, UploadCloud } from "lucide-react";
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 import { formatDateTime, safeRows } from "../_lib/platform-data";
 import { PharmacyEditModal } from "./PharmacyEditModal";
 import { DomainCell } from "./DomainCell";
@@ -58,7 +58,7 @@ function pharmacyRouteForSlug(slug?: string | null) {
 }
 
 export default async function PharmacyNetworkPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/pharmacy-network");
 
   const [pharmacies, profiles, onboardingRows] = await Promise.all([
     safeRows<PharmacyRow>(

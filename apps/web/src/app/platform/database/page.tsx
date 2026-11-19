@@ -1,11 +1,11 @@
 export const dynamic = "force-dynamic"
 
-import { requirePlatformAdmin } from "../../../lib/platform/auth"
+import { requirePlatformPage } from "../../../lib/platform/auth"
 import { PlatformPageHeader } from "../_components/platform-page-header"
 import { checkDatabaseLatency } from "../_lib/platform-data"
 
 export default async function DatabaseControlPage() {
-  await requirePlatformAdmin()
+  await requirePlatformPage("/platform/database")
   const db = await checkDatabaseLatency()
   return (
     <div className="space-y-6">

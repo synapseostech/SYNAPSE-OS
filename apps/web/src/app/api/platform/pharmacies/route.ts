@@ -13,7 +13,7 @@ export const maxDuration = 60
 const LEGACY_TIERS = new Set(["trial", "starter", "professional", "enterprise"])
 
 export async function GET(request: Request) {
-  const auth = await requirePlatformAdminApi()
+  const auth = await requirePlatformAdminApi("tenant.read")
   if (!auth.ok) return auth.response
 
   const raw = new URL(request.url).searchParams.get("slug") ?? ""

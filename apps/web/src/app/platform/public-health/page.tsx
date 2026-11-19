@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { AlertTriangle, BarChart3, FileDown, MapPinned, Radio } from "lucide-react";
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 import { formatDateTime, safeCount, safeRows } from "../_lib/platform-data";
 
 type DiagnosisRow = {
@@ -24,7 +24,7 @@ type ExportRow = {
 const NOTIFIABLE = ["Malaria", "Cholera", "Tuberculosis", "HIV", "Hepatitis", "Mpox", "Meningitis", "Ebola"];
 
 export default async function PlatformPublicHealthPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/public-health");
 
   const [diagnoses, dhisRows, surveillanceReports] = await Promise.all([
     safeRows<DiagnosisRow>("diagnoses", "code, icd_code, description, diagnosis, district, created_at", {

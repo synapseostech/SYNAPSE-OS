@@ -1,14 +1,14 @@
 export const dynamic = "force-dynamic";
 
 import Link from "next/link";
-import { requirePlatformAccess } from "@/lib/platform/auth";
+import { requirePlatformPage } from "@/lib/platform/auth";
 import { getProductionTruth } from "@/lib/platform/production-truth";
 import { PRODUCT_MANIFEST, statusLabel } from "@synapse/config/manifest";
 import { safeCount, safeRows, formatDateTime } from "../_lib/platform-data";
 import { roleLabel, isObserverRole } from "@/lib/platform/rbac";
 
 export default async function PlatformPerformancePage() {
-  const actor = await requirePlatformAccess("platform.dashboard.read");
+  const actor = await requirePlatformPage("/platform/performance");
   const truth = await getProductionTruth();
 
   const [tenantCount, activeTenants, auditRecent] = await Promise.all([

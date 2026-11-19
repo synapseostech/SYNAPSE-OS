@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic"
 export const maxDuration = 60
 
 export async function GET(request: Request) {
-  const auth = await requirePlatformAdminApi()
+  const auth = await requirePlatformAdminApi("tenant.read")
   if (!auth.ok) return auth.response
 
   const url = new URL(request.url)

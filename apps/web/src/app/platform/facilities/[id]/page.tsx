@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic"
 
 import Link from "next/link"
 import type { ReactNode } from "react"
-import { requirePlatformAdmin } from "../../../../lib/platform/auth"
+import { requirePlatformPage } from "../../../../lib/platform/auth"
 import { formatDate, platformAdminClient, safeRows } from "../../_lib/platform-data"
 import { withMfaStatus } from "../../../../lib/auth/mfa-status"
 import { FacilityResumeButton } from "./resume-button"
@@ -53,7 +53,7 @@ export default async function FacilityDetailPage({
   params: Promise<{ id: string }>
   searchParams?: Promise<{ runId?: string; tab?: string }>
 }) {
-  await requirePlatformAdmin()
+  await requirePlatformPage("/platform/facilities/[id]")
   const { id } = await params
   const sp = (await searchParams) ?? {}
 

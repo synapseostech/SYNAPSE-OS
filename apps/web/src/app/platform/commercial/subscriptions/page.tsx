@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import Link from 'next/link'
-import { requirePlatformAccess } from '@/lib/platform/auth'
+import { requirePlatformPage } from '@/lib/platform/auth'
 import { createServiceClient } from '@/lib/supabase/server'
 
 type SubRow = {
@@ -26,7 +26,7 @@ function daysUntil(iso: string | null | undefined): number | null {
 }
 
 export default async function CommercialSubscriptionsPage() {
-  await requirePlatformAccess('platform.subscription.read')
+  await requirePlatformPage("/platform/commercial/subscriptions")
   const db = createServiceClient() as any
 
   const [{ data: subs }, { data: recentOffline }] = await Promise.all([

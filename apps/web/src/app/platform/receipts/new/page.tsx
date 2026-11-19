@@ -1,6 +1,6 @@
 export const dynamic = "force-dynamic";
 
-import { requirePlatformAdmin } from "../../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../../lib/platform/auth";
 import { safeRows } from "../../_lib/platform-data";
 import { getDocumentSettings } from "../_lib/document-settings";
 import { DocumentEditorForm } from "../_components/document-editor-form";
@@ -19,7 +19,7 @@ export default async function CreateDocumentPage({
 }: {
   searchParams: Promise<{ kind?: string; error?: string; detail?: string }>;
 }) {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/receipts/new");
   const params = await searchParams;
   const kind = params.kind === "invoice" ? "invoice" : "receipt";
   const errorBase = params.error ? ERRORS[params.error] ?? "Something went wrong." : null;

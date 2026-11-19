@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requirePlatformAdmin } from "../../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../../lib/platform/auth";
 import { formatDate } from "../../_lib/platform-data";
 import { PlatformReceiptDocument } from "../../_components/ReceiptDocument";
 import {
@@ -26,7 +26,7 @@ export default async function PlatformReceiptDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ ok?: string; error?: string }>;
 }) {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/receipts/[id]");
   const { id } = await params;
   const query = await searchParams;
   const [doc, settings] = await Promise.all([

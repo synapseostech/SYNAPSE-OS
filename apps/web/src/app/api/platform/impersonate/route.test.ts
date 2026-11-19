@@ -3,11 +3,17 @@ import { NextResponse } from 'next/server'
 
 const m = vi.hoisted(() => ({
   actorRole: 'INVESTOR_OBSERVER' as string,
+  stepUp: true,
   tables: {} as Record<string, Array<Record<string, unknown>>>,
   inserts: [] as Array<{ table: string; values: unknown }>,
 }))
 
-const CAPS: Record<string, string[]> = { PLATFORM_ADMIN: ['tenant.manage'], INVESTOR_OBSERVER: [] }
+const CAPS: Record<string, string[]> = {
+  PLATFORM_ADMIN: ['tenant.manage', 'tenant.impersonate'],
+  // Can manage tenants but was not given impersonation.
+  TENANT_ONLY: ['tenant.manage'],
+  INVESTOR_OBSERVER: [],
+}
 const profile = () => ({ id: 'actor-1', email: 'actor@p.test', platformRole: m.actorRole })
 
 vi.mock('@/lib/platform/auth', () => ({
@@ -17,6 +23,11 @@ vi.mock('@/lib/platform/auth', () => ({
     cap && !(CAPS[m.actorRole] ?? []).includes(cap)
       ? { ok: false, response: NextResponse.json({ code: 'PLATFORM_FORBIDDEN' }, { status: 403 }) }
       : { ok: true, profile: profile() },
+  ),
+}))
+vi.mock('@/lib/platform/step-up', () => ({
+  stepUpResponse: vi.fn(async () =>
+    m.stepUp ? null : NextResponse.json({ code: 'MFA_STEP_UP_REQUIRED' }, { status: 403 }),
   ),
 }))
 vi.mock('@synapse/auth/tokens', () => ({ signToken: vi.fn(async () => 'signed.token') }))
@@ -46,13 +57,15 @@ async function start(targetUserId: string) {
   const res = await POST(new NextRequest('https://admin.synapseos.tech/api/platform/impersonate', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetUserId }),
   }))
-  return { status: res.status }
+  const body = await res.json().catch(() => ({}))
+  return { status: res.status, code: (body as { code?: string }).code }
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   m.inserts = []
   m.actorRole = 'PLATFORM_ADMIN'
+  m.stepUp = true
   m.tables = {
     profiles: [
       { id: 'staff-1', email: 's@t.test', role: 'pharmacist', tenant_id: 'tenant-1' },
@@ -68,6 +81,21 @@ describe('POST /api/platform/impersonate', () => {
     m.actorRole = 'INVESTOR_OBSERVER'
     const r = await start('staff-1')
     expect(r.status).toBe(403)
+    expect(m.inserts).toEqual([])
+  })
+
+  it('refuses tenant.manage without tenant.impersonate', async () => {
+    m.actorRole = 'TENANT_ONLY'
+    const r = await start('staff-1')
+    expect(r.status).toBe(403)
+    expect(m.inserts).toEqual([])
+  })
+
+  it('needs a fresh authenticator code even with the capability', async () => {
+    m.stepUp = false
+    const r = await start('staff-1')
+    expect(r.status).toBe(403)
+    expect(r.code).toBe('MFA_STEP_UP_REQUIRED')
     expect(m.inserts).toEqual([])
   })
 

@@ -15,7 +15,7 @@ function sanitizeSearchTerm(raw: string) {
 }
 
 export async function GET(request: NextRequest) {
-  const auth = await requirePlatformAdminApi();
+  const auth = await requirePlatformAdminApi("tenant.read");
   if (!auth.ok) return auth.response;
 
   const q = sanitizeSearchTerm(request.nextUrl.searchParams.get("q") ?? "");

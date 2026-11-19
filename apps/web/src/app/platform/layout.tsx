@@ -45,6 +45,7 @@ import { SkipLink } from "@synapse/ui";
 import { SynapseLogo } from "../../components/SynapseLogo";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import { PlatformBreadcrumb } from "./_components/breadcrumb";
+import { navRequiresCapability } from "@/lib/platform/rbac";
 
 type CommandResult = {
   title: string;
@@ -91,6 +92,7 @@ const SIDEBAR_SECTIONS: NavSection[] = [
   {
     caption: "Customers",
     items: [
+      { href: "/platform/tenants", label: "All tenants", icon: Layers },
       { href: "/platform/facilities", label: "Facilities", icon: Building2 },
       { href: "/platform/hospitals", label: "Hospitals", icon: Stethoscope },
       { href: "/platform/users", label: "Users & Professionals", icon: Users },
@@ -135,7 +137,7 @@ const SIDEBAR_SECTIONS: NavSection[] = [
     caption: "Governance",
     items: [
       { href: "/platform/performance", label: "Stakeholder Performance", icon: TrendingUp },
-      { href: "/platform/access", label: "Platform Access", icon: ShieldCheck },
+      { href: "/platform/access", label: "Platform staff", icon: ShieldCheck },
       { href: "/platform/audit-log", label: "Audit Log", icon: ClipboardList },
     ],
   },
@@ -148,7 +150,7 @@ const SIDEBAR_SECTIONS: NavSection[] = [
       { href: "/platform/database", label: "Database", icon: DatabaseZap },
       { href: "/platform/deployments", label: "Deployments", icon: GitBranch },
       { href: "/platform/mobile", label: "Mobile Builds", icon: MonitorSmartphone },
-      { href: "/platform/health", label: "Platform Health", icon: Gauge },
+      { href: "/platform/health", label: "System health", icon: Gauge },
       { href: "/platform/settings", label: "Settings", icon: Settings },
     ],
   },
@@ -234,18 +236,52 @@ export default function PlatformLayout({ children }: { children: React.ReactNode
     };
   }, [paletteOpen, query]);
 
+  // The caller's capabilities, so links their role cannot open are not shown.
+  // Until they load (or if the call fails) every link shows; the pages
+  // themselves enforce access on the server either way.
+  const [capabilities, setCapabilities] = useState<string[] | null>(null);
+  const [roleName, setRoleName] = useState<string | null>(null);
+  const isAuthPage =
+    pathname === "/platform/login" || pathname === "/platform/mfa" || pathname === "/platform/mfa-verify" || pathname.startsWith("/platform/invite/");
+  useEffect(() => {
+    if (isAuthPage) return;
+    let cancelled = false;
+    fetch("/api/platform/me", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { capabilities?: string[]; roleLabel?: string } | null) => {
+        if (cancelled || !data?.capabilities) return;
+        setCapabilities(data.capabilities);
+        setRoleName(data.roleLabel ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthPage]);
+  const canOpen = (href: string) => !capabilities || capabilities.includes(navRequiresCapability(href));
+  const visibleSections = useMemo(
+    () =>
+      SIDEBAR_SECTIONS.map((section) => ({ ...section, items: section.items.filter((item) => canOpen(item.href)) })).filter(
+        (section) => section.items.length > 0,
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [capabilities],
+  );
+
   const commandResults = useMemo(() => {
     const normalized = query.trim().toLowerCase();
+    const allowed = STATIC_COMMANDS.filter((item) => canOpen(item.href));
     const local = normalized
-      ? STATIC_COMMANDS.filter((item) => `${item.title} ${item.subtitle}`.toLowerCase().includes(normalized))
-      : STATIC_COMMANDS;
+      ? allowed.filter((item) => `${item.title} ${item.subtitle}`.toLowerCase().includes(normalized))
+      : allowed;
     const seen = new Set<string>();
     return [...remoteResults, ...local].filter((item) => {
       if (seen.has(item.href)) return false;
       seen.add(item.href);
       return true;
     });
-  }, [query, remoteResults]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, remoteResults, capabilities]);
 
   async function handleSignOut() {
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
@@ -297,7 +333,7 @@ export default function PlatformLayout({ children }: { children: React.ReactNode
         </div>
 
         <nav className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4" aria-label="Primary">
-          {SIDEBAR_SECTIONS.map((section) => (
+          {visibleSections.map((section) => (
             <div key={section.caption} className="mb-5 last:mb-0">
               <p className="mb-2 px-2 text-[10px] font-bold uppercase tracking-[0.14em] text-muted-color" id={`nav-${section.caption.replace(/\s+/g, "-").toLowerCase()}`}>
                 {section.caption}
@@ -393,6 +429,11 @@ export default function PlatformLayout({ children }: { children: React.ReactNode
             >
               <Bell className="h-4 w-4" aria-hidden />
             </Link>
+            {roleName ? (
+              <span className="hidden rounded-xl border border-subtle px-2.5 py-1.5 text-[11px] font-medium text-secondary-color md:inline" title="Your platform role">
+                {roleName}
+              </span>
+            ) : null}
             <ThemeToggle />
             <button
               type="button"

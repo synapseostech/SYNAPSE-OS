@@ -2,6 +2,7 @@
 export const PLATFORM_ROLES = [
   "SUPER_ADMIN",
   "PLATFORM_ADMIN",
+  "OPERATIONS_ADMIN",
   "RELEASE_MANAGER",
   "SECURITY_ADMIN",
   "FINANCE_ADMIN",
@@ -54,7 +55,11 @@ export const PLATFORM_CAPABILITIES = [
   "integration.manage",
   "feature_flag.manage",
   "incident.manage",
+  "tenant.read",
   "tenant.manage",
+  "tenant.impersonate",
+  "tenant.purge",
+  "system_health.read",
   "platform.subscription.read",
   "platform.subscription.manage",
   "platform.subscriptions.activate",
@@ -107,7 +112,10 @@ const ROLE_CAPABILITIES: Record<PlatformRole, PlatformCapability[]> = {
     "integration.manage",
     "feature_flag.manage",
     "incident.manage",
+    "tenant.read",
     "tenant.manage",
+    "tenant.impersonate",
+    "system_health.read",
     "platform.subscription.read",
     "platform.subscription.manage",
     "platform.subscriptions.activate",
@@ -117,8 +125,29 @@ const ROLE_CAPABILITIES: Record<PlatformRole, PlatformCapability[]> = {
     "platform.crm.read",
     "platform.crm.manage",
   ],
+  // Day-to-day running of every product's tenants: onboarding, suspension,
+  // support escalations and incidents. No pricing, roles or purges.
+  OPERATIONS_ADMIN: [
+    ...ALL_READ,
+    "security_summary.read",
+    "system_health.read",
+    "user.read",
+    "user.invite",
+    "user.suspend",
+    "user.reactivate",
+    "user.session.revoke",
+    "user.password_reset",
+    "tenant.read",
+    "tenant.manage",
+    "tenant.impersonate",
+    "incident.manage",
+    "platform.subscription.read",
+    "platform.pricing.read",
+    "platform.crm.read",
+  ],
   RELEASE_MANAGER: [
     ...ALL_READ,
+    "system_health.read",
     "deployment.read",
     "release.read",
     "deployment.manage",
@@ -130,6 +159,8 @@ const ROLE_CAPABILITIES: Record<PlatformRole, PlatformCapability[]> = {
     ...ALL_READ,
     "security_summary.read",
     "audit.read",
+    "system_health.read",
+    "tenant.read",
     "user.read",
     "user.session.revoke",
     "user.mfa.manage",
@@ -141,6 +172,7 @@ const ROLE_CAPABILITIES: Record<PlatformRole, PlatformCapability[]> = {
     "analytics.read",
     "finance_summary.read",
     "audit.read",
+    "tenant.read",
     "platform.pricing.read",
     "platform.pricing.manage",
     "platform.crm.read",
@@ -153,8 +185,11 @@ const ROLE_CAPABILITIES: Record<PlatformRole, PlatformCapability[]> = {
     "product.read",
     "test_center.read",
     "incident.read",
+    "audit.read",
     "user.read",
     "user.password_reset",
+    "tenant.read",
+    "system_health.read",
     "platform.crm.read",
   ],
   CLINICAL_GOVERNANCE: [
@@ -180,11 +215,19 @@ const ROLE_CAPABILITIES: Record<PlatformRole, PlatformCapability[]> = {
     "simulation.read",
     "integration.read",
     "event.read",
+    "system_health.read",
   ],
+  // Read-only auditor: sees every tenant, the audit trail, finance and
+  // security summaries and system health, and can change nothing.
   AUDITOR: [
     ...OBSERVER_READ,
     "finance_summary.read",
     "security_summary.read",
+    "system_health.read",
+    "tenant.read",
+    "user.read",
+    "platform.subscription.read",
+    "platform.pricing.read",
   ],
   READ_ONLY_OBSERVER: OBSERVER_READ,
 };
@@ -193,6 +236,8 @@ const ROLE_CAPABILITIES: Record<PlatformRole, PlatformCapability[]> = {
 export const MFA_MANDATORY_ROLES: PlatformRole[] = [
   "SUPER_ADMIN",
   "PLATFORM_ADMIN",
+  "OPERATIONS_ADMIN",
+  "FINANCE_ADMIN",
   "SECURITY_ADMIN",
   "RELEASE_MANAGER",
 ];
@@ -209,6 +254,7 @@ export const OBSERVER_ROLES: PlatformRole[] = [
 export const ADMIN_ROLES: PlatformRole[] = [
   "SUPER_ADMIN",
   "PLATFORM_ADMIN",
+  "OPERATIONS_ADMIN",
   "RELEASE_MANAGER",
   "SECURITY_ADMIN",
   "FINANCE_ADMIN",
@@ -264,35 +310,76 @@ export function statusLabel(status: PlatformMembershipStatus): string {
   return status.charAt(0) + status.slice(1).toLowerCase();
 }
 
-/** Nav paths visible per capability (server-side filter). */
+/** One-line summary of each role, shown when inviting staff or changing a role. */
+export const ROLE_DESCRIPTIONS: Record<PlatformRole, string> = {
+  SUPER_ADMIN: "Everything, including assigning Super admins and deleting test tenants.",
+  PLATFORM_ADMIN: "Runs the platform: tenants, staff (except Super admins), pricing, flags and releases.",
+  OPERATIONS_ADMIN: "Runs tenants day to day: onboarding, suspension, invites, support and incidents. No pricing or roles.",
+  RELEASE_MANAGER: "Deployments, APK releases and incidents.",
+  SECURITY_ADMIN: "Sessions, MFA, audit and incidents; can manage observer roles.",
+  FINANCE_ADMIN: "Billing, pricing and subscription activation. Read-only on tenants.",
+  SUPPORT_ADMIN: "Looks up tenants and users, reads their audit trail and sends password resets. Changes nothing else.",
+  CLINICAL_GOVERNANCE: "Clinical simulations and the test centre.",
+  STAKEHOLDER: "Read-only dashboards.",
+  BOARD_OBSERVER: "Read-only dashboards.",
+  INVESTOR_OBSERVER: "Read-only business metrics.",
+  TECHNICAL_OBSERVER: "Read-only technical dashboards and system health.",
+  AUDITOR: "Read-only auditor: every tenant, audit trail, finance, security and system health. Changes nothing.",
+  READ_ONLY_OBSERVER: "Read-only dashboards.",
+};
+
+/**
+ * Capabilities whose use additionally needs a fresh authenticator code
+ * (POST /api/platform/mfa/step-up within the last 5 minutes), checked on the
+ * server by requireRecentStepUp in lib/platform/step-up.ts.
+ */
+export const STEP_UP_CAPABILITIES: PlatformCapability[] = [
+  "tenant.purge",
+  "tenant.impersonate",
+  "user.role.manage",
+  "user.mfa.manage",
+];
+
+/**
+ * The capability needed to open each console page, enforced on the server by
+ * requirePlatformPage(path) in lib/platform/auth.ts (the sidebar is filtered
+ * from the same map, but hiding a link is not what protects the page).
+ * Longest-prefix match: /platform/tenants/abc uses /platform/tenants.
+ */
 export const NAV_CAPABILITY_MAP: Record<string, PlatformCapability> = {
   "/platform": "platform.dashboard.read",
   "/platform/performance": "platform.dashboard.read",
   "/platform/test-center": "test_center.read",
   "/platform/registry": "product.read",
-  "/platform/monitoring": "platform.dashboard.read",
+  "/platform/monitoring": "system_health.read",
   "/platform/simulation": "simulation.read",
   "/platform/events": "event.read",
   "/platform/lab": "product.read",
   "/platform/intelligence": "analytics.read",
   "/platform/icd11": "product.read",
+  "/platform/guidelines": "product.read",
   "/platform/modules": "capability.read",
   "/platform/integrations": "integration.read",
   "/platform/incidents": "incident.read",
   "/platform/applications": "tenant.manage",
   "/platform/approvals": "tenant.manage",
-  "/platform/sales": "platform.crm.read",
+  "/platform/sales": "platform.crm.manage",
   "/platform/commercial/leads": "platform.crm.read",
   "/platform/commercial/meetings": "platform.crm.read",
   "/platform/commercial/pricing": "platform.pricing.read",
   "/platform/commercial/subscriptions": "platform.subscription.read",
-  "/platform/hospitals": "tenant.manage",
-  "/platform/facilities": "tenant.manage",
+  "/platform/tenants": "tenant.read",
+  "/platform/tenants/provision": "tenant.manage",
+  "/platform/hospitals": "tenant.read",
+  "/platform/hospitals/new": "tenant.manage",
+  "/platform/facilities": "tenant.read",
+  "/platform/facilities/new": "tenant.manage",
+  "/platform/pharmacies/onboard": "tenant.manage",
   "/platform/users": "user.read",
   "/platform/access": "user.read",
-  "/platform/pharmacy-network": "tenant.manage",
-  "/platform/support": "tenant.manage",
-  "/platform/broadcasts": "tenant.manage",
+  "/platform/pharmacy-network": "tenant.read",
+  "/platform/support": "tenant.read",
+  "/platform/broadcasts": "platform.crm.manage",
   "/platform/billing": "finance_summary.read",
   "/platform/receipts": "finance_summary.read",
   "/platform/subscriptions": "platform.subscription.read",
@@ -301,19 +388,22 @@ export const NAV_CAPABILITY_MAP: Record<string, PlatformCapability> = {
   "/platform/security": "security_summary.read",
   "/platform/audit-log": "audit.read",
   "/platform/flags": "feature_flag.manage",
-  "/platform/dhis2": "tenant.manage",
-  "/platform/database": "tenant.manage",
+  "/platform/dhis2": "integration.read",
+  "/platform/database": "system_health.read",
   "/platform/deployments": "deployment.read",
   "/platform/mobile": "deployment.read",
-  "/platform/health": "platform.dashboard.read",
+  "/platform/health": "system_health.read",
+  "/platform/system": "system_health.read",
   "/platform/settings": "platform.dashboard.read",
 };
 
-export function navRequiresCapability(href: string): PlatformCapability | null {
-  const exact = NAV_CAPABILITY_MAP[href];
-  if (exact) return exact;
-  for (const [path, cap] of Object.entries(NAV_CAPABILITY_MAP)) {
-    if (href.startsWith(`${path}/`)) return cap;
+export function navRequiresCapability(href: string): PlatformCapability {
+  const path = href.split("?")[0]!.replace(/\/+$/, "") || "/platform";
+  let best: string | null = null;
+  for (const prefix of Object.keys(NAV_CAPABILITY_MAP)) {
+    if (path === prefix || path.startsWith(`${prefix}/`)) {
+      if (!best || prefix.length > best.length) best = prefix;
+    }
   }
-  return "platform.dashboard.read";
+  return best ? NAV_CAPABILITY_MAP[best]! : "platform.dashboard.read";
 }

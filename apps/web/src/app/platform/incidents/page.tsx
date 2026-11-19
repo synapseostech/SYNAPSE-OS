@@ -1,11 +1,11 @@
 export const dynamic = "force-dynamic"
 
-import { requirePlatformAdmin } from "../../../lib/platform/auth"
+import { requirePlatformPage } from "../../../lib/platform/auth"
 import { PlatformPageHeader } from "../_components/platform-page-header"
 import { safeRows } from "../_lib/platform-data"
 
 export default async function IncidentsPage() {
-  await requirePlatformAdmin()
+  await requirePlatformPage("/platform/incidents")
   const incidents = await safeRows<{
     id?: string
     service?: string

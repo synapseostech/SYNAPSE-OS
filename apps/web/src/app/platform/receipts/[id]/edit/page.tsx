@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { notFound } from "next/navigation";
-import { requirePlatformAdmin } from "../../../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../../../lib/platform/auth";
 import { formatDate } from "../../../_lib/platform-data";
 import { safeRows } from "../../../_lib/platform-data";
 import { DocumentEditorForm } from "../../_components/document-editor-form";
@@ -24,7 +24,7 @@ export default async function EditDocumentPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string; detail?: string }>;
 }) {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/receipts/[id]/edit");
   const { id } = await params;
   const q = await searchParams;
 

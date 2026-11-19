@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { AlertTriangle, Lock, ShieldCheck, ShieldOff, UserX, Zap } from "lucide-react";
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 import { createServiceClient } from "../../../lib/supabase/server";
 import { formatDateTime } from "../_lib/platform-data";
 
@@ -68,7 +68,7 @@ function severityBadge(action: string) {
 }
 
 export default async function SecurityPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/security");
   const db = createServiceClient() as any;
   const now = new Date().toISOString();
 

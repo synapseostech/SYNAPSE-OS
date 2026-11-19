@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic"
 
 import { overallPlatformHealth } from "@synapse/config/manifest"
-import { requirePlatformAdmin } from "../../../lib/platform/auth"
+import { requirePlatformPage } from "../../../lib/platform/auth"
 import { PlatformPageHeader } from "../_components/platform-page-header"
 import { checkDatabaseLatency } from "../_lib/platform-data"
 
@@ -37,7 +37,7 @@ async function probe(label: string, url: string) {
 }
 
 export default async function MonitoringPage() {
-  await requirePlatformAdmin()
+  await requirePlatformPage("/platform/monitoring")
   const db = await checkDatabaseLatency()
   const surfaces = await Promise.all([
     probe("synapseos.tech", "https://synapseos.tech"),

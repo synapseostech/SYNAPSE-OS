@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { Building2, Kanban, Pill, UserRound } from "lucide-react";
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 import { formatDateTime, safeCount, safeRows } from "../_lib/platform-data";
 import { PlatformPageHeader } from "../_components/platform-page-header";
 import { EmptyState } from "../_components/empty-state";
@@ -58,7 +58,7 @@ function daysInStage(createdAt: string | null | undefined) {
 }
 
 export default async function PlatformApplicationsPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/applications");
 
   const [applications, leads, pendingCount, leadCount] = await Promise.all([
     safeRows<ApplicationRow>(

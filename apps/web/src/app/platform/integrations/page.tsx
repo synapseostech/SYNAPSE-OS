@@ -2,12 +2,12 @@ export const dynamic = "force-dynamic"
 
 import { INTEGRATIONS } from "@synapse/config/manifest"
 import { createSimulationAdapterSet } from "@synapse/interop"
-import { requirePlatformAdmin } from "../../../lib/platform/auth"
+import { requirePlatformPage } from "../../../lib/platform/auth"
 import { PlatformPageHeader } from "../_components/platform-page-header"
 import { StatusBadge } from "../../../components/StatusBadge"
 
 export default async function IntegrationsPage() {
-  await requirePlatformAdmin()
+  await requirePlatformPage("/platform/integrations")
   return (
     <div className="space-y-6">
       <PlatformPageHeader

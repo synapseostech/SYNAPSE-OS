@@ -3,11 +3,11 @@ export const dynamic = 'force-dynamic'
 import Link from 'next/link'
 import { supabaseAdmin } from '@synapse/db/admin'
 import { MEETING_STATUSES, isMeetingStatus } from '@synapse/db/commercial-crm'
-import { requirePlatformAccess } from '../../../../lib/platform/auth'
+import { requirePlatformPage } from '../../../../lib/platform/auth'
 import { updateMeetingStatusAction } from './actions'
 
 export default async function CommercialMeetingsPage() {
-  await requirePlatformAccess('platform.crm.read')
+  await requirePlatformPage("/platform/commercial/meetings")
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = supabaseAdmin as any
   const { data: meetings } = await db

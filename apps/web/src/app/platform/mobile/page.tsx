@@ -1,10 +1,10 @@
 export const dynamic = "force-dynamic"
 
-import { requirePlatformAdmin } from "../../../lib/platform/auth"
+import { requirePlatformPage } from "../../../lib/platform/auth"
 import { PlatformPageHeader } from "../_components/platform-page-header"
 
 export default async function MobileBuildsPage() {
-  await requirePlatformAdmin()
+  await requirePlatformPage("/platform/mobile")
   const connected = Boolean(process.env.EXPO_TOKEN)
   return (
     <div className="space-y-6">

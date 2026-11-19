@@ -12,7 +12,7 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const auth = await requirePlatformAdminApi();
+  const auth = await requirePlatformAdminApi("test_center.read");
   if (!auth.ok) return auth.response;
 
   const snapshot = inspectHospital(HOSPITAL_CANONICAL_SLUG);

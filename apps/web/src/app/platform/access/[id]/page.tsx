@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { supabaseAdmin } from "@synapse/db/admin";
-import { requirePlatformAccess } from "@/lib/platform/auth";
+import { requirePlatformPage } from "@/lib/platform/auth";
 import { getPlatformMember } from "@/lib/platform/membership.server";
 import { roleLabel, statusLabel } from "@/lib/platform/rbac";
 import { MemberDetailActions } from "../PlatformAccessClient";
@@ -13,7 +13,7 @@ export default async function PlatformMemberDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const actor = await requirePlatformAccess("user.read");
+  const actor = await requirePlatformPage("/platform/access/[id]");
   const { id } = await params;
   const member = await getPlatformMember(id);
 

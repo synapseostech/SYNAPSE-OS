@@ -1,13 +1,13 @@
 export const dynamic = "force-dynamic"
 
-import { requirePlatformAdmin } from "../../../lib/platform/auth"
+import { requirePlatformPage } from "../../../lib/platform/auth"
 import { PlatformPageHeader } from "../_components/platform-page-header"
 import { safeCount, safeRows } from "../_lib/platform-data"
 
 const MODULES = ["Clinical", "Lab", "Pharm", "Pathways", "Imaging", "Claims", "DHIS2"] as const
 
 export default async function ModuleMatrixPage() {
-  await requirePlatformAdmin()
+  await requirePlatformPage("/platform/modules")
   const tenants = await safeRows<{ id?: string; name?: string; facility_type?: string | null; environment?: string | null; is_synthetic?: boolean | null }>(
     "tenants",
     "id, name, facility_type, environment, is_synthetic",

@@ -1,6 +1,6 @@
 export const dynamic = "force-dynamic";
 
-import { requirePlatformAccess } from "@/lib/platform/auth";
+import { requirePlatformPage } from "@/lib/platform/auth";
 import { PlatformNoticeRegion } from "./PlatformNoticeRegion";
 import { directoryHref, searchPlatformUsers, SUSPENDED_VERIFICATION_STATUSES } from "@/lib/platform/user-directory";
 import { formatDate, platformAdminClient, safeCount, safeRows } from "../_lib/platform-data";
@@ -30,7 +30,7 @@ export default async function PlatformUsersPage({
   searchParams?: Promise<{ q?: string; role?: string; status?: string; page?: string; pageSize?: string }>;
 }) {
   // /platform/users is mapped to user.read in the control-plane route policy; enforce it here too.
-  const admin = await requirePlatformAccess("user.read");
+  const admin = await requirePlatformPage("/platform/users");
   const params = (await searchParams) ?? {};
 
   const [totalUsers, pendingKyc, verifiedUsers, archivedUsers, directory, kycRows] = await Promise.all([

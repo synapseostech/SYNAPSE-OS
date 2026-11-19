@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic"
 
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { requirePlatformAccess } from "@/lib/platform/auth"
+import { requirePlatformPage } from "@/lib/platform/auth"
 import { isAccountSuspended } from "@synapse/auth/account-suspension"
 import { formatDate, safeRows } from "../../_lib/platform-data"
 import { UserActions } from "../UserActions"
@@ -30,7 +30,7 @@ type MembershipRow = {
 
 export default async function PlatformUserDetailPage({ params }: { params: Promise<{ id: string }> }) {
   // Same capability as the /platform/users list (control-plane route policy maps it to user.read).
-  const admin = await requirePlatformAccess("user.read")
+  const admin = await requirePlatformPage("/platform/users/[id]")
   const { id } = await params
   const profiles = await safeRows<ProfileRow>(
     "profiles",

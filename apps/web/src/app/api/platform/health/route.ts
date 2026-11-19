@@ -20,7 +20,7 @@ function probe(status: ProbeStatus, detail: string, extra: Record<string, unknow
 }
 
 export async function GET() {
-  const auth = await requirePlatformAdminApi();
+  const auth = await requirePlatformAdminApi("system_health.read");
   if (!auth.ok) return auth.response;
 
   try {

@@ -11,6 +11,7 @@ import {
 import { hasRecentVerifiedMfa } from "@synapse/auth"
 import { requirePlatformAdminApi } from "@/lib/platform/auth"
 import { logPlatformEvent } from "@/app/platform/_lib/platform-data"
+import { roleHasCapability } from "@/lib/platform/rbac"
 
 export const dynamic = "force-dynamic"
 
@@ -85,7 +86,7 @@ async function loadImpact(tenantId: string): Promise<{ counts: LifecycleCounts; 
 }
 
 export async function GET(_req: NextRequest, context: { params: Promise<{ id: string }> }) {
-  const auth = await requirePlatformAdminApi("platform.dashboard.read")
+  const auth = await requirePlatformAdminApi("tenant.read")
   if (!auth.ok) return auth.response
   const { id } = await context.params
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -128,6 +129,14 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   const action = body?.action as FacilityLifecycleAction | undefined
   if (!action || !ACTIONS.has(action)) {
     return NextResponse.json({ error: "Unknown lifecycle action" }, { status: 400 })
+  }
+  // Permanent deletion is its own capability (Super admin only), on top of
+  // tenant.manage, the typed confirmation and the authenticator step-up below.
+  if (action === "purge" && !roleHasCapability(auth.profile.platformRole, "tenant.purge")) {
+    return NextResponse.json(
+      { code: "PLATFORM_FORBIDDEN", error: "Only a Super admin can permanently delete a tenant" },
+      { status: 403 },
+    )
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

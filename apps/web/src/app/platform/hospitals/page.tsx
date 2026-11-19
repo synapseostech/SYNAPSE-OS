@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { Building2, Download, Filter, MapPin, ShieldAlert } from "lucide-react";
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 import {
   formatDate,
   formatUGX,
@@ -67,7 +67,7 @@ function typeLabel(type: string | null | undefined) {
 }
 
 export default async function PlatformHospitalsPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/hospitals");
 
   const [tenants, subscriptions, flags, staffRows, patientRows, activeFacilities, suspendedFacilities, subData] = await Promise.all([
     safeRows<TenantRow>(

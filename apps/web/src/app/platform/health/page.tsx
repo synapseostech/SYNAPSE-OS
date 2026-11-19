@@ -1,10 +1,11 @@
 export const dynamic = "force-dynamic";
 
-import { requirePlatformAdmin } from "../../../lib/platform/auth";
+import { requirePlatformPage } from "../../../lib/platform/auth";
 import { createServiceClient } from "../../../lib/supabase/server";
 import { formatDateTime, safeCount } from "../_lib/platform-data";
 import { PlatformHealthClient } from "./health-client";
 import { PlatformPageHeader } from "../_components/platform-page-header";
+import { SystemUsagePanel } from "./system-usage-panel";
 
 function db() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -77,7 +78,7 @@ async function getStandingAudit() {
 }
 
 export default async function PlatformHealthPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/health");
   const audit = await getStandingAudit();
 
   const cards: Array<{ label: string; value: string; detail: string; alert?: boolean }> = [
@@ -131,9 +132,13 @@ export default async function PlatformHealthPage() {
     <div className="space-y-6">
       <PlatformPageHeader
         eyebrow="System"
-        title="Platform Health"
-        description="Standing audit of live product signals, plus runtime health and performance observability across Synapse apps."
+        title="System health"
+        description="Free-tier usage, recent errors, slow queries and the Android release, then live product signals and runtime health across Synapse apps."
       />
+
+      <SystemUsagePanel />
+
+      <h2 className="pt-2 text-sm font-semibold">Product signals</h2>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {cards.map((card) => (

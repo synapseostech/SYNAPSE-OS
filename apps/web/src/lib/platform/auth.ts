@@ -7,7 +7,7 @@ import {
   touchPlatformAccess,
   type PlatformMembership,
 } from "./membership.server";
-import { type PlatformCapability, type PlatformRole } from "./rbac";
+import { navRequiresCapability, type PlatformCapability, type PlatformRole } from "./rbac";
 
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS ?? "")
   .split(",")
@@ -92,6 +92,15 @@ export async function requirePlatformAccess(
   }
 
   return toPlatformAdminProfile(ctx, platform);
+}
+
+/**
+ * Gate a console page by its own path: the capability comes from
+ * NAV_CAPABILITY_MAP, so the page, the sidebar and the route tests all agree.
+ * Every page under app/platform calls this (see page-gates.test.ts).
+ */
+export async function requirePlatformPage(path: string): Promise<PlatformAdminProfile> {
+  return requirePlatformAccess(navRequiresCapability(path));
 }
 
 /** Backward-compatible alias — equivalent to requirePlatformAccess(). */

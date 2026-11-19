@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic"
 
 import Link from "next/link"
 import { Building2, Filter, Plus } from "lucide-react"
-import { requirePlatformAdmin } from "../../../lib/platform/auth"
+import { requirePlatformPage } from "../../../lib/platform/auth"
 import { formatDate, safeRows } from "../_lib/platform-data"
 
 type TenantRow = {
@@ -46,7 +46,7 @@ export default async function PlatformFacilitiesPage({
 }: {
   searchParams?: Promise<{ type?: string; q?: string }>
 }) {
-  await requirePlatformAdmin()
+  await requirePlatformPage("/platform/facilities")
   const params = (await searchParams) ?? {}
   const typeFilter = (params.type ?? "all").toLowerCase()
   const q = (params.q ?? "").trim().toLowerCase()

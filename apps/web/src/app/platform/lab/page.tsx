@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic"
 
 import Link from "next/link"
 import { Beaker, ExternalLink, FlaskConical } from "lucide-react"
-import { requirePlatformAdmin } from "../../../lib/platform/auth"
+import { requirePlatformPage } from "../../../lib/platform/auth"
 import { PlatformPageHeader } from "../_components/platform-page-header"
 import { formatDateTime, safeConfiguredCount, safeRows } from "../_lib/platform-data"
 
@@ -38,7 +38,7 @@ function countTone(probe: { status: "OK" | "NOT_CONFIGURED"; count: number | nul
 }
 
 export default async function PlatformLabMonitorPage() {
-  await requirePlatformAdmin()
+  await requirePlatformPage("/platform/lab")
 
   const [orders, specimens, results, recentEvents] = await Promise.all([
     safeConfiguredCount("lab_orders"),

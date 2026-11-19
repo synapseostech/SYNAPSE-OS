@@ -1,10 +1,10 @@
-import { requirePlatformAccess } from '@/lib/platform/auth'
+import { requirePlatformPage } from '@/lib/platform/auth'
 import { createServiceClient } from '@/lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
 
 export default async function PlatformSubscriptionsPage() {
-  await requirePlatformAccess('platform.subscription.read')
+  await requirePlatformPage("/platform/subscriptions")
   const db = createServiceClient() as any
   const { data: grants } = await db
     .from('subscription_grants')

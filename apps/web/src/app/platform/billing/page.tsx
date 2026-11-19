@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { revalidatePath } from "next/cache";
 import { createServiceClient } from "../../../lib/supabase/server";
-import { requirePlatformAdmin, requirePlatformAccess } from "../../../lib/platform/auth";
+import { requirePlatformAccess, requirePlatformPage } from "../../../lib/platform/auth";
 import { formatDate, formatUGX, logPlatformEvent, safeCount, safeRows, formatDateTime } from "../_lib/platform-data";
 import { listAllPayments } from "@synapse/auth/billing";
 
@@ -159,7 +159,7 @@ async function changeSubscriptionPlan(formData: FormData) {
 }
 
 export default async function PlatformBillingPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/billing");
 
   const [subscriptions, tenants, trialFacilities, tenantSubs, flutterwavePayments] = await Promise.all([
     safeRows<SubscriptionRow>(

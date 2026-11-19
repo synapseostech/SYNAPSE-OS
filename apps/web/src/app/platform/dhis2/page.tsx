@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { revalidatePath } from "next/cache";
 import { DatabaseZap, Play, RefreshCcw } from "lucide-react";
-import { requirePlatformAdmin, requirePlatformAccess } from "../../../lib/platform/auth";
+import { requirePlatformAccess, requirePlatformPage } from "../../../lib/platform/auth";
 import { formatDateTime } from "../_lib/platform-data";
 import {
   loadDhis2MonitorState,
@@ -54,7 +54,7 @@ async function drainPending() {
 }
 
 export default async function Dhis2ExportsPage() {
-  await requirePlatformAdmin();
+  await requirePlatformPage("/platform/dhis2");
   const state = await loadDhis2MonitorState();
   const jobs = state.jobs;
   const latest = jobs[0];
