@@ -4,6 +4,7 @@ export const dynamic = 'force-dynamic'
 import { useEffect, useState } from 'react'
 import { Activity, Smartphone, Wifi, WifiOff } from 'lucide-react'
 import { createClient } from '../../../lib/supabase/client'
+import { WearableSummary } from './WearableSummary'
 
 interface Reading {
   id: string
@@ -75,17 +76,19 @@ export default function HealthDevicesPage() {
         <div>
           <p className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>Connect a Device</p>
           <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-            Sync Google Fit, Fitbit, Oura Ring, or Bluetooth vitals monitors
+            Open My Health in the Synapse app and connect Health Connect. It brings in Samsung,
+            Fitbit, Xiaomi and most other Android watches and bands.
           </p>
         </div>
-        <button
-          type="button"
-          className="ml-auto flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold shrink-0 transition-all"
+        <span
+          className="ml-auto flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold shrink-0"
           style={{ background: 'rgba(249,115,22,0.1)', color: 'var(--brand-orange)', border: '1px solid var(--border-orange)' }}
         >
-          <Wifi className="h-3.5 w-3.5" /> Connect
-        </button>
+          <Wifi className="h-3.5 w-3.5" /> In the app
+        </span>
       </div>
+
+      <WearableSummary />
 
       {readings.length > 0 && (
         <div className="flex gap-2 overflow-x-auto pb-1">

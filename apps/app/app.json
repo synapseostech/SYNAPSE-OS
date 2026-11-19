@@ -33,7 +33,15 @@
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.health.READ_STEPS",
+        "android.permission.health.READ_HEART_RATE",
+        "android.permission.health.READ_RESTING_HEART_RATE",
+        "android.permission.health.READ_SLEEP",
+        "android.permission.health.READ_ACTIVE_CALORIES_BURNED",
+        "android.permission.health.READ_DISTANCE",
+        "android.permission.health.READ_WEIGHT",
+        "android.permission.health.READ_OXYGEN_SATURATION"
       ]
     },
     "web": {
@@ -53,7 +61,8 @@
             "buildArchs": [
               "arm64-v8a",
               "armeabi-v7a"
-            ]
+            ],
+            "minSdkVersion": 26
           }
         }
       ],
@@ -88,7 +97,8 @@
           "cameraPermission": "Allow Synapse to use the camera to scan product barcodes."
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      "react-native-health-connect"
     ],
     "extra": {
       "supabaseUrl": "https://qfqakzmjatszisuqjwon.supabase.co",

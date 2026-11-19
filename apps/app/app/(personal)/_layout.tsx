@@ -2,6 +2,7 @@ import { Tabs, useRouter } from 'expo-router'
 import { Ionicons } from '@expo/vector-icons'
 import { Platform, Pressable, StyleSheet } from 'react-native'
 import { tabBarHeight, useTheme } from '@/lib/theme'
+import { useHealthSections } from '@/lib/use-health-sections'
 
 type IoniconsName = React.ComponentProps<typeof Ionicons>['name']
 
@@ -29,6 +30,8 @@ function BackToToday() {
 
 export default function PersonalLayout() {
   const { colors } = useTheme()
+  // Cycle is a tab only for people who track it (female by default, anyone by choice).
+  const { sections } = useHealthSections()
 
   return (
     <Tabs
@@ -95,6 +98,7 @@ export default function PersonalLayout() {
         options={{
           title: 'Cycle',
           headerTitle: 'Cycle',
+          href: sections.cycle ? undefined : null,
           tabBarIcon: ({ focused }) => (
             <TabIcon name={focused ? 'flower' : 'flower-outline'} focused={focused} />
           ),
@@ -142,6 +146,24 @@ export default function PersonalLayout() {
         options={{
           title: 'Coach',
           headerTitle: 'Coach',
+          href: null,
+          headerLeft: () => <BackToToday />,
+        }}
+      />
+      <Tabs.Screen
+        name="wearables"
+        options={{
+          title: 'Watch & phone',
+          headerTitle: 'Watch & phone data',
+          href: null,
+          headerLeft: () => <BackToToday />,
+        }}
+      />
+      <Tabs.Screen
+        name="health-checks"
+        options={{
+          title: 'Health checks',
+          headerTitle: 'Health checks',
           href: null,
           headerLeft: () => <BackToToday />,
         }}

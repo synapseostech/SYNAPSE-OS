@@ -132,6 +132,12 @@ jobs:
       - name: Expo type-check
         run: npm run type-check --workspace @synapse/app
 
+      - name: Mobile app logic tests
+        run: npm run test:mobile-app
+
+      - name: Personal health privacy (owner-only wearables, staff health)
+        run: npm run test:personal-health
+
       - name: Expo Android export
         run: npm run export:android --workspace @synapse/app
 

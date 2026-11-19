@@ -16,9 +16,9 @@ type RoleOption = {
 
 const ROLES: RoleOption[] = [
   {
-    title: 'Daily user',
+    title: 'My Synapse Health',
     description:
-      'Track blood pressure, glucose, habits, cycle and activity. Personal health data stays on this device.',
+      'For you and your family: medicines, appointments, readings and your watch. One short form.',
     icon: 'heart-outline',
     href: '/(auth)/signup/daily',
   },

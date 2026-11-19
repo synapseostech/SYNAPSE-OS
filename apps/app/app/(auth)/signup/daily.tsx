@@ -17,17 +17,16 @@ import { Button } from '@/components/ui/Button'
 import { ChoiceChips } from '@/components/ui/ChoiceChips'
 import { TextField } from '@/components/ui/TextField'
 import { apiRequest, ApiError } from '@/lib/api'
+import {
+  GENDER_OPTIONS,
+  SEX_AT_BIRTH_OPTIONS,
+  signupSexPayload,
+  type GenderIdentity,
+  type SexAtBirth,
+} from '@/lib/health-sections'
 import { colors, radii, spacing, typography } from '@/lib/theme'
 
 type Step = 'form' | 'sent'
-type Sex = 'female' | 'male' | 'other' | 'undisclosed'
-
-const SEX_OPTIONS = [
-  { value: 'female', label: 'Female' },
-  { value: 'male', label: 'Male' },
-  { value: 'other', label: 'Other' },
-  { value: 'undisclosed', label: 'Prefer not to say' },
-] as const satisfies ReadonlyArray<{ value: Sex; label: string }>
 
 /** Mirrors validatePasswordStrength in @synapse/auth so the error precedes the round trip. */
 function passwordProblem(password: string): string | null {
@@ -65,9 +64,12 @@ export default function SignupScreen() {
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [dob, setDob] = useState('')
-  const [sex, setSex] = useState<Sex | null>(null)
+  const [sex, setSex] = useState<SexAtBirth | null>(null)
+  const [gender, setGender] = useState<GenderIdentity | null>(null)
+  const [selfDescribed, setSelfDescribed] = useState('')
+  const [showMore, setShowMore] = useState(false)
   const [password, setPassword] = useState('')
-  const [confirm, setConfirm] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [resent, setResent] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -90,10 +92,6 @@ export default function SignupScreen() {
       setError(problem)
       return
     }
-    if (password !== confirm) {
-      setError('The two passwords do not match.')
-      return
-    }
     let dateOfBirth: string | null = null
     if (dob.trim()) {
       dateOfBirth = normaliseDob(dob)
@@ -113,7 +111,7 @@ export default function SignupScreen() {
           email: email.trim().toLowerCase(),
           phone: phone.trim(),
           dob: dateOfBirth ?? '',
-          gender: sex ?? '',
+          ...signupSexPayload(sex, gender, selfDescribed),
           password,
         },
       })
@@ -205,49 +203,76 @@ export default function SignupScreen() {
                   editable={!isLoading}
                 />
                 <TextField
-                  label="Phone (optional)"
-                  value={phone}
-                  onChangeText={setPhone}
-                  placeholder="+256 7XX XXX XXX"
-                  keyboardType="phone-pad"
-                  autoComplete="tel"
-                  editable={!isLoading}
-                />
-                <TextField
-                  label="Date of birth (optional)"
-                  value={dob}
-                  onChangeText={setDob}
-                  placeholder="YYYY-MM-DD"
-                  keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default'}
-                  hint="Used only to make readings age-appropriate."
-                  editable={!isLoading}
-                />
-                <ChoiceChips
-                  label="Sex (optional)"
-                  options={SEX_OPTIONS}
-                  value={sex}
-                  onChange={setSex}
-                />
-
-                <TextField
                   label="Password"
                   value={password}
                   onChangeText={setPassword}
                   placeholder="••••••••"
-                  secureTextEntry
+                  secureTextEntry={!showPassword}
                   autoComplete="new-password"
-                  hint="At least 8 characters, with an uppercase letter, a number and a symbol."
+                  hint="8+ characters with an uppercase letter, a number and a symbol."
                   editable={!isLoading}
                 />
-                <TextField
-                  label="Confirm password"
-                  value={confirm}
-                  onChangeText={setConfirm}
-                  placeholder="••••••••"
-                  secureTextEntry
-                  autoComplete="new-password"
-                  editable={!isLoading}
+                <Pressable
+                  onPress={() => setShowPassword((v) => !v)}
+                  accessibilityRole="button"
+                  style={styles.inlineLink}
+                >
+                  <Text style={styles.inlineLinkText}>{showPassword ? 'Hide password' : 'Show password'}</Text>
+                </Pressable>
+
+                <ChoiceChips
+                  label="Sex at birth"
+                  options={SEX_AT_BIRTH_OPTIONS}
+                  value={sex}
+                  onChange={setSex}
                 />
+                <Text style={styles.chipHint}>
+                  Shows the health sections that apply to you, like cycle and pregnancy or prostate checks.
+                  You can change them any time.
+                </Text>
+
+                <Pressable
+                  onPress={() => setShowMore((v) => !v)}
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: showMore }}
+                  style={styles.inlineLink}
+                >
+                  <Text style={styles.inlineLinkText}>
+                    {showMore ? 'Hide optional details' : 'Add phone, birthday or gender (optional)'}
+                  </Text>
+                </Pressable>
+
+                {showMore ? (
+                  <View>
+                    <TextField
+                      label="Phone"
+                      value={phone}
+                      onChangeText={setPhone}
+                      placeholder="+256 7XX XXX XXX"
+                      keyboardType="phone-pad"
+                      autoComplete="tel"
+                      editable={!isLoading}
+                    />
+                    <TextField
+                      label="Date of birth"
+                      value={dob}
+                      onChangeText={setDob}
+                      placeholder="YYYY-MM-DD"
+                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default'}
+                      hint="Makes reminders and readings age-appropriate."
+                      editable={!isLoading}
+                    />
+                    <ChoiceChips label="Gender" options={GENDER_OPTIONS} value={gender} onChange={setGender} />
+                    {gender === 'self_describe' ? (
+                      <TextField
+                        label="How do you describe your gender?"
+                        value={selfDescribed}
+                        onChangeText={setSelfDescribed}
+                        editable={!isLoading}
+                      />
+                    ) : null}
+                  </View>
+                ) : null}
 
                 {error ? (
                   <View style={styles.errorBox}>
@@ -323,6 +348,9 @@ const styles = StyleSheet.create({
   },
   formCard: { marginTop: spacing.sm },
   formInner: { padding: spacing.xxl },
+  inlineLink: { alignSelf: 'flex-start', marginTop: -spacing.sm, marginBottom: spacing.lg },
+  inlineLinkText: { ...typography.caption, color: colors.primary, fontFamily: 'DMSans_500Medium' },
+  chipHint: { ...typography.caption, color: colors.textMuted, marginTop: -spacing.sm, marginBottom: spacing.lg },
   nameRow: { flexDirection: 'row', gap: spacing.md },
   nameCol: { flex: 1 },
   sentTitle: {
