@@ -36,6 +36,8 @@ import { SyncPayloadConflictError } from '../../../packages/db/src/sync-runtime'
 import { computePharmacySaleTax } from '../../../packages/db/src/pos-tax'
 import type { PharmacyTaxSettings } from '../../../packages/db/src/pos-tax'
 import { allocateCartDiscount, roundMoney } from '@/lib/pos-pricing'
+import { shouldOpenReceiptAfterSale } from '@/lib/printer-config'
+import { loadPrinterConfig } from '@/lib/printer-store'
 import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
 
 const CART_DRAFT_KEY = 'synapse.pharmacy.pos.draft.v1'
@@ -628,7 +630,17 @@ export default function PosScreen() {
         // that screen keeps a failure exit ("printer unavailable") after the
         // print attempt, so auto-opening the print sheet cannot strand the
         // cashier the way it would on the web till.
-        if (saleId && (mandatoryReceiptPrint || autoPrintReceipt)) {
+        // This phone's own printer may print every receipt even when the
+        // pharmacy leaves auto-print off (Printer setup → Print automatically).
+        const devicePrinter = await loadPrinterConfig().catch(() => null)
+        if (
+          saleId &&
+          shouldOpenReceiptAfterSale({
+            mandatoryReceiptPrint,
+            pharmacyAutoPrint: autoPrintReceipt,
+            deviceAutoPrint: devicePrinter?.autoPrint === true,
+          })
+        ) {
           router.push(
             `/receipt/${saleId}?autoprint=1${mandatoryReceiptPrint ? '&mandatory=1' : ''}` as never,
           )
@@ -741,6 +753,14 @@ export default function PosScreen() {
             accessibilityLabel="Open till session"
           >
             <Ionicons name="wallet-outline" size={22} color={colors.primary} />
+          </Pressable>
+          <Pressable
+            onPress={() => router.push('/printer-setup' as never)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Receipt printer setup"
+          >
+            <Ionicons name="print-outline" size={22} color={colors.primary} />
           </Pressable>
           <Pressable
             onPress={() => router.push('/barcode-scan?returnTo=pos' as never)}
