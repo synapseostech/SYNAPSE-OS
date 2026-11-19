@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireTallyAdmin, tallyHasCapability } from "@/lib/tally/auth"
-import { reverseTallyJournals, tallyOpeningVoucher } from "@/lib/tally/apply"
+import { reverseTallyJournals, tallyOpeningVoucher, voidTallyMirrors } from "@/lib/tally/apply"
 import { loadStagePlan } from "@/lib/tally/plan"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { logTallyEvent, logTallyFailure } from "@/lib/tally/http"
@@ -150,6 +150,40 @@ export async function POST(
     )
   }
 
+  // The reporting mirrors go last: reports stop counting this import's sales
+  // and purchases, and their numbers are freed so a re-import writes fresh
+  // rows. Idempotent: a voided mirror no longer carries its original number.
+  let salesVoided = 0
+  let purchasesVoided = 0
+  try {
+    for (let index = 0; index < summary.chunkCount; index += 1) {
+      const loaded = await loadStagePlan(storage(), tenantId, id, "journals", index)
+      const voided = await voidTallyMirrors(applyDb(), {
+        tenantId,
+        sessionId: id,
+        transactionNumbers: ((loaded.chunk?.sales ?? []) as Array<{ transactionNumber?: string }>)
+          .map((sale) => sale.transactionNumber)
+          .filter((value): value is string => typeof value === "string"),
+        purchaseNumbers: ((loaded.chunk?.purchases ?? []) as Array<{ purchaseNumber?: string }>)
+          .map((purchase) => purchase.purchaseNumber)
+          .filter((value): value is string => typeof value === "string"),
+      })
+      salesVoided += voided.salesVoided
+      purchasesVoided += voided.purchasesVoided
+    }
+  } catch (error) {
+    logTallyFailure("tally.rollback.mirrors_failed", { sessionId: id, tenantId }, error)
+    return NextResponse.json(
+      {
+        error:
+          "Stock and journals were reversed, but the imported sales and purchases could not be marked as rolled back. Retry this rollback to finish; nothing will be reversed twice.",
+        code: "TALLY_ROLLBACK_INCOMPLETE",
+        stock,
+      },
+      { status: 500 },
+    )
+  }
+
   const reversedAt = new Date().toISOString()
   const { error: markError } = await db()
     .from("pharmacy_import_sessions")
@@ -175,7 +209,7 @@ export async function POST(
     action: "IMPORT_TALLY_ROLLBACK",
     entity: "IMPORT_SESSION",
     entity_id: id,
-    details: `Tally cut-over rolled back: ${stock.data?.movementsReversed ?? 0} stock movements reversed, ${posted} reversing journals posted, ${notPosted} planned journals not in the ledger; company "${stock.data?.companyKey ?? summary.companyKey}", closed through ${stock.data?.throughDate ?? "not stated"}, session ${id}`,
+    details: `Tally cut-over rolled back: ${stock.data?.movementsReversed ?? 0} stock movements reversed, ${posted} reversing journals posted, ${notPosted} planned journals not in the ledger, ${salesVoided} sales and ${purchasesVoided} purchases marked rolled back; company "${stock.data?.companyKey ?? summary.companyKey}", closed through ${stock.data?.throughDate ?? "not stated"}, session ${id}`,
   })
 
   if (auditError) {
@@ -196,5 +230,7 @@ export async function POST(
     stock: stock.data,
     journalsReversed: posted,
     journalsNotPosted: notPosted,
+    salesVoided,
+    purchasesVoided,
   })
 }

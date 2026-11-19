@@ -776,6 +776,8 @@ readAllRows(() =>
           "id, purchase_no, supplier_id, total, amount_paid, balance, payment_status, status, purchase_date, received_by, created_at, pharmacy_suppliers(name), pharmacy_purchase_items(product_id, product_name, quantity, unit_cost, line_total, batch_number)",
         )
         .eq("tenant_id", tenantId)
+        // A cancelled purchase, including a rolled-back Tally import, bought nothing.
+        .neq("status", "CANCELLED")
         .gte("purchase_date", dateFromISO.slice(0, 10))
         .lte("purchase_date", dateToISO.slice(0, 10))
         .order("purchase_date", { ascending: false }))
