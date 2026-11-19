@@ -4,6 +4,7 @@ import { supabaseAdmin } from '@synapse/db/admin'
 import { summarizeInventory, kampalaToday, normaliseBatch, isSellableBatch } from '@synapse/db/inventory'
 import {
   isMobileAuth,
+  mobileHasPharmacyCapability,
   requireMobilePharmacyAuth,
 } from '../../../../../../lib/mobile-pharmacy-auth'
 
@@ -16,6 +17,14 @@ const db = () => supabaseAdmin as any
 export async function GET(req: NextRequest) {
   const auth = await requireMobilePharmacyAuth(req)
   if (!isMobileAuth(auth)) return auth
+  // Every pharmacy role may sign in to the app, but only selling roles reach
+  // the till (an inventory officer counts stock; it does not take money).
+  if (!mobileHasPharmacyCapability(auth, 'pos.sell')) {
+    return NextResponse.json(
+      { error: 'pos.sell capability required', code: 'FORBIDDEN' },
+      { status: 403 },
+    )
+  }
 
   const gate = await gateFeature(auth.tenantId, 'pos.sell')
   if (gate) return gate

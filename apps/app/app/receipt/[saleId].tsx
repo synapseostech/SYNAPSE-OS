@@ -99,6 +99,8 @@ export default function ReceiptScreen() {
   const [printOutcome, setPrintOutcome] = useState<'requested' | 'failed' | null>(null)
   const [printUnrecorded, setPrintUnrecorded] = useState(false)
   const [refundOpen, setRefundOpen] = useState(false)
+  // Cashiers can sell but not void; only show the button the server will honour.
+  const [canRefund, setCanRefund] = useState(false)
   const [refundReason, setRefundReason] = useState('')
   const requiresPrintDecision = mandatory === '1'
   // The prompt is an instruction until the exit is gated: back must lead to
@@ -120,11 +122,12 @@ export default function ReceiptScreen() {
       return
     }
     try {
-      const data = await apiRequest<{ receipt: ReceiptSnapshot }>(
+      const data = await apiRequest<{ receipt: ReceiptSnapshot; canRefund?: boolean }>(
         `/api/mobile/pharmacy/sales/${saleId}/receipt`,
         { token },
       )
       setReceipt(data.receipt)
+      setCanRefund(data.canRefund === true)
     } catch {
       setReceipt(null)
     } finally {
@@ -538,7 +541,7 @@ export default function ReceiptScreen() {
               </View>
             ) : null}
 
-            {receipt.status === 'completed' ? (
+            {receipt.status === 'completed' && canRefund ? (
               <Button label="Refund / void sale" onPress={handleRefund} loading={busy === 'refund'} variant="danger" />
             ) : null}
           </View>

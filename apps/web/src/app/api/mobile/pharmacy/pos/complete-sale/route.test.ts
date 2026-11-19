@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const s = vi.hoisted(() => ({
   tables: {} as Record<string, any[]>,
   rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
+  role: "pharmacy_cashier",
 }))
 
 vi.mock("@synapse/auth", () => ({
@@ -49,15 +50,21 @@ vi.mock("@synapse/db/admin", () => {
   }
 })
 
-vi.mock("../../../../../../lib/mobile-pharmacy-auth", () => ({
-  requireMobilePharmacyAuth: async () => ({
-    userId: "cashier-a",
-    tenantId: "tenant-a",
-    role: "pharmacy_cashier",
-  }),
-  isMobileAuth: () => true,
-  isMobilePharmacyAdmin: () => false,
-}))
+vi.mock("../../../../../../lib/mobile-pharmacy-auth", async () => {
+  // The real capability table, so these tests fail if a selling role loses pos.sell.
+  const { roleHasCapability } = await import("@synapse/auth/pharmacy-capabilities")
+  return {
+    requireMobilePharmacyAuth: async () => ({
+      userId: "cashier-a",
+      tenantId: "tenant-a",
+      role: s.role,
+    }),
+    isMobileAuth: () => true,
+    isMobilePharmacyAdmin: () => false,
+    mobileHasPharmacyCapability: (auth: { role: string }, capability: any) =>
+      roleHasCapability(auth.role, capability),
+  }
+})
 
 vi.mock("../../../../../../lib/pharmacy-pos/idempotency", () => ({
   findSaleIdempotency: async () => null,
@@ -139,6 +146,7 @@ const PRODUCT_A = "11111111-1111-4111-8111-111111111111"
 
 beforeEach(() => {
   s.rpcCalls = []
+  s.role = "pharmacy_cashier"
   s.tables = {
     patients: [
       { id: PATIENT_A, tenant_id: "tenant-a" },
@@ -272,6 +280,27 @@ describe("mobile POS server-authoritative tax", () => {
     const r = await POST(req(saleBody({ taxAmount: -50 })))
     expect(r.status).toBe(400)
     expect(await r.json()).toMatchObject({ code: "INVALID_TAX_AMOUNT" })
+    expect(s.rpcCalls).toHaveLength(0)
+  })
+})
+
+describe("mobile POS complete-sale for staff roles", () => {
+  for (const role of ["pharmacy_cashier", "pharmacy_staff", "pharmacist", "pharmacy_store_manager"]) {
+    it(`lets a ${role} complete a sale as its own cashier`, async () => {
+      s.role = role
+      const r = await POST(req(saleBody()))
+      expect(r.status).toBe(200)
+      expect(s.rpcCalls).toHaveLength(1)
+      expect(s.rpcCalls[0].args.p_cashier_id).toBe("cashier-a")
+      expect(s.rpcCalls[0].args.p_confirmed_by).toBe("cashier-a")
+    })
+  }
+
+  it("refuses a pharmacy role without pos.sell before touching stock", async () => {
+    s.role = "inventory_officer"
+    const r = await POST(req(saleBody()))
+    expect(r.status).toBe(403)
+    expect(await r.json()).toEqual({ error: "pos.sell capability required", code: "FORBIDDEN" })
     expect(s.rpcCalls).toHaveLength(0)
   })
 })

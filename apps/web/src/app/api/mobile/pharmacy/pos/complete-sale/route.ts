@@ -16,6 +16,7 @@ import {
 import {
   isMobileAuth,
   isMobilePharmacyAdmin,
+  mobileHasPharmacyCapability,
   requireMobilePharmacyAuth,
 } from '../../../../../../lib/mobile-pharmacy-auth'
 import {
@@ -47,6 +48,14 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export async function POST(req: NextRequest) {
   const auth = await requireMobilePharmacyAuth(req)
   if (!isMobileAuth(auth)) return auth
+  // Every pharmacy role may sign in to the app, but only selling roles reach
+  // the till (an inventory officer counts stock; it does not take money).
+  if (!mobileHasPharmacyCapability(auth, 'pos.sell')) {
+    return NextResponse.json(
+      { error: 'pos.sell capability required', code: 'FORBIDDEN' },
+      { status: 403 },
+    )
+  }
 
   const gate = await gateFeature(auth.tenantId, 'pos.sell')
   if (gate) return gate

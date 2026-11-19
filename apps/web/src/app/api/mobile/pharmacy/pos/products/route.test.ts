@@ -7,10 +7,15 @@ const { requireMobilePharmacyAuth, isMobileAuth, gateFeature } = vi.hoisted(() =
   gateFeature: vi.fn(),
 }))
 
-vi.mock("../../../../../../lib/mobile-pharmacy-auth", () => ({
-  requireMobilePharmacyAuth: (...args: unknown[]) => requireMobilePharmacyAuth(...args),
-  isMobileAuth: (...args: unknown[]) => isMobileAuth(...args),
-}))
+vi.mock("../../../../../../lib/mobile-pharmacy-auth", async () => {
+  const { roleHasCapability } = await import("@synapse/auth/pharmacy-capabilities")
+  return {
+    requireMobilePharmacyAuth: (...args: unknown[]) => requireMobilePharmacyAuth(...args),
+    isMobileAuth: (...args: unknown[]) => isMobileAuth(...args),
+    mobileHasPharmacyCapability: (auth: { role: string }, capability: any) =>
+      roleHasCapability(auth.role, capability),
+  }
+})
 
 vi.mock("@synapse/auth", () => ({
   gateFeature: (...args: unknown[]) => gateFeature(...args),
@@ -61,8 +66,8 @@ function request(url: string) {
   return new Request(url) as unknown as Parameters<typeof GET>[0]
 }
 
-function auth(tenantId = "tenant-a") {
-  return { kind: "mobile", userId: "user-1", tenantId }
+function auth(tenantId = "tenant-a", role = "pharmacy_cashier") {
+  return { kind: "mobile", userId: "user-1", tenantId, role }
 }
 
 function product(overrides: Record<string, unknown> = {}) {
@@ -147,5 +152,21 @@ describe("mobile POS catalogue VAT classification", () => {
 
     const response = await GET(request("https://app.test/api/mobile/pharmacy/pos/products"))
     expect(response.status).toBe(403)
+  })
+
+  it("serves the catalogue to a pharmacist", async () => {
+    requireMobilePharmacyAuth.mockResolvedValue(auth("tenant-a", "pharmacist"))
+    state.products = [product()]
+
+    const response = await GET(request("https://app.test/api/mobile/pharmacy/pos/products"))
+    expect(response.status).toBe(200)
+  })
+
+  it("refuses a pharmacy role that cannot sell", async () => {
+    requireMobilePharmacyAuth.mockResolvedValue(auth("tenant-a", "inventory_officer"))
+
+    const response = await GET(request("https://app.test/api/mobile/pharmacy/pos/products"))
+    expect(response.status).toBe(403)
+    expect(gateFeature).not.toHaveBeenCalled()
   })
 })
