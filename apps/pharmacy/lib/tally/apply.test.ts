@@ -8,7 +8,7 @@ import type {
   TallyCutoverVoucher,
 } from "@synapse/db/tally-normalise"
 import type { TallyReplayCheckpoint } from "@synapse/db/tally-replay-rpc"
-import { __test__, applyTallyChunk, emptyProgress, type TallyApplyProgress } from "./apply"
+import { __test__, applyTallyChunk, emptyProgress, tallyMirrorNote, voidTallyMirrors, type TallyApplyProgress } from "./apply"
 import { isTallyMirrorNote, type TallyApplyDb, type TallyReplayTarget } from "./types"
 
 type Operation = {
@@ -1968,5 +1968,49 @@ describe("Progress", () => {
     expect(
       progress.value.failures.filter((failure) => failure.code === "FAILURES_TRUNCATED"),
     ).toHaveLength(1)
+  })
+})
+
+describe("reporting mirrors and rollback", () => {
+  it("names the import that wrote a mirror, keeping the read-only prefix the database guard checks", () => {
+    const note = tallyMirrorNote("SADIO PHARMACY", "c3b04762-3f16-4874-aaa6-739dae63f45e")
+    expect(note.startsWith("Imported from Tally")).toBe(true)
+    expect(note).toBe("Imported from Tally (SADIO PHARMACY) — read-only · session c3b04762-3f16-4874-aaa6-739dae63f45e")
+    expect(tallyMirrorNote(undefined, undefined)).toBe("Imported from Tally (cut-over) — read-only")
+  })
+
+  it("voids one import's mirrors through the database function", async () => {
+    const { db, operations } = fakeDb((operation) =>
+      operation.table === "rpc:pharmacy_tally_void_mirrors"
+        ? { data: { salesVoided: 2, purchasesVoided: 1 }, error: null }
+        : undefined,
+    )
+    const result = await voidTallyMirrors(db, {
+      tenantId: "tenant-1",
+      sessionId: "session-1",
+      transactionNumbers: ["TALLY-S-1", "TALLY-S-2"],
+      purchaseNumbers: ["TALLY-P-1"],
+    })
+
+    expect(result).toEqual({ salesVoided: 2, purchasesVoided: 1 })
+    expect(operations.find((operation) => operation.table === "rpc:pharmacy_tally_void_mirrors")?.payload).toEqual({
+      p_tenant_id: "tenant-1",
+      p_session_id: "session-1",
+      p_transaction_nos: ["TALLY-S-1", "TALLY-S-2"],
+      p_purchase_nos: ["TALLY-P-1"],
+    })
+  })
+
+  it("makes no call for a chunk that wrote no mirrors, and surfaces a refusal", async () => {
+    const quiet = fakeDb()
+    expect(
+      await voidTallyMirrors(quiet.db, { tenantId: "t", sessionId: "s", transactionNumbers: [], purchaseNumbers: [] }),
+    ).toEqual({ salesVoided: 0, purchasesVoided: 0 })
+    expect(quiet.operations).toEqual([])
+
+    const refused = fakeDb(() => ({ data: null, error: { message: "permission denied" } }))
+    await expect(
+      voidTallyMirrors(refused.db, { tenantId: "t", sessionId: "s", transactionNumbers: ["X"], purchaseNumbers: [] }),
+    ).rejects.toThrow("TALLY_VOID_MIRRORS_FAILED: permission denied")
   })
 })

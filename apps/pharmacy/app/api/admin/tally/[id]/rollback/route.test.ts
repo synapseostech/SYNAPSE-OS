@@ -8,6 +8,7 @@ const m = vi.hoisted(() => ({
   reverseSession: vi.fn(),
   reverseJournals: vi.fn(),
   loadStagePlan: vi.fn(),
+  voidMirrors: vi.fn(),
 }))
 
 vi.mock("@/lib/api-auth", () => ({
@@ -23,6 +24,7 @@ vi.mock("@synapse/db/tally-replay-rpc", () => ({
 }))
 vi.mock("@/lib/tally/apply", () => ({
   reverseTallyJournals: m.reverseJournals,
+  voidTallyMirrors: m.voidMirrors,
   tallyOpeningVoucher: (plan: { companyKey: string; conversionDate: string }) => ({
     sourceType: "tally_opening",
     sourceId: `${plan.companyKey}:opening:${plan.conversionDate}`,
@@ -105,6 +107,7 @@ beforeEach(() => {
   useDb(session())
   m.reverseSession.mockResolvedValue(reversedOk())
   m.reverseJournals.mockResolvedValue({ posted: 3, notPosted: 0, failures: [] })
+  m.voidMirrors.mockResolvedValue({ salesVoided: 2, purchasesVoided: 1 })
   m.loadStagePlan.mockImplementation(async (_storage, _tenant, _session, stage: string) =>
     stage === "opening-journal"
       ? {
@@ -114,7 +117,13 @@ beforeEach(() => {
             opening: { lines: [{ accountCode: "1000", debit: 500, credit: 0 }] },
           },
         }
-      : { chunk: { vouchers: [{ sourceType: "voucher", sourceId: "v1" }] } },
+      : {
+          chunk: {
+            vouchers: [{ sourceType: "voucher", sourceId: "v1" }],
+            sales: [{ transactionNumber: "TALLY-S-1" }, { transactionNumber: "TALLY-S-2" }],
+            purchases: [{ purchaseNumber: "TALLY-P-1" }],
+          },
+        },
   )
 })
 
@@ -184,9 +193,17 @@ describe("POST tally rollback", () => {
     const response = await POST(request(), params)
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toMatchObject({ done: true, journalsReversed: 9, journalsNotPosted: 0 })
+    expect(await response.json()).toMatchObject({
+      done: true,
+      journalsReversed: 9,
+      journalsNotPosted: 0,
+      salesVoided: 4,
+      purchasesVoided: 2,
+    })
     expect(m.reverseSession).toHaveBeenCalledWith(expect.anything(), "tenant-1", "session-1")
-    expect(m.loadStagePlan).toHaveBeenCalledTimes(3)
+    // Journals are reversed chunk by chunk, then the opening; then each chunk is
+    // read again for the mirror numbers it wrote.
+    expect(m.loadStagePlan).toHaveBeenCalledTimes(5)
     expect(m.loadStagePlan).toHaveBeenNthCalledWith(1, expect.anything(), "tenant-1", "session-1", "journals", 0)
     expect(m.loadStagePlan).toHaveBeenNthCalledWith(2, expect.anything(), "tenant-1", "session-1", "journals", 1)
     expect(m.loadStagePlan).toHaveBeenNthCalledWith(3, expect.anything(), "tenant-1", "session-1", "opening-journal", 0)
@@ -260,5 +277,51 @@ describe("POST tally rollback", () => {
     m.reverseSession.mockRejectedValue(new Error("network"))
     await expect(POST(request(), params)).rejects.toThrow("network")
     expect(m.reverseJournals).not.toHaveBeenCalled()
+  })
+})
+
+describe("POST tally rollback — reporting mirrors", () => {
+  it("voids this import's sales and purchases by the numbers each chunk wrote", async () => {
+    useDb(session())
+    const response = await POST(request(), params)
+
+    expect(response.status).toBe(200)
+    expect(m.voidMirrors).toHaveBeenCalledTimes(2)
+    expect(m.voidMirrors).toHaveBeenCalledWith(expect.anything(), {
+      tenantId: "tenant-1",
+      sessionId: "session-1",
+      transactionNumbers: ["TALLY-S-1", "TALLY-S-2"],
+      purchaseNumbers: ["TALLY-P-1"],
+    })
+    // Mirrors are voided only after every journal reversed.
+    const lastJournal = Math.max(...m.reverseJournals.mock.invocationCallOrder)
+    expect(Math.min(...m.voidMirrors.mock.invocationCallOrder)).toBeGreaterThan(lastJournal)
+  })
+
+  it("does not mark the session rolled back when the mirrors cannot be voided", async () => {
+    const fake = useDb(session())
+    m.voidMirrors.mockRejectedValueOnce(new Error("TALLY_VOID_MIRRORS_FAILED: boom"))
+    const response = await POST(request(), params)
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toMatchObject({ code: "TALLY_ROLLBACK_INCOMPLETE" })
+    expect(
+      fake.operations.some(
+        (operation) => operation.table === "pharmacy_import_sessions" && operation.action === "update",
+      ),
+    ).toBe(false)
+  })
+
+  it("does not void anything when a reversing journal is refused", async () => {
+    useDb(session())
+    m.reverseJournals.mockResolvedValueOnce({
+      posted: 0,
+      notPosted: 0,
+      failures: [{ sourceId: "v1", code: "X", message: "refused" }],
+    })
+    const response = await POST(request(), params)
+
+    expect(response.status).toBe(500)
+    expect(m.voidMirrors).not.toHaveBeenCalled()
   })
 })

@@ -25,7 +25,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: {
     from: (table: string) => {
       const builder: Record<string, unknown> = {}
-      for (const op of ["select", "eq", "gte", "lte", "order", "in", "range"]) {
+      for (const op of ["select", "eq", "neq", "gte", "lte", "order", "in", "range"]) {
         builder[op] = (...args: unknown[]) => {
           m.calls.push({ table, op, args })
           return builder
@@ -344,6 +344,11 @@ describe("GET /api/admin/reports?type=purchases", () => {
     expect(r.status).toBe(500)
     expect(r.body.error).toBe("Failed to load purchases")
     expect(JSON.stringify(r.body)).not.toContain("pharmacy_purchases")
+  })
+
+  it("leaves cancelled purchases out, including a rolled-back Tally import", async () => {
+    await getReport("type=purchases&period=today")
+    expect(callsFor("pharmacy_purchases", "neq").map((c) => c.args)).toContainEqual(["status", "CANCELLED"])
   })
 })
 

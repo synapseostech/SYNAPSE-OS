@@ -1437,6 +1437,43 @@ function saleItemsFor(
   })
 }
 
+/**
+ * The note on every reporting mirror. It keeps the read-only prefix the
+ * database guard checks, and names the import that wrote the row so a
+ * rollback voids its own mirrors and never another import's.
+ */
+/**
+ * Marks one import's reporting mirrors as rolled back (status CANCELLED, number
+ * suffixed so a re-import can write fresh ones). Only that import's rows, or
+ * legacy rows with no session in their note, are touched; see migration
+ * 20261119090000_pharmacy_tally_void_mirrors.
+ */
+export async function voidTallyMirrors(
+  db: TallyApplyDb,
+  input: { tenantId: string; sessionId: string; transactionNumbers: string[]; purchaseNumbers: string[] },
+): Promise<{ salesVoided: number; purchasesVoided: number }> {
+  if (input.transactionNumbers.length === 0 && input.purchaseNumbers.length === 0) {
+    return { salesVoided: 0, purchasesVoided: 0 }
+  }
+  const { data, error } = await db.rpc("pharmacy_tally_void_mirrors", {
+    p_tenant_id: input.tenantId,
+    p_session_id: input.sessionId,
+    p_transaction_nos: input.transactionNumbers,
+    p_purchase_nos: input.purchaseNumbers,
+  })
+  if (error) throw new Error(`TALLY_VOID_MIRRORS_FAILED: ${error.message}`)
+  const result = (data ?? {}) as { salesVoided?: unknown; purchasesVoided?: unknown }
+  return {
+    salesVoided: Number(result.salesVoided ?? 0),
+    purchasesVoided: Number(result.purchasesVoided ?? 0),
+  }
+}
+
+export function tallyMirrorNote(company: string | undefined, sessionId: string | undefined): string {
+  const base = `${TALLY_MIRROR_NOTE_PREFIX} (${company ?? "cut-over"}) — read-only`
+  return sessionId ? `${base} · session ${sessionId}` : base
+}
+
 async function mirrorSale(
   db: TallyApplyDb,
   sale: TallyCutoverSale,
@@ -1446,6 +1483,8 @@ async function mirrorSale(
     customers: Map<string, string>
     products: { byName: Map<string, string> }
     company?: string
+    /** The import that wrote the mirror, so a rollback voids only its own. */
+    sessionId?: string
     /** Replay only: what the replayed stock says each sale line cost. */
     costs?: Record<string, TallyReplayLineCost>
   },
@@ -1486,7 +1525,7 @@ async function mirrorSale(
         }),
         payment_method: sale.paymentMethod,
         status: "COMPLETED",
-        notes: `${TALLY_MIRROR_NOTE_PREFIX} (${input.company ?? "cut-over"}) — read-only`,
+        notes: tallyMirrorNote(input.company, input.sessionId),
         created_at: isoDateTime(sale.date),
       },
     ],
@@ -1589,6 +1628,8 @@ async function mirrorPurchase(
     suppliers: Map<string, string>
     products: { byName: Map<string, string> }
     company?: string
+    /** The import that wrote the mirror, so a rollback voids only its own. */
+    sessionId?: string
   },
   progress: Progress,
 ): Promise<void> {
@@ -1627,7 +1668,7 @@ async function mirrorPurchase(
         // DRAFT suppresses the ledger trigger: the journal was already posted
         // from the Tally voucher itself.
         status: "DRAFT",
-        notes: `${TALLY_MIRROR_NOTE_PREFIX} (${input.company ?? "cut-over"}) — read-only`,
+        notes: tallyMirrorNote(input.company, input.sessionId),
         created_by: input.actorId,
       },
     ],
@@ -1755,7 +1796,7 @@ async function stageVoucherChunk(
     await mirrorSale(
       db,
       sale,
-      { tenantId, actorId, customers: maps.customers, products, company: plan.company, costs },
+      { tenantId, actorId, customers: maps.customers, products, company: plan.company, costs, sessionId },
       progress,
     )
   }
@@ -1779,6 +1820,7 @@ async function stageVoucherChunk(
         suppliers: maps.suppliers,
         products,
         company: plan.company,
+        sessionId,
       },
       progress,
     )
