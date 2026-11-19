@@ -92,9 +92,15 @@ export default function StockScreen() {
         </Pressable>
         <Pressable
           style={({ pressed }) => [styles.toolBtnGhost, pressed && styles.cardPressed]}
-          onPress={() => router.push('/stock-receive' as never)}
+          onPress={() => router.push('/quick-receive' as never)}
         >
           <Text style={styles.toolBtnGhostText}>Receive</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.toolBtnGhost, pressed && styles.cardPressed]}
+          onPress={() => router.push('/stock-take' as never)}
+        >
+          <Text style={styles.toolBtnGhostText}>Stock take</Text>
         </Pressable>
         <Pressable
           style={({ pressed }) => [styles.toolBtnGhost, pressed && styles.cardPressed]}

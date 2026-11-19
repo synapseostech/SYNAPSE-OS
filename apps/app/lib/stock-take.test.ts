@@ -49,7 +49,7 @@ describe("finding items", () => {
   })
 
   it("ranks name prefix above word matches in search", () => {
-    assert.deepEqual(searchItems(items, "para").map((i) => i.id), ["p3", "p2"])
+    assert.deepEqual(searchItems(items, "para").map((i) => i.id), ["p2", "p3"])
     const hits = searchItems(items, "500 caps").map((i) => i.id)
     assert.deepEqual(hits, ["p1"])
     assert.equal(searchItems(items, "PARA")[0].id, "p2")

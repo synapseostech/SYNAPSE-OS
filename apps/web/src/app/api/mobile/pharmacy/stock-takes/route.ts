@@ -9,6 +9,7 @@ import {
   canCountStock,
   canManageStockTake,
   forbidden,
+  selectAll,
   stockTakeDb,
   toStockTakeView,
   type StockTakeRow,
@@ -32,10 +33,35 @@ export async function GET(req: NextRequest) {
 
   const rows = (data ?? []) as StockTakeRow[]
   const open = rows.find((row) => row.status === 'counting' || row.status === 'review') ?? null
+
+  // Managers choose categories when opening a count.
+  let categories: Array<{ name: string; products: number }> = []
+  if (canManageStockTake(auth)) {
+    const result = await selectAll<{ category: string | null }>(() =>
+      stockTakeDb()
+        .from('pharmacy_products')
+        .select('category')
+        .eq('tenant_id', auth.tenantId)
+        .eq('is_active', true)
+        .order('id', { ascending: true }),
+    )
+    if (!('error' in result)) {
+      const tally = new Map<string, number>()
+      for (const row of result.rows) {
+        const name = String(row.category ?? '').trim() || 'General'
+        tally.set(name, (tally.get(name) ?? 0) + 1)
+      }
+      categories = [...tally.entries()]
+        .map(([name, products]) => ({ name, products }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    }
+  }
+
   return NextResponse.json({
     open: open ? toStockTakeView(open, auth) : null,
     stockTakes: rows.map((row) => toStockTakeView(row, auth)),
     canManage: canManageStockTake(auth),
+    categories,
   })
 }
 

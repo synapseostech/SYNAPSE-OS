@@ -6,12 +6,13 @@ import {
   UNBATCHED_KEY,
   batchKeyFor,
   isValidIsoDate,
+  kampalaToday,
   normaliseBatchNumber,
   validateCountEntry,
   type CountEntryInput,
 } from '../../../packages/db/src/stock-take'
 
-export { UNBATCHED_KEY, batchKeyFor, isValidIsoDate, normaliseBatchNumber, validateCountEntry }
+export { UNBATCHED_KEY, batchKeyFor, isValidIsoDate, kampalaToday, normaliseBatchNumber, validateCountEntry }
 
 export type StockTakeStatus = 'counting' | 'review' | 'posted' | 'cancelled'
 

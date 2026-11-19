@@ -336,6 +336,16 @@ describe('mobile stock takes', () => {
       expect(json.open.id).toBe(id)
       expect(json.open.showBook).toBe(false)
       expect(json.canManage).toBe(false)
+      expect(json.categories).toEqual([])
+    })
+
+    it('gives a manager the categories with product counts, own tenant only', async () => {
+      as('pharmacist')
+      const json = await (await listTakes(req('GET', ''))).json()
+      expect(json.categories).toEqual([
+        { name: 'Analgesics', products: 1 },
+        { name: 'Antibiotics', products: 1 },
+      ])
     })
   })
 

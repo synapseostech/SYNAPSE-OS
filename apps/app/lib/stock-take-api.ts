@@ -7,7 +7,12 @@ export type { ReviewProductLine, StockTakeReviewTotals }
 const BASE = '/api/mobile/pharmacy/stock-takes'
 
 export function fetchStockTakes(token: string) {
-  return apiRequest<{ open: StockTakeView | null; stockTakes: StockTakeView[]; canManage: boolean }>(BASE, {
+  return apiRequest<{
+    open: StockTakeView | null
+    stockTakes: StockTakeView[]
+    canManage: boolean
+    categories: Array<{ name: string; products: number }>
+  }>(BASE, {
     token,
   })
 }
