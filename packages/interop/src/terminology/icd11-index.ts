@@ -174,3 +174,27 @@ export function searchIcd11Index(query: string, limit = 20): Icd11SearchHit[] {
     .slice(0, Math.max(1, Math.min(limit, 50)))
     .map(({ e, score }) => ({ ...publicEntry(e), score: Math.round(score * 1000) / 1000 }))
 }
+
+/**
+ * The code itself, then each ancestor up to its chapter root: by WHO's parent
+ * links, and by dropping the last character after the dot ("1F40.Z" -> "1F40").
+ * Used to roll a specific diagnosis up to the reporting element mapped to its
+ * parent.
+ */
+export function icd11Ancestors(code: string): string[] {
+  const out: string[] = []
+  let current: string | null = String(code ?? "").trim().toUpperCase()
+  const guard = new Set<string>()
+  while (current && !guard.has(current)) {
+    guard.add(current)
+    out.push(current)
+    const entry = lookupIcd11Code(current)
+    let next: string | null = entry?.parentCode ?? null
+    if (!next && current.includes(".")) {
+      const trimmed: string = current.slice(0, -1).replace(/\.$/, "")
+      next = trimmed.length >= 4 ? trimmed : null
+    }
+    current = next ? next.toUpperCase() : null
+  }
+  return out
+}

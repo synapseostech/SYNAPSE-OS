@@ -5,7 +5,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./icd11-index": "./src/terminology/icd11-index.ts",
-    "./differential-engine": "./src/intelligence/differential-engine.ts"
+    "./differential-engine": "./src/intelligence/differential-engine.ts",
+    "./hmis105": "./src/dhis2/hmis105.ts",
+    "./epi-surveillance": "./src/dhis2/epi-surveillance.ts"
   },
   "scripts": {
     "lint": "eslint . --max-warnings 0"
