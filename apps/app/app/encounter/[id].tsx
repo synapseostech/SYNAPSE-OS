@@ -16,7 +16,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface EncounterDetail {
   encounterId: string
@@ -49,6 +49,8 @@ const WEB_APP_URL = (
 ).replace(/\/$/, '')
 
 export default function EncounterDetailScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { id } = useLocalSearchParams<{ id: string }>()
   const { token } = useAuth()
   const router = useRouter()
@@ -151,6 +153,7 @@ export default function EncounterDetailScreen() {
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
+  const styles = useStyles()
   return (
     <View style={styles.infoRow}>
       <Text style={styles.infoLabel}>{label}</Text>
@@ -160,6 +163,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 function VitalCard({ label, value, unit }: { label: string; value: string; unit: string }) {
+  const styles = useStyles()
   return (
     <View style={styles.vitalCard}>
       <Text style={styles.vitalLabel}>{label}</Text>
@@ -177,7 +181,7 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   content: { padding: spacing.xl, paddingBottom: spacing.xxxl * 2 },
   center: { flex: 1, backgroundColor: colors.bg, justifyContent: 'center', alignItems: 'center', padding: spacing.xxl, gap: spacing.lg },
@@ -228,4 +232,4 @@ const styles = StyleSheet.create({
   vitalValue: { fontSize: 18, fontWeight: '700', color: colors.text, fontFamily: 'DMSans_700Bold' },
   vitalUnit: { color: colors.textMuted, fontSize: 10, fontFamily: 'DMSans_400Regular', marginTop: 2 },
   ctaBtn: { marginTop: spacing.md },
-})
+}))

@@ -12,7 +12,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
+import { radii, spacing, typography, TONE_COLORS, makeStyles, useTheme } from '@/lib/theme'
 
 interface InventoryItem {
   id: string
@@ -30,10 +30,10 @@ interface InventorySummary {
 }
 
 const STATUS_COLORS: Record<InventoryItem['status'], string> = {
-  ok: TONE_COLORS.green,
-  low: TONE_COLORS.red,
-  expiring: TONE_COLORS.warning,
-  expired: TONE_COLORS.red,
+  get ok() { return TONE_COLORS.green },
+  get low() { return TONE_COLORS.red },
+  get expiring() { return TONE_COLORS.warning },
+  get expired() { return TONE_COLORS.red },
 }
 
 const STATUS_LABELS: Record<InventoryItem['status'], string> = {
@@ -44,6 +44,8 @@ const STATUS_LABELS: Record<InventoryItem['status'], string> = {
 }
 
 export default function StockScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const [items, setItems] = useState<InventoryItem[]>([])
@@ -168,6 +170,7 @@ function SummaryPill({
   value: number
   color: string
 }) {
+  const styles = useStyles()
   return (
     <View style={styles.pill}>
       <Text style={[styles.pillValue, { color }]}>{value}</Text>
@@ -176,7 +179,7 @@ function SummaryPill({
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   summaryRow: {
     flexDirection: 'row',
@@ -287,4 +290,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     marginTop: spacing.xs,
   },
-})
+}))

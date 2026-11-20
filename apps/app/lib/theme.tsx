@@ -11,7 +11,7 @@ import React, {
   useState,
   type ReactNode,
 } from 'react'
-import { Appearance, StatusBar as RNStatusBar, useColorScheme } from 'react-native'
+import { Appearance, StatusBar as RNStatusBar, StyleSheet, useColorScheme } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { StatusBar } from 'expo-status-bar'
 
@@ -172,7 +172,23 @@ export const typography = {
   bodyMedium: { fontFamily: fonts.bodyMedium, fontSize: 15, fontWeight: '500' as const },
 } as const
 
-export const tabBarHeight = 56
+export const tabBarHeight = 64
+
+/** Minimum comfortable touch target (Android guidance is 48dp). */
+export const touchTarget = 48
+
+/** Soft shadows; Android uses elevation, iOS/web the shadow props. */
+export function elevation(level: 0 | 1 | 2 | 3, scheme: ThemeScheme = 'dark') {
+  if (level === 0) return {}
+  const opacity = scheme === 'dark' ? 0.45 : 0.08 + level * 0.03
+  return {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: level * 2 },
+    shadowOpacity: opacity,
+    shadowRadius: level * 6,
+    elevation: level * 2,
+  }
+}
 
 export function toneColors(c: ThemeColors) {
   return {
@@ -188,8 +204,12 @@ export function toneColors(c: ThemeColors) {
   } as const
 }
 
-/** Legacy static map (dark). Prefer toneColors(useTheme().colors). */
-export const TONE_COLORS = toneColors(darkPalette)
+/**
+ * Tone map that follows the active scheme. The provider updates it in place
+ * whenever the scheme changes, so screens that read it while rendering get
+ * the light or dark tone. Prefer toneColors(useTheme().colors) in new code.
+ */
+export const TONE_COLORS: { -readonly [K in keyof ReturnType<typeof toneColors>]: string } = toneColors(darkPalette)
 export type StatTone = keyof typeof TONE_COLORS
 
 type ThemeContextValue = {
@@ -238,6 +258,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const scheme = resolveScheme(preference, system)
   const palette = scheme === 'light' ? lightPalette : darkPalette
+  // Mutable legacy exports follow the scheme before children render.
+  if (colors.bg !== palette.bg) {
+    Object.assign(colors, palette)
+    Object.assign(TONE_COLORS, toneColors(palette))
+  }
 
   // Keep legacy `colors` export roughly in sync for modules that still read it at render time.
   useEffect(() => {
@@ -287,4 +312,30 @@ export function useTheme(): ThemeContextValue {
     }
   }
   return ctx
+}
+
+/**
+ * Theme-aware StyleSheet. Styles built at import time freeze the palette that
+ * was active then, which is why light mode used to show dark cards. Use:
+ *
+ *   const useStyles = makeStyles((colors) => ({ root: { backgroundColor: colors.bg } }))
+ *   function Screen() { const styles = useStyles() ... }
+ *
+ * Each scheme's sheet is built once and cached.
+ */
+type StyleInput = Parameters<typeof StyleSheet.create>[0]
+
+export function makeStyles<T extends StyleInput>(
+  factory: (c: ThemeColors, scheme: ThemeScheme) => T & StyleInput,
+): () => Readonly<T> {
+  const cache: Partial<Record<ThemeScheme, Readonly<T>>> = {}
+  return function useStyles(): Readonly<T> {
+    const { colors: c, scheme } = useTheme()
+    let sheet = cache[scheme]
+    if (!sheet) {
+      sheet = StyleSheet.create(factory(c, scheme)) as Readonly<T>
+      cache[scheme] = sheet
+    }
+    return sheet as Readonly<T>
+  }
 }

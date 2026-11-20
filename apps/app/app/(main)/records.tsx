@@ -13,7 +13,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { SectionHeader } from '@/components/ui/Card'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface HealthRecord {
   id: string
@@ -31,6 +31,8 @@ interface RecordsProfile {
 }
 
 export default function RecordsScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const [records, setRecords] = useState<HealthRecord[]>([])
@@ -146,6 +148,7 @@ function ProfileRow({
   value: string
   highlight?: boolean
 }) {
+  const styles = useStyles()
   return (
     <View style={styles.profileRow}>
       <Text style={styles.profileLabel}>{label}</Text>
@@ -158,7 +161,7 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   listContent: { padding: spacing.lg, paddingBottom: spacing.xxxl },
   profileSection: { marginBottom: spacing.sm },
@@ -246,4 +249,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_500Medium',
     textTransform: 'capitalize',
   },
-})
+}))

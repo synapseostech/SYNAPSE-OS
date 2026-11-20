@@ -1,5 +1,5 @@
 import { StyleSheet, Text, View } from 'react-native'
-import { colors } from '@/lib/theme'
+import { makeStyles, useTheme } from '@/lib/theme'
 
 interface AvatarProps {
   label: string
@@ -8,6 +8,8 @@ interface AvatarProps {
 }
 
 export function Avatar({ label, size = 48, tone = 'primary' }: AvatarProps) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const fontSize = Math.round(size * 0.38)
   return (
     <View
@@ -27,7 +29,7 @@ export function Avatar({ label, size = 48, tone = 'primary' }: AvatarProps) {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   base: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -37,4 +39,4 @@ const styles = StyleSheet.create({
     color: colors.white,
     fontWeight: '800',
   },
-})
+}))

@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/Button'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface ReportData {
   period: string
@@ -44,6 +44,8 @@ const PERIODS = [
 ]
 
 export default function ReportsScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -186,6 +188,7 @@ export default function ReportsScreen() {
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
+  const styles = useStyles()
   return (
     <View style={styles.stat}>
       <Text style={styles.statValue}>{value}</Text>
@@ -194,6 +197,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   )
 }
 function Group({ title, children }: { title: string; children: ReactNode }) {
+  const styles = useStyles()
   return (
     <View style={styles.group}>
       <Text style={styles.groupTitle}>{title}</Text>
@@ -202,6 +206,8 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 function Row({ left, right, tone }: { left: string; right: string; tone?: 'warn' }) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   return (
     <View style={styles.dataRow}>
       <Text style={styles.rowLeft} numberOfLines={1}>{left}</Text>
@@ -210,7 +216,7 @@ function Row({ left, right, tone }: { left: string; right: string; tone?: 'warn'
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   backBtn: { width: 48 },
@@ -231,4 +237,4 @@ const styles = StyleSheet.create({
   rowLeft: { ...typography.bodySm, color: colors.text, flex: 1 },
   rowRight: { ...typography.bodySm, color: colors.textSecondary, fontFamily: 'IBMPlexMono_400Regular' },
   help: { ...typography.bodySm, color: colors.textMuted },
-})
+}))

@@ -15,7 +15,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface Patient {
   id: string
@@ -27,6 +27,8 @@ interface Patient {
 }
 
 export default function PatientsScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const [query, setQuery] = useState('')
@@ -127,7 +129,7 @@ export default function PatientsScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   searchRow: {
     flexDirection: 'row',
@@ -172,4 +174,4 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   dot: { color: colors.textMuted, fontSize: 12 },
-})
+}))

@@ -20,7 +20,7 @@ import {
   receivePharmacyStockMobile,
   searchPosProducts,
 } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 type ProductHit = {
   id: string
@@ -32,6 +32,8 @@ type ProductHit = {
 }
 
 export default function StockReceiveScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -188,7 +190,7 @@ export default function StockReceiveScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row',
@@ -213,4 +215,4 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
     marginTop: spacing.sm,
   },
-})
+}))

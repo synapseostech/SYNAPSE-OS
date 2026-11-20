@@ -1,7 +1,7 @@
 import * as Clipboard from 'expo-clipboard'
 import { ReactNode } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles } from '@/lib/theme'
 
 // ─── DetailRow ───────────────────────────────────────────────────────────────
 
@@ -20,6 +20,7 @@ export function DetailRow({
   mono = false,
   copyable = false,
 }: DetailRowProps) {
+  const styles = useStyles()
   if (value === null || value === undefined) return null
 
   async function handleLongPress() {
@@ -54,6 +55,7 @@ interface DetailSectionProps {
 }
 
 export function DetailSection({ title, children }: DetailSectionProps) {
+  const styles = useStyles()
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
@@ -64,7 +66,7 @@ export function DetailSection({ title, children }: DetailSectionProps) {
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   // DetailRow
   row: {
     flexDirection: 'row',
@@ -118,4 +120,4 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     overflow: 'hidden',
   },
-})
+}))

@@ -15,7 +15,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { TextField } from '@/components/ui/TextField'
 import { useAuth } from '@/lib/auth'
 import { ApiError, fetchPharmacyReport } from '@/lib/api'
-import { colors, radii, spacing, tabBarHeight, typography } from '@/lib/theme'
+import { radii, spacing, tabBarHeight, typography, makeStyles } from '@/lib/theme'
 
 const REPORT_TYPES = [
   { key: 'sales', label: 'Sales' },
@@ -38,6 +38,7 @@ function monthAgoIsoDate() {
 }
 
 export default function ReportsScreen() {
+  const styles = useStyles()
   const { token } = useAuth()
   const insets = useSafeAreaInsets()
   const [type, setType] = useState<ReportType>('sales')
@@ -189,7 +190,7 @@ export default function ReportsScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   heading: {
     ...typography.label,
@@ -233,4 +234,4 @@ const styles = StyleSheet.create({
   item: { paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.borderSubtle },
   itemTitle: { color: colors.text, fontFamily: 'DMSans_500Medium' },
   itemMeta: { color: colors.textMuted, fontFamily: 'DMSans_400Regular', marginTop: 2, fontSize: 12 },
-})
+}))

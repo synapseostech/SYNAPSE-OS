@@ -36,7 +36,7 @@ import { SyncPayloadConflictError } from '../../../packages/db/src/sync-runtime'
 import { computePharmacySaleTax } from '../../../packages/db/src/pos-tax'
 import type { PharmacyTaxSettings } from '../../../packages/db/src/pos-tax'
 import { allocateCartDiscount, roundMoney } from '@/lib/pos-pricing'
-import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
+import { radii, spacing, typography, TONE_COLORS, makeStyles, useTheme } from '@/lib/theme'
 
 const CART_DRAFT_KEY = 'synapse.pharmacy.pos.draft.v1'
 const TAX_SETTINGS_KEY = 'synapse.pharmacy.pos.tax.v1'
@@ -167,6 +167,8 @@ function sellableQuantityFromCatalogue(product: {
 }
 
 export default function PosScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token, user } = useAuth()
   const router = useRouter()
   const params = useLocalSearchParams<{ barcode?: string }>()
@@ -1048,7 +1050,7 @@ export default function PosScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row',
@@ -1357,4 +1359,4 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontFamily: 'DMSans_500Medium',
   },
-})
+}))

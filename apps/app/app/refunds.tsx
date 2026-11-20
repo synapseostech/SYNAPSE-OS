@@ -7,7 +7,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface Refund {
   id: string
@@ -19,6 +19,8 @@ interface Refund {
 }
 
 export default function RefundsScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -75,7 +77,7 @@ export default function RefundsScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   backBtn: { width: 48 },
@@ -87,4 +89,4 @@ const styles = StyleSheet.create({
   receipt: { ...typography.bodyMedium, color: colors.text, fontFamily: 'DMSans_700Bold' },
   amount: { ...typography.bodySm, color: colors.textSecondary, fontFamily: 'IBMPlexMono_400Regular' },
   meta: { ...typography.caption, color: colors.textMuted, marginTop: 4 },
-})
+}))

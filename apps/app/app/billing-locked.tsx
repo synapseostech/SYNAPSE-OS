@@ -3,13 +3,15 @@ import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Ionicons } from '@expo/vector-icons'
 import { Button } from '@/components/ui/Button'
 import { useAuth } from '@/lib/auth'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 /**
  * Shown when the server answers HTTP 402 (subscription suspended / lapsed).
  * The lock is server-side; this screen only explains it and offers recovery.
  */
 export default function BillingLockedScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const router = useRouter()
   const { user, logout } = useAuth()
   const params = useLocalSearchParams<{ message?: string }>()
@@ -55,7 +57,7 @@ export default function BillingLockedScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: {
     flex: 1,
     backgroundColor: colors.bg,
@@ -99,4 +101,4 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: spacing.lg,
   },
-})
+}))

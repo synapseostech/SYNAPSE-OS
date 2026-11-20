@@ -22,7 +22,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, apiFetchText, ApiError } from '@/lib/api'
 import { resolveReceiptExit } from '@/lib/receipt-print-gate'
-import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
+import { radii, spacing, typography, TONE_COLORS, makeStyles, useTheme } from '@/lib/theme'
 
 interface ReceiptLine {
   name: string
@@ -80,6 +80,8 @@ interface ReceiptSnapshot {
 }
 
 export default function ReceiptScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { saleId, autoprint, mandatory } = useLocalSearchParams<{
     saleId: string
     autoprint?: string
@@ -593,6 +595,7 @@ export default function ReceiptScreen() {
 }
 
 function Row({ k, v, strong }: { k: string; v: string; strong?: boolean }) {
+  const styles = useStyles()
   return (
     <View style={styles.kvRow}>
       <Text style={[styles.kvKey, strong && styles.kvStrong]}>{k}</Text>
@@ -601,7 +604,7 @@ function Row({ k, v, strong }: { k: string; v: string; strong?: boolean }) {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row',
@@ -707,4 +710,4 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
   sheetActionBtn: { flex: 1 },
-})
+}))

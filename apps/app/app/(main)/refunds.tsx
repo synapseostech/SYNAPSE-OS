@@ -22,7 +22,7 @@ import {
   fetchPharmacyRefunds,
   postPharmacyRefund,
 } from '@/lib/api'
-import { colors, radii, spacing, tabBarHeight, typography } from '@/lib/theme'
+import { radii, spacing, tabBarHeight, typography, makeStyles, useTheme } from '@/lib/theme'
 
 type RefundRow = {
   id: string
@@ -44,6 +44,8 @@ type SaleHit = {
 }
 
 export default function RefundsScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const insets = useSafeAreaInsets()
   const [refunds, setRefunds] = useState<RefundRow[]>([])
@@ -239,7 +241,7 @@ export default function RefundsScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   toolbar: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   toolBtn: {
@@ -288,4 +290,4 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
     fontSize: 13,
   },
-})
+}))

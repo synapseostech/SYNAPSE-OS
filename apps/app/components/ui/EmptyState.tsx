@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 type EmptyIcon =
   | 'inbox'
@@ -40,6 +40,8 @@ const ICON_MAP: Record<EmptyIcon, keyof typeof Ionicons.glyphMap> = {
 }
 
 export function EmptyState({ title, body, icon = 'inbox' }: EmptyStateProps) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   return (
     <View style={styles.wrap}>
       <View style={styles.iconRing}>
@@ -51,7 +53,7 @@ export function EmptyState({ title, body, icon = 'inbox' }: EmptyStateProps) {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   wrap: {
     alignItems: 'center',
     paddingTop: spacing.xxl,
@@ -82,4 +84,4 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     maxWidth: 280,
   },
-})
+}))

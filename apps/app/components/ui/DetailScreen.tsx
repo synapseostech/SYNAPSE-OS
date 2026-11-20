@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router'
 import { ReactNode } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { colors, spacing, typography } from '@/lib/theme'
+import { spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface DetailScreenProps {
   title: string
@@ -13,6 +13,8 @@ interface DetailScreenProps {
 }
 
 export function DetailScreen({ title, subtitle, children, onBack }: DetailScreenProps) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const insets = useSafeAreaInsets()
   const router = useRouter()
 
@@ -64,7 +66,7 @@ export function DetailScreen({ title, subtitle, children, onBack }: DetailScreen
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: {
     flex: 1,
     backgroundColor: colors.bg,
@@ -107,4 +109,4 @@ const styles = StyleSheet.create({
     paddingTop: spacing.lg,
     paddingHorizontal: spacing.lg,
   },
-})
+}))

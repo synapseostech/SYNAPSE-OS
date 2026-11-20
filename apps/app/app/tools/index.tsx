@@ -2,7 +2,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
 import { useRouter } from 'expo-router'
 import { ScreenShell } from '@/components/ui/ScreenShell'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 import { CALCULATOR_PACK_VERSION } from '@/lib/calculators'
 
 const TOOLS = [
@@ -30,6 +30,8 @@ const TOOLS = [
 ]
 
 export default function ToolsHubScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const router = useRouter()
 
   return (
@@ -61,7 +63,7 @@ export default function ToolsHubScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   subtitle: {
     ...typography.bodySm,
     color: colors.textSecondary,
@@ -101,4 +103,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     marginTop: 2,
   },
-})
+}))

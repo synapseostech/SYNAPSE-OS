@@ -44,9 +44,11 @@ import {
   type PurchaseLineDraft,
 } from '@/lib/purchase-draft'
 import { purchaseTotals } from '../../../../packages/db/src/pharmacy-purchases'
-import { colors, radii, spacing, tabBarHeight, typography } from '@/lib/theme'
+import { radii, spacing, tabBarHeight, typography, makeStyles, useTheme } from '@/lib/theme'
 
 export default function PurchasesScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const insets = useSafeAreaInsets()
   const [purchases, setPurchases] = useState<PharmacyPurchase[]>([])
@@ -528,7 +530,7 @@ export default function PurchasesScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: {
     paddingHorizontal: spacing.xl,
@@ -545,4 +547,4 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bgSubtle,
     gap: spacing.sm,
   },
-})
+}))

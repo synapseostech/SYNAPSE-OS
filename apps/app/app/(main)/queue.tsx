@@ -14,7 +14,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface QueueItem {
   encounterId: string
@@ -37,6 +37,8 @@ interface QueueStats {
 
 
 export default function QueueScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const [queue, setQueue] = useState<QueueItem[]>([])
@@ -136,6 +138,8 @@ function StatPill({
   value: number
   tone: 'warning' | 'info' | 'success'
 }) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const bg =
     tone === 'warning' ? colors.warningSoft : tone === 'info' ? colors.infoSoft : colors.successSoft
   const fg =
@@ -153,7 +157,7 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   statsRow: {
     flexDirection: 'row',
@@ -218,4 +222,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     marginTop: spacing.sm,
   },
-})
+}))

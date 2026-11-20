@@ -8,7 +8,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, ApiError } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface Supplier {
   id: string
@@ -20,6 +20,8 @@ interface Supplier {
 }
 
 export default function SuppliersScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -119,7 +121,7 @@ export default function SuppliersScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   backBtn: { width: 48 },
@@ -132,4 +134,4 @@ const styles = StyleSheet.create({
   addTitle: { ...typography.bodyMedium, color: colors.text, fontFamily: 'DMSans_700Bold' },
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, padding: spacing.md, color: colors.text, backgroundColor: colors.bgElevated, fontFamily: 'DMSans_400Regular' },
   addActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
-})
+}))

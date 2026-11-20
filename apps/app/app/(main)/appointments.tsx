@@ -15,7 +15,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface Appointment {
   id: string
@@ -32,6 +32,8 @@ const WEB_APP_URL = (
 ).replace(/\/$/, '')
 
 export default function AppointmentsScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const [appointments, setAppointments] = useState<Appointment[]>([])
@@ -133,7 +135,7 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   listContent: { padding: spacing.lg, paddingBottom: spacing.xxxl },
   card: {
@@ -199,4 +201,4 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontFamily: 'DMSans_500Medium',
   },
-})
+}))

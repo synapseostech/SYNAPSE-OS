@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/Button'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface RecordDetail {
   id: string
@@ -42,6 +42,8 @@ const TYPE_LABELS: Record<string, string> = {
 }
 
 export default function RecordDetailScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { id } = useLocalSearchParams<{ id: string }>()
   const { token } = useAuth()
   const router = useRouter()
@@ -135,6 +137,7 @@ export default function RecordDetailScreen() {
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
+  const styles = useStyles()
   return (
     <View style={styles.infoRow}>
       <Text style={styles.infoLabel}>{label}</Text>
@@ -144,6 +147,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 function VitalCard({ label, value, unit }: { label: string; value: string; unit: string }) {
+  const styles = useStyles()
   return (
     <View style={styles.vitalCard}>
       <Text style={styles.vitalLabel}>{label}</Text>
@@ -157,7 +161,7 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'long', year: 'numeric' })
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   content: { padding: spacing.xl, paddingBottom: spacing.xxxl * 2 },
   center: { flex: 1, backgroundColor: colors.bg, justifyContent: 'center', alignItems: 'center', padding: spacing.xxl, gap: spacing.lg },
@@ -185,4 +189,4 @@ const styles = StyleSheet.create({
   vitalLabel: { ...typography.label, color: colors.textMuted, fontFamily: 'DMSans_500Medium', marginBottom: 4 },
   vitalValue: { fontSize: 18, fontWeight: '700', color: colors.text, fontFamily: 'DMSans_700Bold' },
   vitalUnit: { color: colors.textMuted, fontSize: 10, fontFamily: 'DMSans_400Regular', marginTop: 2 },
-})
+}))

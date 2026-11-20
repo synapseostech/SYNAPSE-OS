@@ -18,7 +18,7 @@ import { Button } from '@/components/ui/Button'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, ApiError } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface Settings {
   pharmacyName: string
@@ -48,6 +48,8 @@ interface Settings {
 }
 
 export default function SettingsScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -203,6 +205,7 @@ export default function SettingsScreen() {
 }
 
 function Section({ title }: { title: string }) {
+  const styles = useStyles()
   return <Text style={styles.section}>{title}</Text>
 }
 
@@ -219,6 +222,8 @@ function Field({
   editable: boolean
   keyboardType?: 'default' | 'numeric' | 'phone-pad' | 'email-address'
 }) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   return (
     <View style={{ gap: 4 }}>
       <Text style={styles.label}>{label}</Text>
@@ -236,6 +241,8 @@ function Field({
 }
 
 function Toggle({ label, value, onValueChange, disabled }: { label: string; value: boolean; onValueChange: (v: boolean) => void; disabled?: boolean }) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   return (
     <View style={styles.toggleRow}>
       <Text style={styles.toggleLabel}>{label}</Text>
@@ -257,6 +264,7 @@ function ChoiceRow({
   onChange: (v: string) => void
   disabled?: boolean
 }) {
+  const styles = useStyles()
   return (
     <View style={{ gap: 6 }}>
       <Text style={styles.label}>{label}</Text>
@@ -279,7 +287,7 @@ function ChoiceRow({
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   backBtn: { width: 48 },
@@ -306,4 +314,4 @@ const styles = StyleSheet.create({
   choiceChipActive: { borderColor: colors.primary, backgroundColor: colors.primary + '18' },
   choiceText: { ...typography.caption, color: colors.textSecondary, fontFamily: 'DMSans_500Medium' },
   choiceTextActive: { color: colors.primary, fontFamily: 'DMSans_700Bold' },
-})
+}))

@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/Button'
 import { TextField } from '@/components/ui/TextField'
 import { useAuth } from '@/lib/auth'
 import { ApiError, searchPosProducts } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 type ProductHit = {
   id: string
@@ -26,6 +26,8 @@ type ProductHit = {
 }
 
 export default function BarcodeScanScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -186,7 +188,7 @@ export default function BarcodeScanScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row',
@@ -245,4 +247,4 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   actions: { marginTop: spacing.lg, gap: spacing.sm },
-})
+}))

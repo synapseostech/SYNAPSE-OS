@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/Button'
 import { TextField } from '@/components/ui/TextField'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, ApiError } from '@/lib/api'
-import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
+import { radii, spacing, typography, TONE_COLORS, makeStyles } from '@/lib/theme'
 
 type Interaction = {
   severity: 'major' | 'moderate' | 'minor'
@@ -25,12 +25,13 @@ type CheckResult = {
 }
 
 const SEVERITY: Record<string, string> = {
-  major: TONE_COLORS.red,
-  moderate: TONE_COLORS.warning,
-  minor: TONE_COLORS.green,
+  get major() { return TONE_COLORS.red },
+  get moderate() { return TONE_COLORS.warning },
+  get minor() { return TONE_COLORS.green },
 }
 
 export default function InteractionsScreen() {
+  const styles = useStyles()
   const { token } = useAuth()
   const [a, setA] = useState('')
   const [b, setB] = useState('')
@@ -184,7 +185,7 @@ export default function InteractionsScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   lead: {
     ...typography.bodySm,
     color: colors.textSecondary,
@@ -262,4 +263,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     lineHeight: 20,
   },
-})
+}))

@@ -19,7 +19,7 @@ import * as XLSX from 'xlsx'
 import { Button } from '@/components/ui/Button'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, ApiError } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 const SAMPLE = `name,sku,price,quantity,cost_price,category,unit,batch,expiry
 Amoxicillin 500mg,AMX-500,2500,100,1800,Antibiotics,Tablet,B1,2027-06-30
@@ -40,6 +40,8 @@ async function fileToCsv(uri: string, name: string): Promise<string> {
 }
 
 export default function StockImportScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -164,7 +166,7 @@ export default function StockImportScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row',
@@ -197,4 +199,4 @@ const styles = StyleSheet.create({
     fontFamily: 'IBMPlexMono_400Regular',
     fontSize: 12,
   },
-})
+}))

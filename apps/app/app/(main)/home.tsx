@@ -23,7 +23,7 @@ import { useAuth } from '@/lib/auth'
 import { getCachedWithTtl, setCached } from '@/lib/cache'
 import { fetchDashboard, type DashboardResponse, type DashboardQuickAction } from '@/lib/dashboard'
 import { dashboardKindForRole, formatRole, type DashboardKind } from '@/lib/roles'
-import { colors, radii, spacing, tabBarHeight, typography, TONE_COLORS, useTheme } from '@/lib/theme'
+import { radii, spacing, tabBarHeight, typography, TONE_COLORS, useTheme, makeStyles } from '@/lib/theme'
 
 const DASHBOARD_CACHE_KEY = '/api/mobile/dashboard'
 const DASHBOARD_TTL_MS = 5 * 60 * 1000
@@ -45,6 +45,8 @@ const KIND_SUBTITLE: Record<DashboardKind, string> = {
 }
 
 export default function DashboardScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { user, token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -283,7 +285,7 @@ function formatMeta(meta: string) {
   return meta.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   content: { paddingHorizontal: spacing.xl, flexGrow: 1 },
 
@@ -428,4 +430,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_700Bold',
     marginLeft: spacing.sm,
   },
-})
+}))

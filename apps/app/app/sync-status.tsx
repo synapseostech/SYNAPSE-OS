@@ -20,7 +20,7 @@ import {
   syncPharmacySales,
   type OfflineOutboxListItem,
 } from '@/lib/offline-store'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 function statusCopy(item: OfflineOutboxListItem): { label: string; detail: string } {
   switch (item.status) {
@@ -49,6 +49,8 @@ function statusCopy(item: OfflineOutboxListItem): { label: string; detail: strin
 }
 
 export default function SyncStatusScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token, user } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -163,7 +165,7 @@ export default function SyncStatusScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row',
@@ -211,4 +213,4 @@ const styles = StyleSheet.create({
   cardDetail: { color: colors.textSecondary, fontFamily: 'DMSans_400Regular', fontSize: 13 },
   cardId: { color: colors.textMuted, fontFamily: 'IBMPlexMono_400Regular', fontSize: 11 },
   footer: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
-})
+}))

@@ -5,9 +5,11 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { fetchPharmacyUsers, type PharmacyStaffUser } from '@/lib/api'
-import { colors, radii, spacing, tabBarHeight, typography, TONE_COLORS } from '@/lib/theme'
+import { radii, spacing, tabBarHeight, typography, TONE_COLORS, makeStyles, useTheme } from '@/lib/theme'
 
 export default function PharmacyUsersScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const insets = useSafeAreaInsets()
   const [users, setUsers] = useState<PharmacyStaffUser[]>([])
@@ -92,7 +94,7 @@ export default function PharmacyUsersScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   list: { padding: spacing.lg },
   hint: {
@@ -118,4 +120,4 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontSize: 13,
   },
-})
+}))

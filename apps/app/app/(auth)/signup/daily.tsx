@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/Button'
 import { ChoiceChips } from '@/components/ui/ChoiceChips'
 import { TextField } from '@/components/ui/TextField'
 import { apiRequest, ApiError } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 type Step = 'form' | 'sent'
 type Sex = 'female' | 'male' | 'other' | 'undisclosed'
@@ -59,6 +59,8 @@ function normaliseDob(input: string): string | null {
 }
 
 export default function SignupScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const [step, setStep] = useState<Step>('form')
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
@@ -313,7 +315,7 @@ export default function SignupScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   flex: { flex: 1 },
   scroll: {
     flexGrow: 1,
@@ -379,4 +381,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     letterSpacing: 0.5,
   },
-})
+}))

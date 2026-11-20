@@ -16,9 +16,11 @@ import { Button } from '@/components/ui/Button'
 import { TextField } from '@/components/ui/TextField'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, ApiError } from '@/lib/api'
-import { colors, spacing, typography } from '@/lib/theme'
+import { spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 export default function StockNewScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -152,7 +154,7 @@ export default function StockNewScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row',
@@ -168,4 +170,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_700Bold',
   },
   content: { padding: spacing.xl },
-})
+}))

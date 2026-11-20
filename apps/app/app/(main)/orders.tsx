@@ -13,7 +13,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { Button } from '@/components/ui/Button'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
+import { radii, spacing, typography, TONE_COLORS, makeStyles, useTheme } from '@/lib/theme'
 
 interface OrderItem {
   id: string
@@ -46,13 +46,15 @@ interface OrdersSummary {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  PENDING: TONE_COLORS.warning,
-  PROCESSING: TONE_COLORS.info,
-  COMPLETED: TONE_COLORS.green,
-  CANCELLED: TONE_COLORS.red,
+  get PENDING() { return TONE_COLORS.warning },
+  get PROCESSING() { return TONE_COLORS.info },
+  get COMPLETED() { return TONE_COLORS.green },
+  get CANCELLED() { return TONE_COLORS.red },
 }
 
 export default function OrdersScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const [orders, setOrders] = useState<PharmacyOrder[]>([])
   const [summary, setSummary] = useState<OrdersSummary | null>(null)
@@ -238,6 +240,7 @@ function SummaryPill({
   value: number
   color: string
 }) {
+  const styles = useStyles()
   return (
     <View style={styles.pill}>
       <Text style={[styles.pillValue, { color }]}>{value}</Text>
@@ -246,7 +249,7 @@ function SummaryPill({
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   summaryRow: {
     flexDirection: 'row',
@@ -347,4 +350,4 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   actionBtn: { flexGrow: 1, minWidth: 100 },
-})
+}))

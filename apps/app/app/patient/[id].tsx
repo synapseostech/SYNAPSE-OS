@@ -14,7 +14,7 @@ import { Card, SectionHeader } from '@/components/ui/Card'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme, type ThemeColors } from '@/lib/theme'
 
 interface PatientDetail {
   id: string
@@ -47,11 +47,11 @@ interface Vitals {
   recordedAt: string
 }
 
-const STATUS_COLORS: Record<string, string> = {
+const statusColors = (colors: ThemeColors): Record<string, string> => ({
   open: colors.primary,
   in_progress: colors.gold,
   completed: colors.success,
-}
+})
 
 const STATUS_LABELS: Record<string, string> = {
   open: 'Open',
@@ -60,6 +60,8 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 export default function PatientDetailScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { id } = useLocalSearchParams<{ id: string }>()
   const { token } = useAuth()
   const router = useRouter()
@@ -163,8 +165,8 @@ export default function PatientDetailScreen() {
             <View key={enc.id} style={styles.encounterCard}>
               <View style={styles.encounterHeader}>
                 <Text style={styles.encounterDate}>{formatDate(enc.createdAt)}</Text>
-                <View style={[styles.statusPill, { borderColor: STATUS_COLORS[enc.status] ?? '#52525B' }]}>
-                  <Text style={[styles.statusText, { color: STATUS_COLORS[enc.status] ?? '#52525B' }]}>
+                <View style={[styles.statusPill, { borderColor: statusColors(colors)[enc.status] ?? '#52525B' }]}>
+                  <Text style={[styles.statusText, { color: statusColors(colors)[enc.status] ?? '#52525B' }]}>
                     {STATUS_LABELS[enc.status] ?? enc.status}
                   </Text>
                 </View>
@@ -184,6 +186,7 @@ export default function PatientDetailScreen() {
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
+  const styles = useStyles()
   return (
     <View style={styles.infoRow}>
       <Text style={styles.infoLabel}>{label}</Text>
@@ -193,10 +196,12 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 function DividerLine() {
+  const { colors } = useTheme()
   return <View style={{ height: 1, backgroundColor: colors.borderSubtle }} />
 }
 
 function VitalCard({ label, value, unit }: { label: string; value: string; unit: string }) {
+  const styles = useStyles()
   return (
     <View style={styles.vitalCard}>
       <Text style={styles.vitalLabel}>{label}</Text>
@@ -215,7 +220,7 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   content: { padding: spacing.xl, paddingBottom: spacing.xxxl * 2 },
   centerScreen: {
@@ -346,4 +351,4 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontFamily: 'DMSans_400Regular',
   },
-})
+}))

@@ -12,7 +12,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
+import { radii, spacing, typography, TONE_COLORS, makeStyles, useTheme } from '@/lib/theme'
 
 interface SaleRow {
   id: string
@@ -25,6 +25,8 @@ interface SaleRow {
 }
 
 export default function SalesScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const [sales, setSales] = useState<SaleRow[]>([])
@@ -124,7 +126,7 @@ export default function SalesScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   listContent: { padding: spacing.lg, paddingBottom: spacing.xxxl },
   newSaleCta: {
@@ -191,4 +193,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_500Medium',
     marginTop: spacing.sm,
   },
-})
+}))

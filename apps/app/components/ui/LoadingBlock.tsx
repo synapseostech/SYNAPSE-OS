@@ -1,7 +1,9 @@
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
-import { colors, spacing, typography } from '@/lib/theme'
+import { spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 export function LoadingBlock({ message = 'Loading…' }: { message?: string }) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   return (
     <View style={styles.wrap}>
       <ActivityIndicator color={colors.primary} size="large" />
@@ -10,7 +12,7 @@ export function LoadingBlock({ message = 'Loading…' }: { message?: string }) {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   wrap: {
     paddingVertical: spacing.xxxl * 2,
     alignItems: 'center',
@@ -20,4 +22,4 @@ const styles = StyleSheet.create({
     ...typography.bodyMedium,
     color: colors.textSecondary,
   },
-})
+}))

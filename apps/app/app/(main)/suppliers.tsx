@@ -24,9 +24,11 @@ import {
   fetchPharmacySuppliers,
   type PharmacySupplier,
 } from '@/lib/api'
-import { colors, radii, spacing, tabBarHeight, typography } from '@/lib/theme'
+import { radii, spacing, tabBarHeight, typography, makeStyles, useTheme } from '@/lib/theme'
 
 export default function SuppliersScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const insets = useSafeAreaInsets()
   const [suppliers, setSuppliers] = useState<PharmacySupplier[]>([])
@@ -178,7 +180,7 @@ export default function SuppliersScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   toolbar: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   toolBtn: {
@@ -226,4 +228,4 @@ const styles = StyleSheet.create({
   modalTitle: { ...typography.h2, color: colors.text, fontFamily: 'DMSans_700Bold' },
   cancel: { color: colors.primary, fontFamily: 'DMSans_500Medium' },
   form: { padding: spacing.xl },
-})
+}))

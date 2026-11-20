@@ -1,5 +1,5 @@
 import { Image, ImageStyle, StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
-import { colors, radii } from '@/lib/theme'
+import { radii, makeStyles } from '@/lib/theme'
 
 const LOGO = require('../assets/icon.png')
 
@@ -26,6 +26,7 @@ export function SynapseLogo({
   style,
   imageStyle,
 }: SynapseLogoProps) {
+  const styles = useStyles()
   const s = SIZES[size]
 
   return (
@@ -53,7 +54,7 @@ export function SynapseLogo({
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   wrap: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -73,4 +74,4 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-})
+}))
