@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-18T19:07:00.548Z",
+  "generated_at": "2026-11-20T13:34:20.021Z",
   "routes": [
     {
       "route": "/",
@@ -802,6 +802,16 @@
       "classification": "REDIRECT"
     },
     {
+      "route": "/os/[slug]/admissions",
+      "source_file": "apps/web/src/app/os/[slug]/admissions/page.tsx",
+      "classification": "ACTIVE"
+    },
+    {
+      "route": "/os/[slug]/billing",
+      "source_file": "apps/web/src/app/os/[slug]/billing/page.tsx",
+      "classification": "ACTIVE"
+    },
+    {
       "route": "/os/[slug]/clinical",
       "source_file": "apps/web/src/app/os/[slug]/clinical/page.tsx",
       "classification": "REDIRECT"
@@ -1254,7 +1264,7 @@
     {
       "route": "/platform/tenants",
       "source_file": "apps/web/src/app/platform/tenants/page.tsx",
-      "classification": "REDIRECT"
+      "classification": "FEATURE_GATED"
     },
     {
       "route": "/platform/tenants/[id]",

@@ -42,13 +42,28 @@ describe("hospital BFF explicit tenant filters", () => {
     "apps/web/src/app/api/mortuary/tag/[bodyNumber]/route.ts",
     "apps/web/src/app/api/opd/encounters/[id]/disposition/route.ts",
     "apps/web/src/app/api/clinical/pathways/care-plans/route.ts",
+    "apps/web/src/app/api/hospital/billing/invoices/route.ts",
+    "apps/web/src/app/api/hospital/billing/invoices/[id]/route.ts",
+    "apps/web/src/app/api/hospital/billing/invoices/[id]/cover/route.ts",
+    "apps/web/src/app/api/ipd/admissions/route.ts",
+    "apps/web/src/app/api/ipd/admissions/[id]/discharge/route.ts",
   ]
+
+  // Routes may delegate the tenant filter to a shared loader that takes ctx.tenantId.
+  const loaders: Record<string, string> = {
+    "loadInvoice(db, ctx.tenantId": "apps/web/src/lib/hospital-billing.ts",
+  }
 
   it("scopes representative hospital healthcare queries by ctx.tenantId", () => {
     for (const file of files) {
       const text = src(file)
-      expect(text, file).toMatch(/tenant_id/)
       expect(text, file).toMatch(/ctx\.tenantId/)
+      const delegated = Object.entries(loaders).find(([call]) => text.includes(call))
+      if (delegated) {
+        expect(src(delegated[1]), delegated[1]).toMatch(/eq\('tenant_id', tenantId\)/)
+      } else {
+        expect(text, file).toMatch(/tenant_id/)
+      }
     }
   })
 

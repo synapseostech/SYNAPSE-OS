@@ -412,17 +412,38 @@ export async function materializeEncounterCharges(
     .eq("encounter_id", encounterId)
   if (rxError) throw new Error(rxError.message)
 
-  const { data: products } = await db
-    .from("pharmacy_products")
-    .select("name, price")
-    .eq("tenant_id", tenantId)
-    .eq("is_active", true)
+  const dispensedRx = ((prescriptions as Array<Record<string, unknown>> | null) ?? []).filter(
+    (rx) => String(rx.status ?? "") === "dispensed" || Boolean(rx.pharmacy_order_id),
+  )
 
-  for (const rx of (prescriptions as Array<Record<string, unknown>> | null) ?? []) {
-    const dispensed = String(rx.status ?? "") === "dispensed" || rx.pharmacy_order_id
-    if (!dispensed) continue
+  // Read the catalogue only when something was dispensed, and only the
+  // products whose name shares a word with a dispensed medication (was: every
+  // active product of the tenant on every bill view).
+  let products: Array<{ name: string; price: number | null }> = []
+  if (dispensedRx.length) {
+    const words = [
+      ...new Set(
+        dispensedRx
+          .flatMap((rx) => String(rx.medication_display ?? "").toLowerCase().split(/[^a-z0-9]+/))
+          .filter((w) => w.length >= 3),
+      ),
+    ].slice(0, 10)
+    if (words.length) {
+      const filter = words.map((w) => `name.ilike.*${w}*`).join(",")
+      const { data } = await db
+        .from("pharmacy_products")
+        .select("name, price")
+        .eq("tenant_id", tenantId)
+        .eq("is_active", true)
+        .or(filter)
+        .limit(200)
+      products = (data as Array<{ name: string; price: number | null }> | null) ?? []
+    }
+  }
+
+  for (const rx of dispensedRx) {
     const display = String(rx.medication_display ?? "")
-    const product = ((products as Array<{ name: string; price: number | null }> | null) ?? []).find(
+    const product = products.find(
       (row) =>
         display.toLowerCase().includes(String(row.name).toLowerCase()) ||
         String(row.name).toLowerCase().includes(display.toLowerCase()),

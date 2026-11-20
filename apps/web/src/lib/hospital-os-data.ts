@@ -8,6 +8,30 @@ function db() {
 }
 
 export async function listHospitalPatients(tenantId: string, q?: string) {
+  type Row = {
+    id: string
+    full_name: string
+    date_of_birth: string | null
+    dob: string | null
+    sex: string | null
+    mrn: string | null
+    created_at: string | null
+  }
+  const term = q?.trim().slice(0, 80) ?? ""
+  if (term.length >= 2) {
+    // Same search as the registration desk: name, MRN, phone or NIN in one query.
+    const { data, error } = await db().rpc("hospital_search_patients", {
+      p_tenant_id: tenantId,
+      p_query: term,
+      p_limit: 50,
+    })
+    if (!error) {
+      return ((data ?? []) as Array<{ id: string; full_name: string; mrn: string | null; dob: string | null; sex: string | null }>).map(
+        (p): Row => ({ ...p, date_of_birth: null, created_at: null }),
+      )
+    }
+    if (error.code !== "PGRST202" && error.code !== "42883") throw new Error(error.message)
+  }
   let query = db()
     .from("patients")
     .select("id, full_name, dob, sex, mrn, created_at")
@@ -15,18 +39,10 @@ export async function listHospitalPatients(tenantId: string, q?: string) {
     .eq("is_deleted", false)
     .order("created_at", { ascending: false })
     .limit(50)
-  if (q) query = query.ilike("full_name", `%${q}%`)
+  if (term) query = query.ilike("full_name", `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
   const { data, error } = await query
   if (error) throw new Error(error.message)
-  return (data ?? []) as Array<{
-    id: string
-    full_name: string
-    date_of_birth: string | null
-    dob: string | null
-    sex: string | null
-    mrn: string | null
-    created_at: string
-  }>
+  return (data ?? []) as Row[]
 }
 
 export async function getHospitalPatientChart(tenantId: string, patientId: string) {

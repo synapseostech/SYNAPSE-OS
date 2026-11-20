@@ -72,6 +72,7 @@ function chargeMemoryDb(seed?: {
         return q
       }
       q.order = () => q
+      q.or = () => q
       q.limit = () => q
       q.maybeSingle = async () => {
         const matched = table === "service_catalog"

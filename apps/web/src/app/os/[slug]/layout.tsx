@@ -37,8 +37,9 @@ export default async function PortalLayout({
   const visibleClinical = clinical.filter(({ label }) => {
     if (!role || role === "hospital_admin" || role === "platform_admin") return true;
     if (role === "receptionist") return ["My Work", "Referrals"].includes(label);
-    if (role === "nurse") return ["OPD queue", "Nursing", "My Work"].includes(label);
-    if (role === "doctor" || role === "clinical_officer") return ["OPD queue", "Billing", "My Work", "Referrals"].includes(label);
+    if (role === "nurse") return ["OPD queue", "Nursing", "Admissions", "My Work"].includes(label);
+    if (role === "doctor" || role === "clinical_officer") return ["OPD queue", "Admissions", "Billing", "My Work", "Referrals"].includes(label);
+    if (["cashier", "billing_officer", "claims_officer"].includes(role)) return ["Billing", "My Work"].includes(label);
     if (["lab_tech", "lab_scientist", "lab_admin", "lab_supervisor"].includes(role)) return ["Lab worklist", "Analyzer staging", "Instruments", "Analyzer mappings", "Specimens", "Results", "Verification", "My Work"].includes(label);
     if (role === "hospital_admin" || role === "facility_admin") return ["Lab worklist", "Analyzer staging", "Instruments", "Analyzer mappings", "Specimens", "Results", "Verification", "People", "Departments", "Facility admin", "Mortuary", "My Work"].includes(label);
     if (role.startsWith("pharmacy")) return ["Dispense"].includes(label);

@@ -1,5 +1,5 @@
 export { isContextError, type HospitalContext } from './context'
-export { requireHospitalCapability } from './guard'
-export { fetchModuleRegistry, gateHospitalModule, isHospitalModuleActive, type ModuleRegistryEntry } from './modules'
+export { requireHospitalCapability, resetHospitalCapabilityCache } from './guard'
+export { fetchModuleRegistry, gateHospitalModule, isHospitalModuleActive, resetHospitalModuleCache, type ModuleRegistryEntry } from './modules'
 export { logHospitalAudit, requireHospitalAudit, HospitalAuditRequiredError } from './audit'
 export { hospitalOutboxWrapMaterial } from './outbox-wrap'

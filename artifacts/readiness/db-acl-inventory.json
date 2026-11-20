@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-20T00:35:38.963Z",
-  "security_definer_count": 108,
+  "generated_at": "2026-11-20T13:34:20.294Z",
+  "security_definer_count": 114,
   "public_or_anon_execute_grants": [],
   "unexpected_public_execute": [],
   "possible_implicit_public_exec": [
@@ -556,6 +556,30 @@
     {
       "file": "20261119160000_pharmacy_stock_take.sql",
       "fn": "public.post_pharmacy_stock_take"
+    },
+    {
+      "file": "20261120140000_hospital_core_journey.sql",
+      "fn": "public.hospital_staff_context"
+    },
+    {
+      "file": "20261120140000_hospital_core_journey.sql",
+      "fn": "public.hospital_search_patients"
+    },
+    {
+      "file": "20261120140000_hospital_core_journey.sql",
+      "fn": "public.hospital_apply_invoice_cover"
+    },
+    {
+      "file": "20261120140000_hospital_core_journey.sql",
+      "fn": "public.hospital_record_payment"
+    },
+    {
+      "file": "20261120140000_hospital_core_journey.sql",
+      "fn": "public.hospital_admit_patient"
+    },
+    {
+      "file": "20261120140000_hospital_core_journey.sql",
+      "fn": "public.hospital_discharge_patient"
     }
   ]
 }

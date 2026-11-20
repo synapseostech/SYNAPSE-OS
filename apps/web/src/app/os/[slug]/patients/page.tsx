@@ -31,7 +31,7 @@ export default async function PatientsPage({
         <input
           name="q"
           defaultValue={q}
-          placeholder="Search by name..."
+          placeholder="Name, MRN, phone or NIN"
           className="w-full max-w-md bg-surface border border-edge rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-teal-500"
         />
       </form>
@@ -66,7 +66,7 @@ export default async function PatientsPage({
                 <td className="px-4 py-3 text-secondary-color">{p.dob ?? p.date_of_birth ?? "—"}</td>
                 <td className="px-4 py-3 text-secondary-color capitalize">{p.sex ?? "—"}</td>
                 <td className="px-4 py-3 text-secondary-color">
-                  {new Date(p.created_at).toLocaleDateString()}
+                  {p.created_at ? new Date(p.created_at).toLocaleDateString() : "—"}
                 </td>
               </tr>
             ))}

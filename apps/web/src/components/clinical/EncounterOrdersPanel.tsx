@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 
 type LabOrder = {
@@ -46,6 +46,8 @@ type Invoice = {
   total_amount: number
   paid_amount: number
   invoice_number: string | null
+  insurance_cover_amount?: number | null
+  balance_due?: number | null
 }
 
 type EncounterOrdersPanelProps = {
@@ -64,6 +66,10 @@ export function EncounterOrdersPanel({ slug, encounterId, patientId }: Encounter
   const [payAmount, setPayAmount] = useState('')
   const [payMethod, setPayMethod] = useState('cash')
   const [payStatus, setPayStatus] = useState<string | null>(null)
+  // One key per intended payment: a retry of the same submit (double click,
+  // dropped response) is deduplicated, while a second instalment of the same
+  // amount gets a fresh key after the first one succeeds.
+  const payKey = useRef<string | null>(null)
   const [paying, setPaying] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -95,7 +101,8 @@ export function EncounterOrdersPanel({ slug, encounterId, patientId }: Encounter
       setPayments(bill.payments ?? [])
       const total = Number(bill.invoice?.total_amount ?? 0)
       const paid = Number(bill.invoice?.paid_amount ?? 0)
-      const balance = Math.max(0, total - paid)
+      const cover = Number(bill.invoice?.insurance_cover_amount ?? 0)
+      const balance = Number(bill.invoice?.balance_due ?? Math.max(0, total - cover - paid))
       if (balance > 0) {
         setPayAmount((prev) => (prev ? prev : String(balance)))
       }
@@ -112,7 +119,8 @@ export function EncounterOrdersPanel({ slug, encounterId, patientId }: Encounter
     if (!amount || amount <= 0) return
     setPaying(true)
     setPayStatus(null)
-    const idempotencyKey = `encounter-pay:${encounterId}:${amount}:${payMethod}`
+    payKey.current ??= `encounter-pay:${encounterId}:${crypto.randomUUID()}`
+    const idempotencyKey = payKey.current
     const res = await fetch(`/api/hospital/billing/encounter/${encounterId}/pay`, {
       method: 'POST',
       credentials: 'include',
@@ -129,13 +137,17 @@ export function EncounterOrdersPanel({ slug, encounterId, patientId }: Encounter
       setPayStatus(typeof data.error === 'string' ? data.error : 'Payment failed')
       return
     }
+    payKey.current = null
     setPayStatus(`Receipt ${data.payment?.receiptNumber ?? 'recorded'} · status ${data.payment?.status ?? 'paid'}`)
     await load()
   }
 
   const balanceDue =
     invoice != null
-      ? Math.max(0, Number(invoice.total_amount ?? 0) - Number(invoice.paid_amount ?? 0))
+      ? Number(
+          invoice.balance_due ??
+            Math.max(0, Number(invoice.total_amount ?? 0) - Number(invoice.insurance_cover_amount ?? 0) - Number(invoice.paid_amount ?? 0)),
+        )
       : null
 
   if (!encounterId) {

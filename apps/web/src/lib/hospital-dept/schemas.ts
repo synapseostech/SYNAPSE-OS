@@ -113,3 +113,28 @@ export const edAssignBaySchema = z.object({
   patient_id: z.string().uuid(),
   bay_id: z.string().uuid(),
 })
+
+export const dischargeSchema = z.object({
+  disposition: z.enum(['home', 'referred', 'transferred', 'left_against_advice', 'absconded', 'died']),
+  summary: z.string().trim().max(4000).optional(),
+})
+
+/** Either an existing policy of the invoice's patient, or insurer + member number to record one. */
+export const invoiceCoverSchema = z
+  .object({
+    cover_amount: z.coerce.number().min(0).max(1_000_000_000),
+    policy_id: z.string().uuid().optional(),
+    insurer_name: z.string().trim().min(2).max(120).optional(),
+    member_number: z.string().trim().min(2).max(60).optional(),
+    scheme: z.string().trim().max(120).optional(),
+  })
+  .refine((v) => v.cover_amount === 0 || v.policy_id || (v.insurer_name && v.member_number), {
+    message: 'policy_id, or insurer_name and member_number, is required',
+    path: ['policy_id'],
+  })
+
+export const cashierListSchema = z.object({
+  status: z.enum(['open', 'paid', 'all']).default('open'),
+  limit: z.coerce.number().int().min(1).max(50).default(25),
+  before: z.string().datetime({ offset: true }).optional(),
+})

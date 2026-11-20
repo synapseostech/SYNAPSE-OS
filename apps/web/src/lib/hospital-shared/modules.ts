@@ -3,6 +3,20 @@ import 'server-only'
 import { NextResponse } from 'next/server'
 import { gateFeature } from '@synapse/auth/features'
 import { supabaseAdmin } from '@synapse/db/admin'
+import { HOSPITAL_GATE_TTL_MS, TtlCache } from './ttl-cache'
+
+// Platform-wide registry (changes on deploy/config) and per-hospital/per-tenant
+// grants. Only positive answers are cached, so turning a module on is instant
+// and turning it off takes effect within HOSPITAL_GATE_TTL_MS.
+const registryCache = new TtlCache<ModuleRegistryEntry[]>(5 * 60_000, 1)
+const moduleActive = new TtlCache<true>(HOSPITAL_GATE_TTL_MS)
+const featureAllowed = new TtlCache<true>(HOSPITAL_GATE_TTL_MS)
+
+export function resetHospitalModuleCache(): void {
+  registryCache.clear()
+  moduleActive.clear()
+  featureAllowed.clear()
+}
 
 export interface ModuleRegistryEntry {
   key: string
@@ -12,6 +26,8 @@ export interface ModuleRegistryEntry {
 }
 
 export async function fetchModuleRegistry(): Promise<ModuleRegistryEntry[]> {
+  const cached = registryCache.get('registry')
+  if (cached) return cached
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = supabaseAdmin as any
   const { data } = await db
@@ -21,7 +37,9 @@ export async function fetchModuleRegistry(): Promise<ModuleRegistryEntry[]> {
     .maybeSingle()
 
   if (!Array.isArray(data?.value)) return []
-  return data.value as ModuleRegistryEntry[]
+  const registry = data.value as ModuleRegistryEntry[]
+  registryCache.set('registry', registry)
+  return registry
 }
 
 export async function isHospitalModuleActive(
@@ -29,6 +47,8 @@ export async function isHospitalModuleActive(
   moduleKey: string,
 ): Promise<boolean> {
   if (moduleKey === 'core' || moduleKey === 'platform') return true
+  const key = `${hospitalId}|${moduleKey}`
+  if (moduleActive.get(key)) return true
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = supabaseAdmin as any
@@ -39,7 +59,9 @@ export async function isHospitalModuleActive(
     .eq('module_key', moduleKey)
     .maybeSingle()
 
-  return Boolean(data?.is_active)
+  const active = Boolean(data?.is_active)
+  if (active) moduleActive.set(key, true)
+  return active
 }
 
 /** Returns 403 when tenant module toggle is off; 402 when subscription feature missing. */
@@ -61,8 +83,12 @@ export async function gateHospitalModule(
   const registry = await fetchModuleRegistry()
   const entry = registry.find((m) => m.key === moduleKey)
   if (entry?.feature_key) {
-    const featureBlock = await gateFeature(tenantId, entry.feature_key)
-    if (featureBlock) return featureBlock
+    const featureKey = `${tenantId}|${entry.feature_key}`
+    if (!featureAllowed.get(featureKey)) {
+      const featureBlock = await gateFeature(tenantId, entry.feature_key)
+      if (featureBlock) return featureBlock
+      featureAllowed.set(featureKey, true)
+    }
   }
 
   return null

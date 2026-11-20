@@ -121,6 +121,11 @@ jobs:
       - name: Tenancy isolation tests
         run: npm run test:tenancy
 
+      - name: Hospital core journey (registration search, cashier + insurance, admit/discharge)
+        run: |
+          npm run test:hospital-core
+          npm run test:hospital-core-db
+
       - name: Lab Edge tests
         run: npm run test:lab-edge
 

@@ -9,7 +9,64 @@ import { publishTimelineEvent } from '@synapse/db/identity-persist'
 import { persistDomainEventsBestEffort, rowToDepartmentTask } from '@synapse/db/work-queue-persist'
 import { WorkQueue } from '@synapse/db/work-queue'
 import { isContextError, requireHospitalCapability, gateHospitalModule, logHospitalAudit } from '@/lib/hospital-shared'
-import { requireHospitalStaffContext, encounterPaymentSchema } from '@/lib/hospital-dept'
+import { requireHospitalStaffContext, encounterPaymentSchema, isMissingRpc, rpcDomainError } from '@/lib/hospital-dept'
+
+type PaymentResult = Awaited<ReturnType<typeof recordEncounterPayment>> & {
+  patientId?: string | null
+  insuranceCover?: number
+  billingTaskCompleted?: boolean
+}
+
+/**
+ * One transaction: lock the invoice, honour the idempotency key, take the
+ * next receipt number and close the billing task when settled.
+ * Returns null when the migration that adds the RPC is not applied yet.
+ */
+async function recordPaymentAtomically(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  input: {
+    tenantId: string
+    encounterId: string
+    amount: number
+    paymentMethod: string
+    paymentRef: string | null
+    idempotencyKey: string | null
+    actorId: string
+    notes: string | null
+  },
+): Promise<PaymentResult | null> {
+  const { data, error } = await db.rpc('hospital_record_payment', {
+    p_tenant_id: input.tenantId,
+    p_encounter_id: input.encounterId,
+    p_amount: input.amount,
+    p_payment_method: input.paymentMethod,
+    p_actor_id: input.actorId,
+    p_payment_ref: input.paymentRef,
+    p_idempotency_key: input.idempotencyKey,
+    p_notes: input.notes,
+  })
+  if (error) {
+    if (isMissingRpc(error)) return null
+    const mapped = rpcDomainError(error)
+    throw new Error(mapped.status === 500 ? 'payment_failed' : mapped.code)
+  }
+  const row = data as Record<string, unknown>
+  return {
+    paymentId: String(row.paymentId),
+    invoiceId: String(row.invoiceId),
+    receiptNumber: String(row.receiptNumber ?? ''),
+    amount: Number(row.amount),
+    paidAmount: Number(row.paidAmount),
+    totalAmount: Number(row.totalAmount),
+    balanceDue: Number(row.balanceDue),
+    status: String(row.status),
+    created: Boolean(row.created),
+    patientId: row.patientId ? String(row.patientId) : null,
+    insuranceCover: Number(row.insuranceCover ?? 0),
+    billingTaskCompleted: Boolean(row.billingTaskCompleted),
+  }
+}
 
 export const dynamic = 'force-dynamic'
 
@@ -37,7 +94,17 @@ export async function POST(
   const db = supabaseAdmin as any
 
   try {
-    const result = await recordEncounterPayment(db, {
+    const atomic = await recordPaymentAtomically(db, {
+      tenantId: ctx.tenantId,
+      encounterId,
+      amount: parsed.data.amount,
+      paymentMethod: parsed.data.payment_method,
+      paymentRef: parsed.data.payment_ref ?? null,
+      idempotencyKey: parsed.data.idempotency_key ?? null,
+      actorId: ctx.userId,
+      notes: parsed.data.notes ?? null,
+    })
+    const result: PaymentResult = atomic ?? await recordEncounterPayment(db, {
       tenantId: ctx.tenantId,
       hospitalId: ctx.hospitalId,
       encounterId,
@@ -50,14 +117,16 @@ export async function POST(
     })
 
     if (result.created) {
-      const { data: invoiceRow } = await db
-        .from('billing_invoices')
-        .select('patient_id')
-        .eq('id', result.invoiceId)
-        .eq('tenant_id', ctx.tenantId)
-        .maybeSingle()
-
-      const patientId = invoiceRow?.patient_id ? String(invoiceRow.patient_id) : null
+      let patientId = result.patientId ?? null
+      if (!atomic) {
+        const { data: invoiceRow } = await db
+          .from('billing_invoices')
+          .select('patient_id')
+          .eq('id', result.invoiceId)
+          .eq('tenant_id', ctx.tenantId)
+          .maybeSingle()
+        patientId = invoiceRow?.patient_id ? String(invoiceRow.patient_id) : null
+      }
       const outbox = recordPaymentRecordedEvent({
         tenantId: ctx.tenantId,
         hospitalId: ctx.hospitalId,
@@ -102,7 +171,8 @@ export async function POST(
       })
     }
 
-    if (result.balanceDue <= 0) {
+    // The RPC already closed the billing task in its transaction.
+    if (!atomic && result.balanceDue <= 0) {
       const { data: billingTaskRow } = await db
         .from('department_tasks')
         .select('*')
@@ -142,7 +212,9 @@ export async function POST(
     const status =
       message === 'INVOICE_NOT_FOUND'
         ? 404
-        : message === 'INVOICE_ALREADY_PAID' || message === 'AMOUNT_EXCEEDS_BALANCE'
+        : message === 'payment_failed'
+          ? 500
+          : message === 'INVOICE_ALREADY_PAID' || message === 'AMOUNT_EXCEEDS_BALANCE' || message === 'INVOICE_VOID'
           ? 409
           : 400
     return NextResponse.json({ error: message }, { status })

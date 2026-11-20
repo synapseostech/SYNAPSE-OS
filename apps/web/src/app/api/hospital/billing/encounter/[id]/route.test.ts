@@ -15,6 +15,8 @@ const {
   dbFrom: vi.fn(),
 }))
 
+vi.mock("server-only", () => ({}))
+
 vi.mock("@/lib/hospital-dept", () => ({
   requireHospitalStaffContext: (...args: unknown[]) => requireHospitalStaffContext(...args),
 }))
@@ -123,13 +125,15 @@ describe("GET /api/hospital/billing/encounter/[id]", () => {
         return {
           select: vi.fn().mockReturnThis(),
           eq: vi.fn().mockReturnThis(),
-          order: vi.fn().mockResolvedValue({ data: lines, error: null }),
+          order: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockResolvedValue({ data: lines, error: null }),
         }
       }
       return {
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        order: vi.fn().mockResolvedValue({ data: [], error: null }),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockResolvedValue({ data: [], error: null }),
       }
     })
     const { GET } = await import("./route")
@@ -141,6 +145,7 @@ describe("GET /api/hospital/billing/encounter/[id]", () => {
     expect(body.invoice.id).toBe(INVOICE)
     expect(body.invoice.encounter_id).toBe(ENCOUNTER)
     expect(body.lineItems).toHaveLength(1)
+    expect(body.invoice.balance_due).toBe(34800)
     expect(materializeEncounterCharges).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ tenantId: TENANT_A, encounterId: ENCOUNTER }),
