@@ -48,6 +48,8 @@ await db.exec(`
   grant usage on schema auth to anon, authenticated, service_role;
   grant usage on schema public to anon, authenticated, service_role;
   create table public.profiles (id uuid primary key, tenant_id uuid, role text, is_admin boolean default false);
+  -- As on Supabase: the BFF's service_role holds table privileges on public tables.
+  grant all on table public.profiles to service_role;
   insert into public.profiles values
     ('${OWNER}', '${TENANT}', 'pharmacy_cashier', false),
     ('${ADMIN}', '${TENANT}', 'pharmacy_admin', true),
