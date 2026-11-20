@@ -31,6 +31,7 @@
     "./scope": "./src/scope.ts",
     "./consent": "./src/consent.ts",
     "./offline": "./src/offline.ts",
+    "./stock-take": "./src/stock-take.ts",
     "./sync-contract": "./src/sync-contract.ts",
     "./sync-runtime": "./src/sync-runtime.ts",
     "./memory-sync-outbox-store": "./src/memory-sync-outbox-store.ts",
