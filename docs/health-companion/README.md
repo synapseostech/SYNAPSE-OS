@@ -33,7 +33,7 @@ Also in the Groq console: **Settings → Data Controls → turn on Zero Data Ret
 Without `GROQ_API_KEY` the page still loads, says the companion is not switched
 on, and emergency guidance still works.
 
-Apply migration `supabase/migrations/20261119120000_health_companion.sql`.
+Apply migration `supabase/migrations/20261120120000_health_companion.sql`.
 
 ## Safety model
 
