@@ -1,6 +1,6 @@
 /**
  * Profile pictures in the private `profile-avatars` bucket
- * (supabase/migrations/20261120120000_profile_avatars.sql).
+ * (supabase/migrations/20261120120200_profile_avatars.sql).
  *
  * Objects live at <tenant id | 'personal'>/<profile id>/<epoch ms>.<ext>. The
  * app uploads straight to Storage with a URL this server signs for exactly one

@@ -1,4 +1,4 @@
--- 20261120120000_profile_avatars
+-- 20261120120200_profile_avatars
 --
 -- Profile pictures for app users and pharmacy staff.
 --
