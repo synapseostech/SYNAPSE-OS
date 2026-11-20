@@ -22,6 +22,10 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, apiFetchText, ApiError } from '@/lib/api'
 import { resolveReceiptExit } from '@/lib/receipt-print-gate'
+import { buildReceiptEscPos } from '@/lib/escpos'
+import { describePrinter, isPrinterReady } from '@/lib/printer-config'
+import { usePrinterConfig } from '@/lib/printer-store'
+import { sendToConfiguredPrinter } from '@/lib/printer-transport'
 import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
 
 interface ReceiptLine {
@@ -93,12 +97,16 @@ export default function ReceiptScreen() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<null | string>(null)
   const autoPrintTried = useRef(false)
+  const { config: printer, loaded: printerLoaded, reload: reloadPrinter } = usePrinterConfig()
+  const directPrinter = printer.kind !== 'system' && isPrinterReady(printer)
   // The last print outcome this device recorded on the server. `requested`
   // means the print sheet opened; it is not proof that paper came out, so the
   // wording below never says "printed".
   const [printOutcome, setPrintOutcome] = useState<'requested' | 'failed' | null>(null)
   const [printUnrecorded, setPrintUnrecorded] = useState(false)
   const [refundOpen, setRefundOpen] = useState(false)
+  // Cashiers can sell but not void; only show the button the server will honour.
+  const [canRefund, setCanRefund] = useState(false)
   const [refundReason, setRefundReason] = useState('')
   const requiresPrintDecision = mandatory === '1'
   // The prompt is an instruction until the exit is gated: back must lead to
@@ -120,11 +128,12 @@ export default function ReceiptScreen() {
       return
     }
     try {
-      const data = await apiRequest<{ receipt: ReceiptSnapshot }>(
+      const data = await apiRequest<{ receipt: ReceiptSnapshot; canRefund?: boolean }>(
         `/api/mobile/pharmacy/sales/${saleId}/receipt`,
         { token },
       )
       setReceipt(data.receipt)
+      setCanRefund(data.canRefund === true)
     } catch {
       setReceipt(null)
     } finally {
@@ -187,11 +196,53 @@ export default function ReceiptScreen() {
     [saleId, token],
   )
 
+  const printWithDialog = async (reprint: boolean) => {
+    const html = await apiFetchText(
+      `/api/mobile/pharmacy/sales/${saleId}/receipt.pdf${reprint ? '?reprint=1' : ''}`,
+      { token },
+    )
+    await Print.printAsync({ html })
+  }
+
+  /**
+   * Send the receipt to this phone's thermal printer (ESC/POS over Wi-Fi or
+   * Bluetooth). If the printer cannot be reached the cashier may fall back to
+   * the system print dialog; declining rethrows so the attempt is recorded as
+   * failed. With no direct printer set up it is the print dialog, as before.
+   */
+  const printReceipt = async (snapshot: ReceiptSnapshot, reprint: boolean) => {
+    if (!directPrinter) {
+      await printWithDialog(reprint)
+      return
+    }
+    try {
+      await sendToConfiguredPrinter(
+        printer,
+        buildReceiptEscPos(snapshot, { paperWidth: printer.paperWidth, cut: printer.cut }),
+      )
+    } catch (err) {
+      const reason = err instanceof Error && err.message ? err.message : 'printer unavailable'
+      const useDialog = await new Promise<boolean>((resolve) =>
+        Alert.alert(
+          'Printer not reached',
+          `${describePrinter(printer)}: ${reason}`,
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Use print dialog', onPress: () => resolve(true) },
+          ],
+          { cancelable: false },
+        ),
+      )
+      if (!useDialog) throw err
+      await printWithDialog(reprint)
+    }
+  }
+
   const handlePrint = async () => {
+    if (!receipt) return
     setBusy('print')
     try {
-      const html = await apiFetchText(`/api/mobile/pharmacy/sales/${saleId}/receipt.pdf`, { token })
-      await Print.printAsync({ html })
+      await printReceipt(receipt, false)
       // Dismissing the OS print sheet is not evidence that paper came out.
       const recorded = await reportPrintOutcome('requested')
       if (!recorded) {
@@ -294,13 +345,20 @@ export default function ReceiptScreen() {
     navigation.setOptions({ gestureEnabled: !blockExit })
   }, [navigation, blockExit])
 
+  // Pick up a printer chosen in Printer setup when the cashier comes back.
+  useFocusEffect(
+    useCallback(() => {
+      void reloadPrinter()
+    }, [reloadPrinter]),
+  )
+
   useEffect(() => {
-    if (loading || !receipt || !token || autoPrintTried.current) return
+    if (loading || !receipt || !token || !printerLoaded || autoPrintTried.current) return
     if (autoprint !== '1') return
     autoPrintTried.current = true
     void handlePrint()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once after first successful load
-  }, [loading, receipt, token, autoprint])
+  }, [loading, receipt, token, printerLoaded, autoprint])
 
   const handleShare = async () => {
     setBusy('share')
@@ -378,8 +436,7 @@ export default function ReceiptScreen() {
         { method: 'POST', token },
       )
       setReceipt(data.receipt)
-      const html = await apiFetchText(`/api/mobile/pharmacy/sales/${saleId}/receipt.pdf?reprint=1`, { token })
-      await Print.printAsync({ html })
+      await printReceipt(data.receipt, true)
       // A reprint is a print attempt too; the server records that it was asked
       // for, never that paper came out, and it never creates a new sale.
       const recorded = await reportPrintOutcome('requested')
@@ -404,7 +461,15 @@ export default function ReceiptScreen() {
           <Ionicons name="chevron-back" size={22} color={colors.primary} />
         </Pressable>
         <Text style={styles.title}>Receipt</Text>
-        <View style={{ width: 48 }} />
+        <Pressable
+          onPress={() => router.push('/printer-setup' as never)}
+          hitSlop={12}
+          style={[styles.backBtn, { alignItems: 'flex-end' }]}
+          accessibilityRole="button"
+          accessibilityLabel={`Printer setup. Current printer: ${describePrinter(printer)}`}
+        >
+          <Ionicons name={directPrinter ? 'print' : 'print-outline'} size={22} color={colors.primary} />
+        </Pressable>
       </View>
 
       {loading ? (
@@ -538,7 +603,7 @@ export default function ReceiptScreen() {
               </View>
             ) : null}
 
-            {receipt.status === 'completed' ? (
+            {receipt.status === 'completed' && canRefund ? (
               <Button label="Refund / void sale" onPress={handleRefund} loading={busy === 'refund'} variant="danger" />
             ) : null}
           </View>

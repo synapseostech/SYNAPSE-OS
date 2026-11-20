@@ -69,6 +69,11 @@ export const ROLE_CAPABILITIES: Record<PharmacyCapabilityRole, readonly Pharmacy
   pharmacist: [
     "pos.sell",
     "pos.discount_limited",
+    // A pharmacist who sells counts their own cash, the same as a cashier.
+    // Without these the portal refused them a till while still letting them sell,
+    // so their cash sales attached to no session and never reconciled.
+    "shift.open_close",
+    "shift.view_own",
     "rx.verify",
     "rx.dispense",
     "inventory.read",

@@ -2,13 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@synapse/db/admin'
 import { reversePharmacySale } from '@synapse/db/inventory-rpc'
 import { attachSaleToTill } from '@synapse/db/till-service'
-import { canDo } from '../../../../../lib/capability-map'
 import {
   isMobileAuth,
-  isMobilePharmacyAdmin,
   requireMobilePharmacyAuth,
-  type MobileAuth,
 } from '../../../../../lib/mobile-pharmacy-auth'
+import { mobileCanRefund as canRefund } from '../../../../../lib/mobile-pharmacy-refund-access'
 
 export const dynamic = 'force-dynamic'
 
@@ -35,20 +33,6 @@ function paidAmount(
   else if ((method ?? '').trim().toLowerCase() === 'credit') paid = 0
   else paid = safeTotal
   return Math.min(Math.max(round(paid), 0), safeTotal)
-}
-
-/** Mirror portal pos.refund: store managers, admins/CEO, finance. */
-const REFUND_ROLES = new Set([
-  'pharmacy_admin',
-  'pharmacy_ceo',
-  'pharmacy_store_manager',
-  'finance',
-])
-
-function canRefund(auth: MobileAuth): boolean {
-  if (isMobilePharmacyAdmin(auth)) return true
-  if (REFUND_ROLES.has(auth.role)) return true
-  return canDo(auth.role, 'pos', 'refund', 'write')
 }
 
 /** GET — list voided/refunded POS sales for this tenant. */

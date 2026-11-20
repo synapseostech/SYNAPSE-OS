@@ -26,6 +26,18 @@ describe("pharmacy capabilities", () => {
     expect(roleHasCapability("pharmacy_cashier", "inventory.write")).toBe(false)
   })
 
+  it("lets every selling role run its own till, without supervisor rights", () => {
+    for (const role of ["pharmacy_cashier", "pharmacy_staff", "cashier", "pharmacist", "pharmacy_store_manager"]) {
+      expect(roleHasCapability(role, "pos.sell")).toBe(true)
+      expect(roleHasCapability(role, "shift.open_close")).toBe(true)
+    }
+    expect(roleHasCapability("pharmacist", "shift.approve_variance")).toBe(false)
+    expect(roleHasCapability("pharmacist", "pos.refund")).toBe(false)
+    expect(roleHasCapability("pharmacy_cashier", "pos.refund")).toBe(false)
+    expect(roleHasCapability("inventory_officer", "pos.sell")).toBe(false)
+    expect(roleHasCapability("inventory_officer", "shift.open_close")).toBe(false)
+  })
+
   it("grants owners all capabilities", () => {
     expect(roleHasCapability("pharmacy_admin", "settings.manage")).toBe(true)
     expect(capabilitiesForRole("pharmacy_admin").length).toBeGreaterThan(10)
