@@ -36,7 +36,7 @@ export default function MainLayout() {
           borderTopWidth: 1,
           height: tabBarHeight + insets.bottom,
           paddingBottom: Math.max(insets.bottom, 8),
-          paddingTop: 8,
+          paddingTop: 6,
           elevation: 0,
         },
         tabBarActiveTintColor: colors.primary,
@@ -215,10 +215,12 @@ export default function MainLayout() {
 }
 
 const styles = StyleSheet.create({
-  tabItem: { paddingVertical: 2 },
+  tabItem: { paddingVertical: 0 },
   tabLabel: {
     fontSize: 11,
+    lineHeight: 14,
     marginTop: 2,
+    flexShrink: 0,
     fontWeight: '600',
     fontFamily: 'DMSans_500Medium',
   },

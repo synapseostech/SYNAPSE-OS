@@ -156,14 +156,14 @@ export default function SalesScreen() {
                       {paymentLabel(item.paymentMethod)}
                       {item.cashierName ? ` · ${item.cashierName}` : ''}
                     </Text>
-                    <Text style={styles.meta}>
+                    <Text style={[styles.meta, styles.when]} numberOfLines={1}>
                       {!isCompleted(item.status) ? (
                         <Text style={{ color: tone }}>{statusLabel(item.status)} · </Text>
                       ) : null}
                       {new Date(item.createdAt).toLocaleString([], {
                         day: 'numeric',
                         month: 'short',
-                        hour: '2-digit',
+                        hour: 'numeric',
                         minute: '2-digit',
                       })}
                     </Text>
@@ -296,6 +296,7 @@ const useStyles = makeStyles((colors) => ({
     fontFamily: 'DMSans_400Regular',
     flexShrink: 1,
   },
+  when: { flexShrink: 0 },
   viewReceipt: {
     ...typography.caption,
     color: colors.primary,
