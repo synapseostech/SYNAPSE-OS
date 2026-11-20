@@ -183,7 +183,7 @@ export default function MainLayout() {
         name="profile"
         options={{
           title: isPharmacy ? 'More' : 'Profile',
-          headerTitle: isPharmacy ? 'More' : 'Profile',
+          headerShown: false,
           href: tabHref(role, 'profile'),
           tabBarIcon: ({ focused }) => (
             <TabIcon

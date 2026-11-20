@@ -22,6 +22,8 @@ export interface MobileUser {
   isAdmin: boolean
   mustChangePassword: boolean
   dashboardKind: string
+  /** Signed profile-picture URL, or null for initials. */
+  avatarUrl?: string | null
 }
 
 /** One identity can work at several facilities; the app picks before the code is sent. */

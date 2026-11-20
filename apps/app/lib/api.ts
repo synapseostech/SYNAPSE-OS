@@ -246,6 +246,7 @@ export type PharmacyStaffUser = {
   role: string | null
   isActive: boolean
   createdAt: string | null
+  avatarUrl?: string | null
 }
 
 export function fetchPharmacySuppliers(token: string) {
@@ -474,7 +475,7 @@ export function patchPharmacySettings(
 }
 
 export function fetchPharmacyUsers(token: string) {
-  return apiRequest<{ users: PharmacyStaffUser[] }>('/api/mobile/pharmacy/users', { token })
+  return apiRequest<{ users: PharmacyStaffUser[]; canManage?: boolean }>('/api/mobile/pharmacy/users', { token })
 }
 
 export function receivePharmacyStockMobile(

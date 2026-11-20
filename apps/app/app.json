@@ -20,7 +20,7 @@
       "bundleIdentifier": "tech.synapseos.app",
       "buildNumber": "1",
       "infoPlist": {
-        "NSCameraUsageDescription": "Synapse uses the camera to scan product barcodes for inventory lookup."
+        "NSCameraUsageDescription": "Synapse uses the camera to scan product barcodes and take profile pictures."
       }
     },
     "android": {
@@ -68,6 +68,13 @@
         }
       ],
       "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Synapse uses your photos so you can choose a profile picture.",
+          "cameraPermission": "Synapse uses the camera to scan product barcodes and take profile pictures."
+        }
+      ],
       "expo-font",
       [
         "expo-local-authentication",
