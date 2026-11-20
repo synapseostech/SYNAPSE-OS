@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server"
-import { getCurrentUser } from "@/lib/auth/getCurrentUser"
 import { hasPlatformAdminAccess, requirePlatformAdminApi } from "@/lib/platform/auth"
 import { getSimulationEngine, serializeRun } from "@/lib/platform/simulation-runtime"
-import { requireHospitalStaffContext } from "@/lib/hospital-dept"
-import { isContextError, requireHospitalCapability, gateHospitalModule } from "@/lib/hospital-shared"
-import { fetchHospitalLabWorklist } from "@/lib/hospital-lab-db"
+import { isLabContextError, peekLabSessionClaims, requireLabAccess } from "@/lib/lab/access"
+import { fetchLabWorklist } from "@/lib/lab/worklist"
 
 export const dynamic = "force-dynamic"
 
-export async function GET() {
-  const admin = await requirePlatformAdminApi()
+export async function GET(request: Request) {
+  // Only platform operators see the simulation; checking the signed claim
+  // first keeps everyone else at one database call.
+  const claims = await peekLabSessionClaims()
+  if (!claims) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const admin = hasPlatformAdminAccess(claims.role, claims.email) ? await requirePlatformAdminApi() : { ok: false as const }
   if (admin.ok) {
     const engine = getSimulationEngine()
     const orders = engine.lab.snapshot().orders.map((order) => {
@@ -28,20 +30,20 @@ export async function GET() {
     })
   }
 
-  const user = await getCurrentUser()
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const ctx = await requireLabAccess("order.read")
+  if (isLabContextError(ctx)) return ctx
 
-  const ctx = await requireHospitalStaffContext()
-  if (isContextError(ctx)) return ctx
-
-  const cap = await requireHospitalCapability(ctx, "order", "read", "lab")
-  if (cap) return cap
-
-  const moduleBlock = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, "lab")
-  if (moduleBlock) return moduleBlock
-
-  const { orders, error } = await fetchHospitalLabWorklist(ctx)
+  const params = new URL(request.url).searchParams
+  const { orders, nextCursor, error } = await fetchLabWorklist(ctx, {
+    section: params.get("section"),
+    view: params.get("view"),
+    status: params.get("status"),
+    encounterId: params.get("encounter_id") ?? params.get("encounterId"),
+    q: params.get("q"),
+    cursor: params.get("cursor"),
+    limit: Number(params.get("limit")) || null,
+  })
   if (error) return NextResponse.json({ error }, { status: 500 })
 
-  return NextResponse.json({ orders, results: [], runs: [], source: "database" })
+  return NextResponse.json({ orders, nextCursor, results: [], runs: [], source: "database" })
 }

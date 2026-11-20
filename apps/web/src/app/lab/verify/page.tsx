@@ -45,7 +45,7 @@ export default function LabVerifyPage() {
     refresh().catch(() => setError("Unable to load verification queue"))
   }, [])
 
-  async function act(orderId: string, action: "verify" | "release") {
+  async function act(orderId: string, action: "verify" | "release" | "authorise") {
     setBusy(orderId)
     setError(null)
     try {
@@ -104,10 +104,20 @@ export default function LabVerifyPage() {
                     <button
                       type="button"
                       disabled={busy === item.orderId}
+                      onClick={() => act(item.orderId, "authorise")}
+                      className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                    >
+                      Authorise &amp; release
+                    </button>
+                  ) : null}
+                  {item.status === "VERIFICATION_PENDING" || item.status === "RESULT_ENTERED" ? (
+                    <button
+                      type="button"
+                      disabled={busy === item.orderId}
                       onClick={() => act(item.orderId, "verify")}
                       className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-semibold text-black disabled:opacity-50"
                     >
-                      Verify
+                      Verify only
                     </button>
                   ) : null}
                   {item.status === "VERIFIED" ? (

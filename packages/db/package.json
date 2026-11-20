@@ -59,6 +59,8 @@
     "./lab-order-persist": "./src/lab-order-persist.ts",
     "./lab-result-persist": "./src/lab-result-persist.ts",
     "./lab-report": "./src/lab-report.ts",
+    "./lab-ranges": "./src/lab-ranges.ts",
+    "./barcode-code128": "./src/barcode-code128.ts",
     "./lab-golden-journey": "./src/lab-golden-journey.ts",
     "./prescription-persist": "./src/prescription-persist.ts",
     "./clinical-timeline": "./src/clinical-timeline.ts",

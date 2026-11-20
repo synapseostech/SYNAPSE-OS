@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server"
+import { LAB_SENIOR_ROLES, LAB_STAFF_ROLES } from "@/lib/lab/roles"
 import { supabaseAdmin } from "@synapse/db/admin"
 import { isContextError, gateHospitalModule, logHospitalAudit } from "@/lib/hospital-shared"
 import { requireHospitalStaffContext } from "@/lib/hospital-dept"
 
 export const dynamic = "force-dynamic"
 
-const canRead = new Set(["lab_tech", "lab_scientist", "lab_manager", "hospital_admin"])
-const canWrite = new Set(["lab_scientist", "lab_manager", "hospital_admin"])
+const canRead = LAB_STAFF_ROLES
+const canWrite = LAB_SENIOR_ROLES
 
 async function context() {
   const ctx = await requireHospitalStaffContext()

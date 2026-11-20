@@ -1,14 +1,15 @@
-import { randomBytes, randomUUID } from 'node:crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
-import { supabaseAdmin } from '@synapse/db/admin'
-import { recordLabOrderPlaced } from '@synapse/db/clinical-journey'
-import { persistLabOrderBestEffort } from '@synapse/db/lab-order-persist'
-import { isContextError, gateHospitalModule, requireHospitalCapability, logHospitalAudit } from '@/lib/hospital-shared'
-import { requireHospitalStaffContext } from '@/lib/hospital-dept'
+import { isLabContextError, requireLabAccess } from '@/lib/lab/access'
+import { createLabWalkIn, LabWalkInError } from '@/lib/lab/walk-in'
 
 export const dynamic = 'force-dynamic'
 
+/**
+ * External referral, one test (the original form). Kept for existing callers;
+ * it now goes through the same transactional registration as /api/lab/walk-in,
+ * so a failure no longer leaves a patient or visit behind, and the test is billed.
+ */
 const referralOrderSchema = z.object({
   patientName: z.string().trim().min(2).max(200),
   dateOfBirth: z.string().date().optional().or(z.literal('')),
@@ -21,73 +22,30 @@ const referralOrderSchema = z.object({
 })
 
 export async function POST(request: NextRequest) {
-  const ctx = await requireHospitalStaffContext()
-  if (isContextError(ctx)) return ctx
-  const cap = await requireHospitalCapability(ctx, 'order', 'create', 'lab')
-  if (cap) return cap
-  const labBlock = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, 'lab')
-  if (labBlock) return labBlock
+  const ctx = await requireLabAccess('order.create')
+  if (isLabContextError(ctx)) return ctx
 
   const parsed = referralOrderSchema.safeParse(await request.json().catch(() => null))
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 })
 
-  const db = supabaseAdmin as any
-  const shortFacility = ctx.hospitalId.replaceAll('-', '').slice(0, 4).toUpperCase()
-  const mrn = `${shortFacility}-${Date.now().toString(36).toUpperCase()}-${randomBytes(3).toString('hex').toUpperCase()}`
-  const { data: patient, error: patientError } = await db.from('patients').insert({
-    tenant_id: ctx.tenantId,
-    hospital_id: ctx.hospitalId,
-    mrn,
-    full_name: parsed.data.patientName,
-    dob: parsed.data.dateOfBirth || null,
-    sex: parsed.data.sex,
-    phone: parsed.data.phone || null,
-    // created_by FKs auth.users; staff ids live on profiles. Actor is recorded in audit_log.user_id.
-    is_deleted: false,
-    is_synthetic: false,
-    data_classification: 'production',
-  }).select('id,mrn,full_name').single()
-  if (patientError || !patient) return NextResponse.json({ error: patientError?.message ?? 'Patient registration failed.' }, { status: 500 })
-
-  const encounterId = randomUUID()
-  const correlationId = randomUUID()
-  const { error: encounterError } = await db.from('encounters').insert({
-    id: encounterId,
-    tenant_id: ctx.tenantId,
-    hospital_id: ctx.hospitalId,
-    patient_id: patient.id,
-    clinician_id: ctx.userId,
-    // created_by FKs auth.users; staff ids live on profiles. Actor is recorded in audit_log.user_id.
-    chief_complaint: `External laboratory referral: ${parsed.data.testName}`,
-    metadata: { encounter_type: 'LAB_REFERRAL', referral_source: parsed.data.referralSource || null },
-    correlation_id: correlationId,
-    status: 'open',
-    is_deleted: false,
-    is_synthetic: false,
-  })
-  if (encounterError) {
-    await db.from('patients').delete().eq('id', patient.id).eq('tenant_id', ctx.tenantId)
-    return NextResponse.json({ error: encounterError.message }, { status: 500 })
+  try {
+    const created = await createLabWalkIn(ctx, {
+      patient: { fullName: parsed.data.patientName, dateOfBirth: parsed.data.dateOfBirth, sex: parsed.data.sex, phone: parsed.data.phone },
+      catalogTestIds: [],
+      otherTests: [{ testName: parsed.data.testName.slice(0, 200), loincCode: parsed.data.loincCode }],
+      urgency: parsed.data.urgency,
+      source: 'referral',
+      referralSource: parsed.data.referralSource,
+      bill: true,
+    })
+    const order = created.orders[0]
+    return NextResponse.json({
+      order: { id: order?.id, testName: order?.testName, loincCode: order?.loincCode, status: 'ORDERED', encounterId: created.encounterId },
+      patient: created.patient,
+      billing: created.billing,
+    }, { status: 201 })
+  } catch (err) {
+    if (err instanceof LabWalkInError) return NextResponse.json({ error: err.code }, { status: err.status })
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'Referral failed' }, { status: 500 })
   }
-
-  const journey = recordLabOrderPlaced({
-    tenantId: ctx.tenantId,
-    hospitalId: ctx.hospitalId,
-    patientId: patient.id,
-    encounterId,
-    requesterId: ctx.userId,
-    loincCode: parsed.data.loincCode,
-    testName: parsed.data.testName,
-    urgency: parsed.data.urgency,
-    correlationId,
-  })
-  const persisted = await persistLabOrderBestEffort(db, journey.order)
-  if (!persisted.ok) {
-    await db.from('encounters').delete().eq('id', encounterId).eq('tenant_id', ctx.tenantId)
-    await db.from('patients').delete().eq('id', patient.id).eq('tenant_id', ctx.tenantId)
-    return NextResponse.json({ error: persisted.error }, { status: 500 })
-  }
-
-  await logHospitalAudit({ ctx, action: 'INSERT', tableName: 'lab_orders', recordId: journey.order.id, newValue: { source: 'external_referral', patient_id: patient.id, encounter_id: encounterId, test_name: parsed.data.testName } })
-  return NextResponse.json({ order: journey.order, patient }, { status: 201 })
 }

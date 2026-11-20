@@ -175,12 +175,27 @@ export async function POST(request: Request) {
   const observations = Array.isArray(body.observations)
     ? body.observations as Record<string, unknown>[]
     : [{ analyzerCode: body.analyzerCode, value: body.value, unit: body.unit, flags: body.flags, instrumentFlags: body.instrumentFlags }]
+  // One query for every analyte's mapping (a CBC carries ~20), not one each.
+  const analyzerCodes = [...new Set(observations
+    .map((observation) => (typeof observation.analyzerCode === "string" ? observation.analyzerCode : null))
+    .filter((code): code is string => Boolean(code)))].slice(0, 200)
+  const mappingByCode = new Map<string, { loinc_code: string | null; analyzer_name: string | null; unit: string | null }>()
+  if (analyzerCodes.length) {
+    const { data: mappings } = await db
+      .from("lab_device_test_mappings")
+      .select("analyzer_code, loinc_code, analyzer_name, unit")
+      .eq("tenant_id", bridge.tenant_id)
+      .eq("device_id", deviceId)
+      .eq("active", true)
+      .in("analyzer_code", analyzerCodes)
+    for (const row of (mappings ?? []) as Array<{ analyzer_code: string; loinc_code: string | null; analyzer_name: string | null; unit: string | null }>) {
+      mappingByCode.set(row.analyzer_code, row)
+    }
+  }
   const stagingRows = []
   for (const observation of observations) {
     const analyzerCode = typeof observation.analyzerCode === "string" ? observation.analyzerCode : null
-    const { data: mapping } = analyzerCode
-      ? await db.from("lab_device_test_mappings").select("loinc_code, analyzer_name, unit").eq("tenant_id", bridge.tenant_id).eq("device_id", deviceId).eq("analyzer_code", analyzerCode).eq("active", true).maybeSingle()
-      : { data: null }
+    const mapping = analyzerCode ? mappingByCode.get(analyzerCode) ?? null : null
     const value = typeof observation.value === "string" ? observation.value : null
     const unit = typeof observation.unit === "string" ? observation.unit : null
     const unitMismatch = detectUnitMismatch(unit, mapping?.unit)

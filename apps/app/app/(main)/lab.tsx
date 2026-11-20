@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   FlatList,
   RefreshControl,
@@ -9,6 +9,7 @@ import {
 import { EmptyState } from '@/components/ui/EmptyState'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { StatusBadge } from '@/components/ui/StatusBadge'
+import { SearchField } from '@/components/ui/SearchField'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
 import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
@@ -21,6 +22,10 @@ interface LabOrder {
   status: string
   orderedAt: string
   orderedBy: string | null
+  accessionNumber?: string | null
+  urgency?: string
+  /** Present only once the result has been released by a senior. */
+  result?: { value: string | null; unit: string | null; referenceRange: string | null; flag: string | null; isCritical: boolean } | null
 }
 
 interface LabStats {
@@ -38,31 +43,66 @@ export default function LabScreen() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
-  const load = useCallback(async () => {
+  const [query, setQuery] = useState('')
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const latest = useRef(0)
+
+  const load = useCallback(async (q = '') => {
     if (!token) {
       setLoading(false)
       return
     }
+    const request = ++latest.current
     try {
-      const data = await apiRequest<{ orders: LabOrder[]; stats: LabStats }>(
-        '/api/mobile/lab',
-        { token }
-      )
+      const path = q.trim() ? `/api/mobile/lab?q=${encodeURIComponent(q.trim())}` : '/api/mobile/lab'
+      const data = await apiRequest<{ orders: LabOrder[]; stats: LabStats; nextCursor?: string | null }>(path, { token })
+      if (request !== latest.current) return
       setOrders(data.orders)
-      setStats(data.stats)
+      setNextCursor(data.nextCursor ?? null)
+      if (!q.trim()) setStats(data.stats)
     } catch {
-      setOrders([])
+      if (request === latest.current) setOrders([])
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (request === latest.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [token])
 
-  useEffect(() => { load() }, [load])
+  const loadMore = useCallback(async () => {
+    if (!token || !nextCursor || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const q = query.trim() ? `&q=${encodeURIComponent(query.trim())}` : ''
+      const data = await apiRequest<{ orders: LabOrder[]; nextCursor?: string | null }>(
+        `/api/mobile/lab?cursor=${encodeURIComponent(nextCursor)}${q}`, { token })
+      setOrders((prev) => [...prev, ...data.orders.filter((o) => !prev.some((p) => p.id === o.id))])
+      setNextCursor(data.nextCursor ?? null)
+    } catch {
+      // keep what is on screen
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [token, nextCursor, loadingMore, query])
+
+  // Search by accession (scan or type the label) or by patient name / number.
+  useEffect(() => {
+    const handle = setTimeout(() => { load(query) }, query ? 350 : 0)
+    return () => clearTimeout(handle)
+  }, [query, load])
+
 
   return (
     <View style={styles.container}>
-      {!loading ? (
+      <SearchField
+        value={query}
+        onChangeText={setQuery}
+        placeholder="Accession, patient name or number"
+        style={styles.search}
+      />
+      {!loading && !query ? (
         <View style={styles.statsRow}>
           <StatPill label="Pending" value={stats.pending} tone="warning" />
           <StatPill label="In Progress" value={stats.inProgress} tone="info" />
@@ -79,15 +119,17 @@ export default function LabScreen() {
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={() => { setRefreshing(true); load() }}
+              onRefresh={() => { setRefreshing(true); load(query) }}
               tintColor={colors.primary}
             />
           }
           contentContainerStyle={styles.listContent}
+          onEndReachedThreshold={0.4}
+          onEndReached={loadMore}
           ListEmptyComponent={
             <EmptyState
-              title="No pending orders"
-              body="Lab orders assigned to your facility will appear here."
+              title={query ? 'Nothing found' : 'No open orders'}
+              body={query ? 'Check the accession on the label, or try the patient’s name.' : 'Lab orders for your facility will appear here.'}
               icon="flask"
             />
           }
@@ -102,6 +144,20 @@ export default function LabScreen() {
               <Text style={styles.patientName}>{item.patientName}</Text>
               {item.patientMrn ? (
                 <Text style={styles.mrn}>MRN {item.patientMrn}</Text>
+              ) : null}
+              {item.accessionNumber ? (
+                <Text style={styles.mrn}>{item.accessionNumber}{item.urgency && item.urgency !== 'ROUTINE' ? ` · ${item.urgency}` : ''}</Text>
+              ) : null}
+              {item.result ? (
+                <View style={[styles.resultRow, item.result.isCritical ? styles.resultCritical : null]}>
+                  <Text style={styles.resultValue}>
+                    {item.result.value}{item.result.unit ? ` ${item.result.unit}` : ''}
+                  </Text>
+                  <Text style={styles.resultMeta}>
+                    {item.result.isCritical ? 'CRITICAL · ' : item.result.flag && item.result.flag !== 'N' ? `${item.result.flag} · ` : ''}
+                    {item.result.referenceRange ?? ''}
+                  </Text>
+                </View>
               ) : null}
               <View style={styles.cardFooter}>
                 {item.orderedBy ? (
@@ -136,6 +192,16 @@ function formatTime(iso: string) {
 
 const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
+  search: { marginHorizontal: spacing.lg, marginTop: spacing.lg },
+  resultRow: {
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radii.md,
+    backgroundColor: colors.bgSubtle,
+  },
+  resultCritical: { borderWidth: 1, borderColor: colors.danger },
+  resultValue: { ...typography.bodyMedium, color: colors.text, fontFamily: 'DMSans_700Bold' },
+  resultMeta: { ...typography.caption, color: colors.textSecondary, fontFamily: 'DMSans_400Regular', marginTop: 2 },
   statsRow: {
     flexDirection: 'row',
     gap: spacing.sm,

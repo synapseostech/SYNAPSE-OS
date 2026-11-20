@@ -1,85 +1,46 @@
 import { NextResponse } from "next/server"
-import { getCurrentUser } from "@/lib/auth/getCurrentUser"
-import { hasPlatformAdminAccess } from "@/lib/platform/auth"
-import { requireHospitalStaffContext } from "@/lib/hospital-dept"
-import { isContextError, gateHospitalModule } from "@/lib/hospital-shared"
-import { supabaseAdmin } from "@synapse/db/admin"
+import { isLabContextError, requireLabAccess } from "@/lib/lab/access"
+import { fetchLabWorklist } from "@/lib/lab/worklist"
 
 export const dynamic = "force-dynamic"
 
-export async function GET() {
-  const user = await getCurrentUser()
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+/** Results waiting for a senior: entered, not yet authorised. Paged, one query. */
+export async function GET(request: Request) {
+  const ctx = await requireLabAccess("result.verify")
+  if (isLabContextError(ctx)) return ctx
 
-  if (hasPlatformAdminAccess(user.role, user.email)) {
-    return NextResponse.json({ items: [], source: "simulation" })
-  }
-
-  if (["lab_tech", "lab_technician"].includes(user.role ?? "")) {
-    return NextResponse.json({ error: "lab_scientist required for verification queue" }, { status: 403 })
-  }
-
-  const ctx = await requireHospitalStaffContext()
-  if (isContextError(ctx)) return ctx
-  const moduleBlock = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, "lab")
-  if (moduleBlock) return moduleBlock
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const db = supabaseAdmin as any
-  const { data: orders, error } = await db
-    .from("lab_orders")
-    .select(
-      "id, test_name, loinc_code, accession_number, workflow_status, patients(full_name)",
-    )
-    .eq("tenant_id", ctx.tenantId)
-    .eq("is_synthetic", false)
-    .in("workflow_status", ["RESULT_ENTERED", "VERIFICATION_PENDING", "VERIFIED"])
-    .order("ordered_at", { ascending: false })
-    .limit(50)
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-
-  const orderIds = (orders ?? []).map((o: { id: string }) => o.id)
-  const resultByOrder = new Map<string, Record<string, unknown>>()
-  if (orderIds.length) {
-    const { data: results } = await db
-      .from("lab_results")
-      .select(
-        "id, lab_order_id, result_value, unit, reference_range, is_critical, is_abnormal, abnormal_flag, analyzer, result_source, entered_at, created_at",
-      )
-      .eq("tenant_id", ctx.tenantId)
-      .in("lab_order_id", orderIds)
-    for (const r of results ?? []) {
-      resultByOrder.set(String(r.lab_order_id), r)
-    }
-  }
-
-  const items = (orders ?? []).map((o: Record<string, unknown>) => {
-    const patient = o.patients as { full_name?: string | null } | null
-    const r = resultByOrder.get(String(o.id))
-    return {
-      orderId: String(o.id),
-      testName: String(o.test_name),
-      loincCode: String(o.loinc_code ?? ""),
-      accessionNumber: (o.accession_number as string | null) ?? null,
-      patientName: patient?.full_name ?? null,
-      status: String(o.workflow_status),
-      result: r
-        ? {
-            id: String(r.id),
-            resultValue: String(r.result_value),
-            unit: (r.unit as string | null) ?? null,
-            referenceRange: (r.reference_range as string | null) ?? null,
-            isCritical: Boolean(r.is_critical),
-            isAbnormal: Boolean(r.is_abnormal),
-            flag: (r.abnormal_flag as string | null) ?? null,
-            analyzer: (r.analyzer as string | null) ?? null,
-            source: (r.result_source as string | null) ?? null,
-            enteredAt: (r.entered_at as string | null) ?? (r.created_at as string | null) ?? null,
-          }
-        : null,
-    }
+  const params = new URL(request.url).searchParams
+  const { orders, nextCursor, error } = await fetchLabWorklist(ctx, {
+    view: "verify",
+    section: params.get("section"),
+    cursor: params.get("cursor"),
+    limit: Number(params.get("limit")) || 50,
   })
+  if (error) return NextResponse.json({ error }, { status: 500 })
 
-  return NextResponse.json({ items, source: "database" })
+  const items = orders.map((o) => ({
+    orderId: o.id,
+    testName: o.testName,
+    loincCode: o.loincCode,
+    section: o.section,
+    urgency: o.urgency,
+    accessionNumber: o.accessionNumber,
+    patientName: o.patientName,
+    status: o.status,
+    result: o.hasResult
+      ? {
+          id: o.resultId,
+          resultValue: o.resultValue ?? "",
+          unit: o.unit,
+          referenceRange: o.referenceRange,
+          isCritical: o.isCritical,
+          isAbnormal: Boolean(o.flag && o.flag !== "N"),
+          flag: o.flag,
+          analyzer: null,
+          source: null,
+          enteredAt: null,
+        }
+      : null,
+  }))
+  return NextResponse.json({ items, nextCursor, source: "database" })
 }

@@ -783,6 +783,19 @@ async function provisionLaboratoryFacility(
     }
   }
 
+  // A new laboratory starts with the starter test list (no prices) so the
+  // desk can register a walk-in on day one. Best effort: the lab admin can
+  // load it later from Catalogue, and a missing function (migration
+  // 20261121093700 not applied yet) must not fail provisioning.
+  if (result.tenantId && typeof (db as { rpc?: unknown }).rpc === "function") {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (db as any).rpc("lab_seed_starter_catalog", { p_tenant_id: result.tenantId })
+    } catch {
+      // ignored: see above
+    }
+  }
+
   return {
     ...result,
     facilityType: "laboratory",

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { LAB_MANAGER_ROLES, LAB_STAFF_ROLES } from "@/lib/lab/roles"
 import { getCurrentUser } from "@/lib/auth/getCurrentUser"
 import { requireHospitalStaffContext } from "@/lib/hospital-dept"
 import { isContextError, gateHospitalModule, logHospitalAudit } from "@/lib/hospital-shared"
@@ -14,8 +15,8 @@ import {
 
 export const dynamic = "force-dynamic"
 
-const canRead = new Set(["lab_tech", "lab_scientist", "lab_manager", "hospital_admin"])
-const canWrite = new Set(["lab_manager", "hospital_admin"])
+const canRead = LAB_STAFF_ROLES
+const canWrite = LAB_MANAGER_ROLES
 
 async function labContext(write = false) {
   const user = await getCurrentUser()

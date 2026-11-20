@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { LAB_SENIOR_ROLES } from "@/lib/lab/roles"
 import { supabaseAdmin } from "@synapse/db/admin"
 import { isContextError, requireHospitalCapability, gateHospitalModule, logHospitalAudit } from "@/lib/hospital-shared"
 import { requireHospitalStaffContext } from "@/lib/hospital-dept"
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic"
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const ctx = await requireHospitalStaffContext()
   if (isContextError(ctx)) return ctx
-  if (ctx.role !== "lab_scientist" && ctx.role !== "lab_manager" && ctx.role !== "hospital_admin") return NextResponse.json({ error: "Lab scientist review required" }, { status: 403 })
+  if (!LAB_SENIOR_ROLES.has(ctx.role)) return NextResponse.json({ error: "Lab scientist review required" }, { status: 403 })
   const cap = await requireHospitalCapability(ctx, "result", "enter", "lab")
   if (cap) return cap
   const moduleBlock = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, "lab")
