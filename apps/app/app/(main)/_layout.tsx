@@ -1,6 +1,7 @@
 import { Tabs } from 'expo-router'
 import { Ionicons } from '@expo/vector-icons'
-import { Platform, StyleSheet } from 'react-native'
+import { StyleSheet } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAuth } from '@/lib/auth'
 import { dashboardKindForRole } from '@/lib/roles'
 import { isTabVisible } from '@/lib/navigation'
@@ -22,6 +23,7 @@ function tabHref(role: string | undefined, tab: Parameters<typeof isTabVisible>[
 export default function MainLayout() {
   const { user } = useAuth()
   const { colors } = useTheme()
+  const insets = useSafeAreaInsets()
   const role = user?.role
   const isPharmacy = dashboardKindForRole(role) === 'pharmacy'
 
@@ -32,14 +34,15 @@ export default function MainLayout() {
           backgroundColor: colors.bgSubtle,
           borderTopColor: colors.border,
           borderTopWidth: 1,
-          height: tabBarHeight,
-          paddingBottom: Platform.OS === 'ios' ? 8 : 6,
-          paddingTop: 6,
+          height: tabBarHeight + insets.bottom,
+          paddingBottom: Math.max(insets.bottom, 8),
+          paddingTop: 8,
           elevation: 0,
         },
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textMuted,
         tabBarLabelStyle: styles.tabLabel,
+        tabBarItemStyle: styles.tabItem,
         headerStyle: {
           backgroundColor: colors.bg,
           borderBottomWidth: 1,
@@ -212,8 +215,10 @@ export default function MainLayout() {
 }
 
 const styles = StyleSheet.create({
+  tabItem: { paddingVertical: 2 },
   tabLabel: {
     fontSize: 11,
+    marginTop: 2,
     fontWeight: '600',
     fontFamily: 'DMSans_500Medium',
   },

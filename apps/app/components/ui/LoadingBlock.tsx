@@ -1,25 +1,35 @@
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
-import { spacing, typography, makeStyles, useTheme } from '@/lib/theme'
+import { Text, View } from 'react-native'
+import { makeStyles, spacing, typography } from '@/lib/theme'
+import { SkeletonList } from './Skeleton'
 
-export function LoadingBlock({ message = 'Loading…' }: { message?: string }) {
+/**
+ * Loading placeholder for a screen or list. Shows skeleton rows shaped like
+ * the content instead of a spinner, so the layout does not jump when data
+ * arrives. `message` is kept for screen readers and as a quiet caption.
+ */
+export function LoadingBlock({
+  message = 'Loading…',
+  rows = 5,
+  avatar = false,
+}: {
+  message?: string
+  rows?: number
+  avatar?: boolean
+}) {
   const styles = useStyles()
-  const { colors } = useTheme()
   return (
-    <View style={styles.wrap}>
-      <ActivityIndicator color={colors.primary} size="large" />
+    <View style={styles.wrap} accessibilityLabel={message} accessibilityRole="progressbar">
       <Text style={styles.text}>{message}</Text>
+      <SkeletonList rows={rows} avatar={avatar} />
     </View>
   )
 }
 
 const useStyles = makeStyles((colors) => ({
-  wrap: {
-    paddingVertical: spacing.xxxl * 2,
-    alignItems: 'center',
-    gap: spacing.lg,
-  },
+  wrap: { paddingVertical: spacing.md, gap: spacing.sm },
   text: {
-    ...typography.bodyMedium,
+    ...typography.caption,
     color: colors.textSecondary,
+    fontFamily: 'DMSans_500Medium',
   },
 }))
