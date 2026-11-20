@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Alert, Linking, Pressable, ScrollView, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { ListRow } from '@/components/ui/ListRow'
 import { SearchField } from '@/components/ui/SearchField'
 import { useAuth } from '@/lib/auth'
+import { PHARMACY_DESTINATIONS, matchDestination, type DestinationGroup } from '@/lib/destinations'
 import { selectionHaptic } from '@/lib/haptics'
 import { dashboardKindForRole, formatRole } from '@/lib/roles'
 import {
@@ -32,15 +33,6 @@ const PHARM_PORTAL = 'https://pharm.synapseos.tech/portal'
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name']
 
-type NavItem = {
-  label: string
-  subtitle?: string
-  icon: IoniconName
-  route?: string
-  onPress?: () => void
-}
-
-type NavGroup = { title: string; tint: 'primary' | 'teal' | 'gold' | 'info' | 'success'; items: NavItem[] }
 
 export default function ProfileScreen() {
   const styles = useStyles()
@@ -88,81 +80,11 @@ export default function ProfileScreen() {
 
   const go = (route: string) => router.push(route as never)
 
-  const groups: NavGroup[] = useMemo(
-    () => [
-      {
-        title: 'Sales & POS',
-        tint: 'primary',
-        items: [
-          { label: 'Point of sale', subtitle: 'Complete a sale', icon: 'cart-outline', route: '/pos' },
-          { label: 'Till / cashier session', subtitle: 'Open, count, and close', icon: 'wallet-outline', route: '/till' },
-          { label: 'Sync status', subtitle: 'Pending, failed, needs review', icon: 'cloud-upload-outline', route: '/sync-status' },
-          { label: 'Sales history', subtitle: 'Receipts & lookups', icon: 'cash-outline', route: '/(main)/sales' },
-          { label: 'Transactions', subtitle: 'Counter & order history', icon: 'receipt-outline', route: '/transactions' },
-          { label: 'Refunds', subtitle: 'Reverse a sale', icon: 'return-down-back-outline', route: '/refunds' },
-          { label: 'Reports', subtitle: 'Sales & inventory', icon: 'bar-chart-outline', route: '/reports' },
-        ],
-      },
-      {
-        title: 'Inventory',
-        tint: 'teal',
-        items: [
-          { label: 'Inventory', subtitle: 'Stock on hand', icon: 'cube-outline', route: '/(main)/stock' },
-          { label: 'Receive stock (GRN)', subtitle: 'Batch + expiry', icon: 'download-outline', route: '/receive-stock' },
-          { label: 'Stock transfers', subtitle: 'Ship and receive between stores', icon: 'swap-horizontal-outline', route: '/transfers' },
-          { label: 'Stock import', subtitle: 'CSV / Excel', icon: 'cloud-upload-outline', route: '/stock-import' },
-          { label: 'Tally import', subtitle: 'Full accounting cut-over', icon: 'document-attach-outline', route: '/tally-import' },
-          { label: 'Import assistant', subtitle: 'Migration history', icon: 'cloud-done-outline', route: '/import-assistant' },
-          { label: 'Barcode lookup', subtitle: 'Scan or type', icon: 'barcode-outline', route: '/barcode-scan' },
-        ],
-      },
-      {
-        title: 'Purchasing & orders',
-        tint: 'gold',
-        items: [
-          { label: 'Purchases', subtitle: 'Walk-in receive + history', icon: 'cart-outline', route: '/(main)/purchases' },
-          { label: 'Orders', subtitle: 'Customer / counter orders', icon: 'bag-handle-outline', route: '/(main)/orders' },
-          { label: 'Purchase orders', subtitle: 'Supplier POs', icon: 'clipboard-outline', route: '/(main)/purchase-orders' },
-          { label: 'Suppliers', subtitle: 'Vendor directory', icon: 'business-outline', route: '/suppliers' },
-        ],
-      },
-      {
-        title: 'Customers & finance',
-        tint: 'info',
-        items: [
-          { label: 'Customers', subtitle: 'Directory & accounts', icon: 'people-circle-outline', route: '/customers' },
-          { label: 'Credit ledger', subtitle: 'Balances & repayments', icon: 'book-outline', route: '/credit-ledger' },
-          { label: 'Accounting', subtitle: 'Trial balance & journals', icon: 'calculator-outline', route: '/accounting' },
-        ],
-      },
-      {
-        title: 'Admin',
-        tint: 'success',
-        items: [
-          { label: 'Staff directory', subtitle: 'Faces, roles and status', icon: 'id-card-outline', route: '/(main)/pharmacy-users' },
-          { label: 'Staff & users', subtitle: 'Roles & temp passwords', icon: 'people-outline', route: '/users' },
-          { label: 'Pharmacy settings', subtitle: 'Receipt & printer', icon: 'settings-outline', route: '/settings' },
-          { label: 'Branches', subtitle: 'Sites & satellites', icon: 'business-outline', route: '/branches' },
-          { label: 'Activity log', subtitle: 'Audit trail', icon: 'list-outline', route: '/activity-log' },
-          { label: 'Billing & subscription', subtitle: 'Plan status', icon: 'card-outline', route: '/billing' },
-          { label: 'Open web portal', subtitle: 'Full desktop workspace', icon: 'globe-outline', onPress: openWebPortal },
-        ],
-      },
-    ],
-    // openWebPortal only depends on kind/role, which re-renders this anyway.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [kind, user?.role],
-  )
-
-  const q = query.trim().toLowerCase()
-  const visibleGroups = q
-    ? groups
-        .map((g) => ({
-          ...g,
-          items: g.items.filter((i) => `${i.label} ${i.subtitle ?? ''} ${g.title}`.toLowerCase().includes(q)),
-        }))
-        .filter((g) => g.items.length > 0)
-    : groups
+  const visibleGroups = query.trim()
+    ? PHARMACY_DESTINATIONS.map((g) => ({ ...g, items: g.items.filter((i) => matchDestination(i, g, query)) })).filter(
+        (g) => g.items.length > 0,
+      )
+    : PHARMACY_DESTINATIONS
 
   const themeOptions: Array<{ key: ThemePreference; label: string; icon: IoniconName }> = [
     { key: 'system', label: 'System', icon: 'phone-portrait-outline' },
@@ -170,7 +92,7 @@ export default function ProfileScreen() {
     { key: 'dark', label: 'Dark', icon: 'moon-outline' },
   ]
 
-  const tintColor = (t: NavGroup['tint']) =>
+  const tintColor = (t: DestinationGroup['tint']) =>
     t === 'teal' ? colors.teal : t === 'gold' ? colors.gold : t === 'info' ? colors.info : t === 'success' ? colors.success : colors.primary
 
   return (
@@ -249,7 +171,7 @@ export default function ProfileScreen() {
                       subtitle={item.subtitle}
                       icon={item.icon}
                       iconColor={tintColor(g.tint)}
-                      onPress={() => (item.onPress ? item.onPress() : item.route ? go(item.route) : undefined)}
+                      onPress={() => (item.action === 'web-portal' ? openWebPortal() : item.route ? go(item.route) : undefined)}
                     />
                   </View>
                 ))}
