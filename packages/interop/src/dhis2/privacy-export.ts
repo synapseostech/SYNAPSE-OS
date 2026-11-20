@@ -5,7 +5,7 @@
  * sub-period timestamps. ICD-11 codes must already be verified.
  */
 
-import { isIcd11Code as isKnownIcd11Stem } from "../terminology/icd11-index"
+import { icd11Ancestors, isIcd11Code as isKnownIcd11Stem } from "../terminology/icd11-index"
 import type { PatientContextPacket } from "../intelligence/kernel"
 import {
   DEFAULT_PRIVACY_EXPORT_POLICY,
@@ -190,8 +190,13 @@ function resolveDataElement(
   stem: string,
   mappings: Dhis2DataElementMapping[],
 ): string | null {
-  const hit = mappings.find((m) => m.icd11StemCode === stem)
-  return hit?.dhis2DataElementId ?? null
+  // The most specific mapping wins: 1F40.Z uses a 1F40.Z mapping if there is
+  // one, otherwise the one for 1F40 (malaria due to P. falciparum).
+  for (const code of icd11Ancestors(stem)) {
+    const hit = mappings.find((m) => m.icd11StemCode.toUpperCase() === code)
+    if (hit) return hit.dhis2DataElementId
+  }
+  return null
 }
 
 /**
@@ -228,10 +233,6 @@ export function buildAggregateDataValueSet(input: BuildAggregateInput): BuildAgg
   for (const fact of facts) {
     if (!isKnownIcd11Stem(fact.icd11StemCode)) continue
     if (fact.period !== input.period) continue
-    if (fact.count < policy.minCellCount) {
-      suppressedCells += 1
-      continue
-    }
     const dataElement = resolveDataElement(fact.icd11StemCode, input.dataElementMappings)
     if (!dataElement) continue
     const orgUnit = resolveOrgUnit(fact.localOrgKey, input.orgUnitMappings, input.orgUnit)
@@ -247,6 +248,15 @@ export function buildAggregateDataValueSet(input: BuildAggregateInput): BuildAgg
         period,
         value: String(fact.count),
       })
+    }
+  }
+
+  // Small-cell suppression applies to what DHIS2 receives (the summed cell),
+  // not to each code that fed it: 2 x 1F40 + 2 x 1F40.Z is a cell of 4.
+  for (const [key, value] of buckets) {
+    if (Number(value.value) < policy.minCellCount) {
+      buckets.delete(key)
+      suppressedCells += 1
     }
   }
 
