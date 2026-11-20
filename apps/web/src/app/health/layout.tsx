@@ -18,7 +18,7 @@ const NAV = [
   { href: '/health/cycle', label: 'Cycle', icon: Moon },
   { href: '/health/diet', label: 'Diet', icon: Utensils },
   { href: '/health/habits', label: 'Habits', icon: Activity },
-  { href: '/health/coach', label: 'Coach', icon: Bot },
+  { href: '/health/coach', label: 'Companion', icon: Bot },
 ]
 
 export default function HealthLayout({ children }: { children: React.ReactNode }) {
