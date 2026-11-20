@@ -5,6 +5,7 @@ import { supabaseAdmin } from '@synapse/db/admin'
 import { trySendActivationEmail } from '../../../../../lib/auth/activation-email'
 import { handleExistingAccountSignup, signupAccepted } from '../../../../../lib/auth/signup-response'
 import { checkRateLimit, rateLimiters } from '../../../../../lib/rate-limit'
+import { normaliseSignupSex } from '../../../../../lib/personal-health/sex'
 
 export async function POST(req: NextRequest) {
   let userId: string | null = null
@@ -22,7 +23,9 @@ export async function POST(req: NextRequest) {
     const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
     const phone = typeof body.phone === 'string' ? body.phone.trim() : ''
     const dob = typeof body.dob === 'string' ? body.dob : ''
-    const gender = typeof body.gender === 'string' ? body.gender : ''
+    // `sex` is sex recorded at birth (female | male | intersex | undisclosed);
+    // older app builds sent it as `gender`. `gender_identity` is optional and free.
+    const { clinicalSex, genderIdentity } = normaliseSignupSex(body)
     const password = typeof body.password === 'string' ? body.password : ''
 
     if (!firstName || !lastName || !email || !password) {
@@ -70,7 +73,7 @@ export async function POST(req: NextRequest) {
       full_name: fullName,
       email,
       phone: phone || null,
-      gender: gender || null,
+      gender: genderIdentity,
       date_of_birth: dob || null,
       role: 'patient',
       password_hash: passwordHash,
@@ -94,7 +97,7 @@ export async function POST(req: NextRequest) {
       full_name: fullName,
       phone: phone || null,
       date_of_birth: dob || null,
-      sex: gender || null,
+      sex: clinicalSex,
     })
 
     if (patientErr) {

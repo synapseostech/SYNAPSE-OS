@@ -212,7 +212,7 @@ export default function PatientSignupPage() {
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-muted)' }}>Gender</label>
+              <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-muted)' }}>Sex at birth (optional)</label>
               <select
                 value={form.gender}
                 onChange={e => set('gender', e.target.value)}
@@ -222,7 +222,8 @@ export default function PatientSignupPage() {
                 <option value="">Select</option>
                 <option value="female">Female</option>
                 <option value="male">Male</option>
-                <option value="other">Other</option>
+                <option value="intersex">Intersex</option>
+                <option value="undisclosed">Prefer not to say</option>
               </select>
             </div>
           </div>

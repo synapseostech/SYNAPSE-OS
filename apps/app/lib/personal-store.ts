@@ -144,6 +144,20 @@ CREATE TABLE IF NOT EXISTS personal_activity_goal (
   weekly_minutes INTEGER NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS personal_preferences (
+  user_id TEXT PRIMARY KEY NOT NULL,
+  sex_at_birth TEXT,
+  gender TEXT,
+  sections TEXT,
+  pregnancy_due_date TEXT,
+  seeded_from_signup INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS personal_wearable_cache (
+  user_id TEXT PRIMARY KEY NOT NULL,
+  snapshot TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS personal_medication_supply (
   medication_id TEXT PRIMARY KEY NOT NULL,
   user_id TEXT NOT NULL,
@@ -1065,4 +1079,109 @@ export async function addSymptom(input: {
 export async function deleteSymptom(userId: string, id: string): Promise<void> {
   const handle = await db()
   await handle.runAsync(`DELETE FROM personal_symptoms WHERE user_id = ? AND id = ?`, userId, id)
+}
+
+// ── Preferences: sex at birth, gender, which sections show ──────────────────
+
+export type HealthPreferences = {
+  sexAtBirth: string | null
+  gender: string | null
+  /** JSON-decoded saved section choices; missing keys fall back to defaults. */
+  sections: Record<string, boolean> | null
+  pregnancyDueDate: string | null
+  seededFromSignup: boolean
+}
+
+type PreferencesRow = {
+  sex_at_birth: string | null
+  gender: string | null
+  sections: string | null
+  pregnancy_due_date: string | null
+  seeded_from_signup: number
+}
+
+function parseSections(raw: string | null): Record<string, boolean> | null {
+  if (!raw) return null
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!value || typeof value !== 'object') return null
+    const out: Record<string, boolean> = {}
+    for (const [key, flag] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof flag === 'boolean') out[key] = flag
+    }
+    return out
+  } catch {
+    return null
+  }
+}
+
+export async function getHealthPreferences(userId: string): Promise<HealthPreferences> {
+  const handle = await db()
+  const row = await handle.getFirstAsync<PreferencesRow>(
+    `SELECT sex_at_birth, gender, sections, pregnancy_due_date, seeded_from_signup
+       FROM personal_preferences WHERE user_id = ?`,
+    userId,
+  )
+  return {
+    sexAtBirth: row?.sex_at_birth ?? null,
+    gender: row?.gender ?? null,
+    sections: parseSections(row?.sections ?? null),
+    pregnancyDueDate: row?.pregnancy_due_date ?? null,
+    seededFromSignup: row?.seeded_from_signup === 1,
+  }
+}
+
+export async function saveHealthPreferences(userId: string, input: HealthPreferences): Promise<void> {
+  const handle = await db()
+  await handle.runAsync(
+    `INSERT INTO personal_preferences
+       (user_id, sex_at_birth, gender, sections, pregnancy_due_date, seeded_from_signup, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       sex_at_birth = excluded.sex_at_birth,
+       gender = excluded.gender,
+       sections = excluded.sections,
+       pregnancy_due_date = excluded.pregnancy_due_date,
+       seeded_from_signup = excluded.seeded_from_signup,
+       updated_at = excluded.updated_at`,
+    userId,
+    input.sexAtBirth,
+    input.gender?.trim() || null,
+    input.sections ? JSON.stringify(input.sections) : null,
+    input.pregnancyDueDate?.trim() || null,
+    input.seededFromSignup ? 1 : 0,
+    new Date().toISOString(),
+  )
+}
+
+// ── Wearable snapshot cache (offline Today screen) ──────────────────────────
+
+export async function getWearableCache<T>(userId: string): Promise<T | null> {
+  const handle = await db()
+  const row = await handle.getFirstAsync<{ snapshot: string }>(
+    `SELECT snapshot FROM personal_wearable_cache WHERE user_id = ?`,
+    userId,
+  )
+  if (!row) return null
+  try {
+    return JSON.parse(row.snapshot) as T
+  } catch {
+    return null
+  }
+}
+
+export async function saveWearableCache(userId: string, snapshot: unknown): Promise<void> {
+  const handle = await db()
+  await handle.runAsync(
+    `INSERT INTO personal_wearable_cache (user_id, snapshot, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at`,
+    userId,
+    JSON.stringify(snapshot),
+    new Date().toISOString(),
+  )
+}
+
+export async function clearWearableCache(userId: string): Promise<void> {
+  const handle = await db()
+  await handle.runAsync(`DELETE FROM personal_wearable_cache WHERE user_id = ?`, userId)
 }

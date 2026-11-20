@@ -209,6 +209,8 @@ export default function ProfileScreen() {
 
       <Text style={[styles.sectionTitle, { color: colors.primary }]}>Account</Text>
       <View style={styles.actions}>
+        {/* Staff own a personal health record on the same login, private to them. */}
+        <Button label="My health (private to you)" onPress={() => router.push('/(personal)/today' as never)} />
         <Button
           label="Change password"
           onPress={() => router.push('/change-password' as never)}

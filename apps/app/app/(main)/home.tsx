@@ -178,7 +178,7 @@ export default function DashboardScreen() {
         </View>
         <View style={styles.listBody}>
           <Text style={styles.actionText}>My health</Text>
-          <Text style={styles.listSubtitle}>Reminders, medicines and your coach</Text>
+          <Text style={styles.listSubtitle}>Private to you. Your facility cannot see it.</Text>
         </View>
         <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
       </Pressable>
