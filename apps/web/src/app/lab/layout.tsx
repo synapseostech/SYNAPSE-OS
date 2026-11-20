@@ -10,6 +10,7 @@ import { SynapseLogo } from "@/components/SynapseLogo"
 import { signOutHospitalClinical } from "@/lib/clinical-offline/sign-out-hospital"
 
 const links = [
+  { href: "/lab", label: "Dashboard", icon: Gauge },
   { href: "/lab/orders", label: "Worklist", icon: ClipboardList },
   { href: "/lab/walk-in", label: "Walk-in", icon: UserPlus },
   { href: "/lab/critical", label: "Critical values", icon: AlertTriangle },

@@ -7,6 +7,7 @@ import { LAB_SECTIONS, LAB_SECTION_LABEL } from "@/lib/lab/sections"
 
 type Order = {
   id: string
+  patientId: string | null
   testName: string
   loincCode: string
   section: string
@@ -53,6 +54,12 @@ export default function LabWorklistPage() {
   const [values, setValues] = useState<Record<string, string>>({})
   const [rejecting, setRejecting] = useState<string | null>(null)
   const latest = useRef(0)
+
+  // Deep links from the dashboard: /lab/orders?section=haematology
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("section")
+    if (fromUrl && (LAB_SECTIONS as readonly string[]).includes(fromUrl)) setSection(fromUrl)
+  }, [])
 
   const query = useCallback((cursor?: string | null) => {
     const params = new URLSearchParams({ view, limit: "30" })
@@ -176,7 +183,11 @@ export default function LabWorklistPage() {
                       {order.isCritical ? <span className="ml-2 rounded bg-rose-600 px-1.5 py-0.5 text-[11px] font-semibold text-white">CRITICAL</span> : null}
                     </p>
                     <p className="text-xs text-muted-color">
-                      {order.patientName ?? "Unknown patient"}{order.synapseId ? ` · ${order.synapseId}` : ""} · {LAB_SECTION_LABEL[order.section as keyof typeof LAB_SECTION_LABEL] ?? order.section}
+                      {order.patientId ? (
+                        <Link href={`/lab/patients/${order.patientId}`} className="underline decoration-dotted hover:text-primary-color" title="All results for this patient">
+                          {order.patientName ?? "Unknown patient"}
+                        </Link>
+                      ) : (order.patientName ?? "Unknown patient")}{order.synapseId ? ` · ${order.synapseId}` : ""} · {LAB_SECTION_LABEL[order.section as keyof typeof LAB_SECTION_LABEL] ?? order.section}
                       {" · "}{STATUS_LABEL[s] ?? s}{order.source !== "hospital" ? ` · ${order.source.replace("_", "-")}` : ""}
                     </p>
                     {order.accessionNumber ? <p className="mt-1 font-mono text-xs text-amber-700 dark:text-amber-200">{order.accessionNumber}</p> : null}
