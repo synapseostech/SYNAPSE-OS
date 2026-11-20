@@ -55,31 +55,33 @@ export function icd11TitleToPlainText(raw: unknown): string {
 
 /** Curated 2026-01 MMS subset for tests and WHO-API outage fallback. */
 export const ICD11_SEED_CACHE: Icd11Entity[] = [
-  entity("1G40", "Sepsis without septic shock", "1435254666"),
-  entity("1G41", "Septic shock", "1445432654"),
-  entity("1F40", "Malaria due to Plasmodium falciparum", "585833267"),
-  entity("1F41", "Malaria due to Plasmodium vivax", "1445432001"),
-  entity("CA40", "Pneumonia", "1420522198"),
-  entity("CA40.0", "Bacterial pneumonia", "1420522199"),
-  entity("5A21", "Diabetic ketoacidosis", "129607455"),
-  entity("BA00", "Essential hypertension", "163930425"),
-  entity("BA03", "Hypertensive crisis", "163930499"),
-  entity("GB60", "Acute kidney failure", "774206215"),
-  entity("CA23", "Asthma", "136010214"),
-  entity("JA24", "Pre-eclampsia", "1137162418"),
-  entity("JA25", "Eclampsia", "1137162419"),
-  entity("JA43", "Postpartum haemorrhage", "1137162500"),
-  entity("1C62", "HIV disease", "151662322"),
-  entity("1B10", "Tuberculosis", "1435254001"),
-  entity("1A07", "Typhoid fever", "1435254111"),
+  // Codes, titles and foundation ids copied from the WHO 2026-01 Simple
+  // Tabulation (icd11-mms-data.ts). icd11-index.test.ts checks each one.
+  entity("1G40", "Sepsis without septic shock", "622600769"),
+  entity("1G41", "Sepsis with septic shock", "1683090852"),
+  entity("1F40", "Malaria due to Plasmodium falciparum", "579583286"),
+  entity("1F41", "Malaria due to Plasmodium vivax", "1203794080"),
+  entity("CA40", "Pneumonia", "142052508"),
+  entity("CA40.0", "Bacterial pneumonia", "1323682030"),
+  entity("5A22.0", "Diabetic ketoacidosis without coma", "540530695"),
+  entity("BA00", "Essential hypertension", "761947693"),
+  entity("BA03", "Hypertensive crisis", "1002963291"),
+  entity("GB60", "Acute kidney failure", "476391827"),
+  entity("CA23", "Asthma", "1656445230"),
+  entity("JA24", "Pre-eclampsia", "229121159"),
+  entity("JA25", "Eclampsia", "1759760659"),
+  entity("JA43", "Postpartum haemorrhage", "820245648"),
+  entity("1C62", "Human immunodeficiency virus disease without mention of tuberculosis or malaria", "1508081745"),
+  entity("1B10", "Tuberculosis of the respiratory system", "882244568"),
+  entity("1A07", "Typhoid fever", "1528414070"),
 ]
 
 function entity(stemCode: string, title: string, foundationId: string): Icd11Entity {
   return {
     stemCode,
     title,
-    foundationUri: `https://id.who.int/icd/entity/${foundationId}`,
-    linearizationUri: `${ICD11_API_BASE}/${stemCode}`,
+    foundationUri: `http://id.who.int/icd/entity/${foundationId}`,
+    linearizationUri: `${ICD11_API_BASE}/${foundationId}`,
     classification: ICD11_CLASSIFICATION,
     release: ICD11_RELEASE,
   }

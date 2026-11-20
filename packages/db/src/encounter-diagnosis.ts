@@ -15,6 +15,11 @@ export type EncounterDiagnosisInput = {
   foundationUri?: string | null
   linearizationUri?: string | null
   release?: string | null
+  /** Defaults to confirmed (the clinician picked it). */
+  certainty?: "confirmed" | "suspected" | "differential"
+  diagnosisType?: "primary" | "secondary" | "comorbidity" | "complication"
+  /** Set when the clinician accepted a Synapse differential suggestion. */
+  suggestedBy?: "clinician" | "synapse_intelligence"
 }
 
 export function encounterDiagnosisRow(input: EncounterDiagnosisInput) {
@@ -25,13 +30,13 @@ export function encounterDiagnosisRow(input: EncounterDiagnosisInput) {
     stem_code: stem,
     cluster_code: stem,
     title: input.title,
-    certainty: "confirmed" as const,
-    diagnosis_type: "primary" as const,
+    certainty: input.certainty ?? ("confirmed" as const),
+    diagnosis_type: input.diagnosisType ?? ("primary" as const),
     foundation_uri: input.foundationUri ?? null,
     linearization_uri: input.linearizationUri ?? null,
     icd_release: input.release ?? "2026-01",
     selected_by: input.selectedBy,
-    suggested_by: "clinician" as const,
+    suggested_by: input.suggestedBy ?? ("clinician" as const),
     is_deleted: false,
   }
 }

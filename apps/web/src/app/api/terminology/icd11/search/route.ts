@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getCurrentUser } from "@/lib/auth/getCurrentUser"
-import { searchWhoIcd11 } from "@synapse/interop"
+import { searchIcd11Index } from "@synapse/interop/icd11-index"
 
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser()
@@ -12,12 +12,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "q is required" }, { status: 400 })
   }
 
-  const result = await searchWhoIcd11(q)
-  return NextResponse.json({
-    release: "2026-01",
-    linearization: "mms",
-    source: result.source,
-    degraded: result.degraded,
-    hits: result.hits,
-  })
+  // The full WHO 2026-01 MMS index ships with the app, so search works
+  // offline from WHO and needs no API credentials.
+  const limit = Number(req.nextUrl.searchParams.get("limit") ?? "15")
+  const hits = searchIcd11Index(q, Number.isFinite(limit) ? limit : 15)
+  return NextResponse.json(
+    { release: "2026-01", linearization: "mms", source: "who-tabulation", degraded: false, hits },
+    { headers: { "Cache-Control": "private, max-age=300" } },
+  )
 }

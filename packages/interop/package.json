@@ -3,7 +3,9 @@
   "version": "0.0.1",
   "private": true,
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./icd11-index": "./src/terminology/icd11-index.ts",
+    "./differential-engine": "./src/intelligence/differential-engine.ts"
   },
   "scripts": {
     "lint": "eslint . --max-warnings 0"

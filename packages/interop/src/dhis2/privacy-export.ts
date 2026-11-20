@@ -5,7 +5,7 @@
  * sub-period timestamps. ICD-11 codes must already be verified.
  */
 
-import { isKnownIcd11Stem } from "../terminology/icd11"
+import { isIcd11Code as isKnownIcd11Stem } from "../terminology/icd11-index"
 import type { PatientContextPacket } from "../intelligence/kernel"
 import {
   DEFAULT_PRIVACY_EXPORT_POLICY,

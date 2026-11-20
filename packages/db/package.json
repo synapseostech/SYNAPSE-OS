@@ -78,6 +78,7 @@
     "./facility-provision-catalog": "./src/facility-provision-catalog.ts",
     "./encounter-close-gate": "./src/encounter-close-gate.ts",
     "./clinical-writeup": "./src/clinical-writeup.ts",
+    "./patient-continuity": "./src/patient-continuity.ts",
     "./hospital-closeout-golden": "./src/hospital-closeout-golden.ts",
     "./hospital-golden-journey": "./src/hospital-golden-journey.ts",
     "./inpatient-lifecycle": "./src/inpatient-lifecycle.ts",
