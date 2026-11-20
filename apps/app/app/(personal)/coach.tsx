@@ -326,6 +326,28 @@ export default function PersonalCoachScreen() {
           </Text>
         </Card>
 
+        <Pressable
+          onPress={() => router.push('/(personal)/companion' as never)}
+          accessibilityRole="button"
+          accessibilityLabel="Ask the AI health companion"
+          style={({ pressed }) => [
+            styles.insight,
+            { backgroundColor: colors.surface, borderColor: colors.primary },
+            pressed && styles.pressed,
+          ]}
+        >
+          <View style={[styles.insightIcon, { backgroundColor: colors.primarySoft }]}>
+            <Ionicons name="chatbubbles-outline" size={20} color={colors.primary} />
+          </View>
+          <View style={styles.insightText}>
+            <Text style={[styles.insightTitle, { color: colors.text }]}>Ask the AI companion</Text>
+            <Text style={[styles.insightDetail, { color: colors.textSecondary }]}>
+              Plain-language help with your medicines, results and appointments. Not a doctor.
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </Pressable>
+
         {error ? <Text style={[styles.error, { color: colors.error }]}>{error}</Text> : null}
 
         <SectionHeader title={`As of ${today}`} style={styles.spacer} />

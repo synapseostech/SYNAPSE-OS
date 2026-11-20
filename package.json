@@ -103,7 +103,7 @@
     "test:e2e:pharmacy": "node scripts/e2e-pharmacy-acceptance.mjs all",
     "test:e2e:pharmacy:smoke": "node scripts/e2e-pharmacy-acceptance.mjs smoke",
     "e2e:acceptance:doctor": "node scripts/e2e-acceptance-doctor.mjs",
-    "test:ai-governance": "node --experimental-strip-types --test apps/web/src/lib/ai/clinical-ai-gateway.test.ts && npx vitest run packages/interop/src/intelligence/kernel.test.ts apps/web/src/app/api/demo/intelligence/route.test.ts apps/web/src/app/api/demo/ready/route.test.ts apps/web/src/app/api/lab/interpretation/route.test.ts apps/web/src/app/api/demo/analyzer-simulate/route.test.ts apps/web/src/app/api/clinical/intelligence/pathway/route.test.ts",
+    "test:ai-governance": "node --experimental-strip-types --test apps/web/src/lib/ai/clinical-ai-gateway.test.ts && npx vitest run packages/interop/src/intelligence/kernel.test.ts apps/web/src/app/api/demo/intelligence/route.test.ts apps/web/src/app/api/demo/ready/route.test.ts apps/web/src/app/api/lab/interpretation/route.test.ts apps/web/src/app/api/demo/analyzer-simulate/route.test.ts apps/web/src/app/api/clinical/intelligence/pathway/route.test.ts apps/web/src/lib/health-companion apps/web/src/app/api/health/companion/route.test.ts",
     "test:inpatient-lifecycle": "tsx --test packages/db/src/inpatient-lifecycle.test.ts",
     "seed:e2e-os": "npx tsx scripts/seed-e2e-os-fixture.ts",
     "journey:hospital-golden-live": "node scripts/hospital-golden-live-journey.mjs",

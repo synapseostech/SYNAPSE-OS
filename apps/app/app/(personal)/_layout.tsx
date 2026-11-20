@@ -169,6 +169,15 @@ export default function PersonalLayout() {
         }}
       />
       <Tabs.Screen
+        name="companion"
+        options={{
+          title: 'Companion',
+          headerTitle: 'Health companion',
+          href: null,
+          headerLeft: () => <BackToToday />,
+        }}
+      />
+      <Tabs.Screen
         name="reminders"
         options={{
           title: 'Reminders',
