@@ -2,7 +2,7 @@
  * Physical stock-take: the rules both the mobile API and the APK use.
  *
  * `previewStockTakePosting` mirrors `post_pharmacy_stock_take`
- * (supabase/migrations/20261118120000_pharmacy_stock_take.sql), so the review
+ * (supabase/migrations/20261119160000_pharmacy_stock_take.sql), so the review
  * screen shows the manager exactly what posting will write. Change one, change
  * the other.
  */

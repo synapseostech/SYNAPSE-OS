@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Feature-contract test for supabase/migrations/20261118120000_pharmacy_stock_take.sql
+# Feature-contract test for supabase/migrations/20261119160000_pharmacy_stock_take.sql
 # on a disposable PostgreSQL 16 (Docker, or local binaries when Docker cannot
 # fetch the image). It builds only the pharmacy tables the
 # migration touches (not the full chain), applies the migration, and checks the
@@ -118,7 +118,7 @@ awk '/^create or replace function public.pharmacy_assert_actor\(/,/^\$function\$
   supabase/migrations/20261101090000_pharmacy_refund_and_adjust_rpcs.sql \
   | psql -X -q -v ON_ERROR_STOP=1
 
-psql -X -q -v ON_ERROR_STOP=1 -f supabase/migrations/20261118120000_pharmacy_stock_take.sql
+psql -X -q -v ON_ERROR_STOP=1 -f supabase/migrations/20261119160000_pharmacy_stock_take.sql
 
 psql -X -q -v ON_ERROR_STOP=1 <<'SQL'
 \set ON_ERROR_STOP on

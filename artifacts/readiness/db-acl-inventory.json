@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-19T20:07:09.880Z",
+  "generated_at": "2026-11-19T20:11:35.143Z",
   "security_definer_count": 105,
   "public_or_anon_execute_grants": [],
   "unexpected_public_execute": [],
@@ -530,20 +530,20 @@
       "fn": "public.reverse_pharmacy_tally_replay_session"
     },
     {
-      "file": "20261118120000_pharmacy_stock_take.sql",
-      "fn": "public.pharmacy_stock_take_child_guard"
-    },
-    {
-      "file": "20261118120000_pharmacy_stock_take.sql",
-      "fn": "public.post_pharmacy_stock_take"
-    },
-    {
       "file": "20261119090000_pharmacy_tally_void_mirrors.sql",
       "fn": "public.tally_mirror_rows_are_read_only"
     },
     {
       "file": "20261119090000_pharmacy_tally_void_mirrors.sql",
       "fn": "public.pharmacy_tally_void_mirrors"
+    },
+    {
+      "file": "20261119160000_pharmacy_stock_take.sql",
+      "fn": "public.pharmacy_stock_take_child_guard"
+    },
+    {
+      "file": "20261119160000_pharmacy_stock_take.sql",
+      "fn": "public.post_pharmacy_stock_take"
     }
   ]
 }
