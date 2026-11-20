@@ -82,9 +82,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Pinned: "latest" makes the action ask GitHub's API for the newest
+      # release on every run, and that lookup is rate-limited — it failed
+      # db-acceptance on #37, #42 and #44. Keep in step with package.json.
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.107.0
 
       # The historical migration archive cannot be replayed from an empty
       # database (its first file alters public.profiles). Fresh environments use
