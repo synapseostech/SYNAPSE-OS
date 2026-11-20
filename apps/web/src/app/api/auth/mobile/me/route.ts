@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAccountActivated, verifyToken, validateSession, withMembershipSuspension, resolveSessionScope } from '@synapse/auth'
 import { supabaseAdmin } from '@synapse/db/admin'
+import { loadProfileAvatars } from '../../../../../lib/profile-avatars'
 
 const ROLE_KIND: Record<string, string> = {
   patient: 'patient',
@@ -79,6 +80,8 @@ export async function GET(req: NextRequest) {
     .eq('id', sessionTenantId || '')
     .maybeSingle()
 
+  const avatars = await loadProfileAvatars(db, [String(profile.id)])
+
   const joinedName = [profile.first_name, profile.last_name].filter(Boolean).join(' ')
   const fullName = (profile.full_name as string | null) ?? (joinedName || null)
 
@@ -93,5 +96,6 @@ export async function GET(req: NextRequest) {
     isAdmin: (profile.is_admin as boolean | null) ?? false,
     mustChangePassword: (profile.must_change_password as boolean | null) ?? false,
     dashboardKind: ROLE_KIND[sessionRole] ?? 'generic',
+    avatarUrl: avatars.get(String(profile.id)) ?? null,
   })
 }

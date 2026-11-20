@@ -13,6 +13,7 @@ import {
   isMobilePharmacyAdmin,
   requireMobilePharmacyAuth,
 } from '../../../../../lib/mobile-pharmacy-auth'
+import { loadProfileAvatars } from '../../../../../lib/profile-avatars'
 
 export const dynamic = 'force-dynamic'
 
@@ -63,6 +64,8 @@ export async function GET(req: NextRequest) {
     for (const p of data ?? []) profiles.set(String(p.id), p)
   }
 
+  const avatars = await loadProfileAvatars(db(), profileIds.map(String))
+
   return NextResponse.json({
     canManage: isMobilePharmacyAdmin(auth),
     users: rows.map((s: any) => {
@@ -78,6 +81,7 @@ export async function GET(req: NextRequest) {
         isActive: s.is_active !== false,
         twoFactorEnabled: s.two_factor_enabled ?? false,
         createdAt: s.created_at,
+        avatarUrl: avatars.get(String(s.profile_id)) ?? null,
       }
     }),
   })
