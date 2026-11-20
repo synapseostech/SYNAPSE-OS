@@ -47,8 +47,11 @@ const STARTERS = [
   'Give me a healthy week of Ugandan meals',
 ]
 
-const NOTICE =
-  'Synapse Companion is an AI, not a doctor. It does not diagnose, prescribe or change doses. In an emergency call 112 or 999.'
+const NOTICE: Record<Language, string> = {
+  en: 'Synapse Companion is an AI, not a doctor. It does not diagnose, prescribe or change doses. In an emergency call 112 or 999.',
+  sw: 'Synapse Companion ni AI, si daktari. Haitambui magonjwa, haiandiki dawa wala kubadilisha dozi. Kwa dharura piga 112 au 999.',
+  lg: 'Synapse Companion AI, si musawo. Tezuula bulwadde, tewandiika ddagala era tekyusa dozi. Mu bw\'amangu kuba ku 112 oba 999.',
+}
 
 const LANG_KEY = 'synapse.companion.language'
 
@@ -203,7 +206,7 @@ export default function HealthCompanionPage() {
       <div role="note" className="flex items-start gap-2 rounded-2xl px-3 py-2 text-xs"
         style={{ background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.25)', color: 'var(--text-secondary)' }}>
         <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5" style={{ color: 'var(--brand-orange)' }} />
-        <span>{NOTICE}</span>
+        <span>{NOTICE[language]}</span>
       </div>
 
       {!state.providerConfigured && (
