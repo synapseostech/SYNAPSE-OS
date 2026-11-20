@@ -865,8 +865,11 @@ const NEGATIVE_TEXT = /\b(negative|non[- ]?reactive|not detected|none seen|no gr
  * number or unclear. Negative wording wins ("no parasites seen").
  */
 export function interpretQualitativeResult(value: unknown): boolean | null {
-  const text = String(value ?? "").trim()
-  if (!text || /^[<>]?\s*-?\d+(\.\d+)?\s*[a-z/%*^0-9.]*$/i.test(text)) return null
+  // Lab result text is short; the cap keeps both patterns below linear-time.
+  const text = String(value ?? "").trim().slice(0, 200)
+  // A number with an optional unit ("9.1", "<5 mg/L", "12.5 g/dL"). The
+  // character classes do not overlap, so this cannot backtrack.
+  if (!text || /^[<>]?\s*-?[\d.]+\s*[a-z/%*^]*$/i.test(text)) return null
   if (NEGATIVE_TEXT.test(text)) return false
   if (POSITIVE_TEXT.test(text)) return true
   return null

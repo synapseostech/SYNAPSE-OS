@@ -196,6 +196,11 @@ describe("results close the loop", () => {
     expect(interpretQualitativeResult("9.1")).toBeNull()
     expect(interpretQualitativeResult("12.5 g/dL")).toBeNull()
     expect(interpretQualitativeResult("")).toBeNull()
+    expect(interpretQualitativeResult("<5 mg/L")).toBeNull()
+    const start = Date.now()
+    interpretQualitativeResult("0".repeat(50000) + "x")
+    interpretQualitativeResult("no ".repeat(20000))
+    expect(Date.now() - start).toBeLessThan(200)
   })
 
   it("maps lab orders to investigations by LOINC, code or name", () => {
