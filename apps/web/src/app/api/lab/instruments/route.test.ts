@@ -15,6 +15,9 @@ const {
   dbFrom: vi.fn(),
 }))
 
+// Role groups the route now shares with the other lab screens (real module).
+vi.mock("@/lib/lab/roles", () => import("../../../../lib/lab/roles"))
+
 vi.mock("@/lib/auth/getCurrentUser", () => ({
   getCurrentUser: (...args: unknown[]) => getCurrentUser(...args),
 }))

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { LAB_MANAGER_ROLES, LAB_STAFF_ROLES } from "@/lib/lab/roles"
 import { supabaseAdmin } from "@synapse/db/admin"
 import { assertDeviceValidationTransition, omitDeviceSecrets, type LabValidationStatus } from "@synapse/db/lab-device-intelligence"
 import { isContextError, gateHospitalModule, logHospitalAudit } from "@/lib/hospital-shared"
@@ -6,12 +7,12 @@ import { requireHospitalStaffContext } from "@/lib/hospital-dept"
 
 export const dynamic = "force-dynamic"
 
-const canWrite = new Set(["lab_manager", "hospital_admin"])
+const canWrite = LAB_MANAGER_ROLES
 
 async function ctxOrError(write = false) {
   const ctx = await requireHospitalStaffContext()
   if (isContextError(ctx)) return ctx
-  if (!["lab_tech", "lab_scientist", "lab_manager", "hospital_admin"].includes(ctx.role)) {
+  if (!LAB_STAFF_ROLES.has(ctx.role)) {
     return NextResponse.json({ error: "Lab access required" }, { status: 403 })
   }
   if (write && !canWrite.has(ctx.role)) return NextResponse.json({ error: "Device administration requires Lab Manager or Hospital Admin" }, { status: 403 })

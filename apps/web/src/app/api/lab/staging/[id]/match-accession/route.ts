@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { LAB_SENIOR_ROLES, LAB_STAFF_ROLES } from "@/lib/lab/roles"
 import { supabaseAdmin } from "@synapse/db/admin"
 import { isContextError, gateHospitalModule, logHospitalAudit } from "@/lib/hospital-shared"
 import { requireHospitalStaffContext } from "@/lib/hospital-dept"
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic"
 export async function GET(request: Request) {
   const ctx = await requireHospitalStaffContext()
   if (isContextError(ctx)) return ctx
-  if (!["lab_tech", "lab_scientist", "lab_manager", "hospital_admin"].includes(ctx.role)) return NextResponse.json({ error: "Lab access required" }, { status: 403 })
+  if (!LAB_STAFF_ROLES.has(ctx.role)) return NextResponse.json({ error: "Lab access required" }, { status: 403 })
   const blocked = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, "lab")
   if (blocked) return blocked
   const accession = new URL(request.url).searchParams.get("accession")?.trim()
@@ -31,7 +32,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const ctx = await requireHospitalStaffContext()
   if (isContextError(ctx)) return ctx
-  if (!["lab_scientist", "lab_manager", "hospital_admin"].includes(ctx.role)) return NextResponse.json({ error: "Lab scientist reconciliation required" }, { status: 403 })
+  if (!LAB_SENIOR_ROLES.has(ctx.role)) return NextResponse.json({ error: "Lab scientist reconciliation required" }, { status: 403 })
   const blocked = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, "lab")
   if (blocked) return blocked
   const body = await request.json().catch(() => ({})) as { accessionNumber?: string; confirm?: boolean; notes?: string }

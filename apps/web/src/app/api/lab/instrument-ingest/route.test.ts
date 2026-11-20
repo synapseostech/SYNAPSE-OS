@@ -95,4 +95,49 @@ describe("POST /api/lab/instrument-ingest", () => {
     expect(json.duplicate).toBe(true)
     expect(json.match).toBe("DUPLICATE")
   })
+
+  it("looks every analyte's mapping up in one query and stages each one", async () => {
+    const { queryMock } = await import("../../../../lib/lab/testing/db-mock")
+    let messageCalls = 0
+    const mappingQueries: ReturnType<typeof queryMock>[] = []
+    const staging: ReturnType<typeof queryMock>[] = []
+    dbFrom.mockImplementation((table: string) => {
+      if (table === "lab_devices") return queryMock({ data: { id: DEVICE, tenant_id: TENANT, active: true, validation_status: "ACTIVE" } }).builder
+      if (table === "lab_device_messages") return queryMock({ data: messageCalls++ === 0 ? null : { id: "msg-new" } }).builder
+      if (table === "lab_specimens") return queryMock({ data: { id: "spec", lab_order_id: "order-1", patient_id: "p" } }).builder
+      if (table === "lab_device_test_mappings") {
+        const q = queryMock({ data: [
+          { analyzer_code: "WBC", loinc_code: "6690-2", analyzer_name: "WBC", unit: "10*9/L" },
+          { analyzer_code: "HGB", loinc_code: "718-7", analyzer_name: "Haemoglobin", unit: "g/dL" },
+        ] })
+        mappingQueries.push(q)
+        return q.builder
+      }
+      if (table === "lab_result_staging") { const q = queryMock({ data: null }); staging.push(q); return q.builder }
+      return queryMock({ data: null }).builder
+    })
+    const { POST } = await import("./route")
+    const res = await POST(new Request("https://os.test/api/lab/instrument-ingest", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-lab-bridge-key": "secret" },
+      body: JSON.stringify({
+        deviceId: DEVICE, rawPayload: "OBX|1|NM|WBC||6.8", protocol: "hl7", accessionNumber: "LAB-20261121-000001",
+        observations: [
+          { analyzerCode: "WBC", value: "6.8", unit: "10*9/L" },
+          { analyzerCode: "HGB", value: "13.1", unit: "g/dL" },
+          { analyzerCode: "XYZ", value: "1" },
+        ],
+      }),
+    }) as never)
+    expect(res.status).toBe(200)
+    expect(mappingQueries).toHaveLength(1)
+    const inCalls = mappingQueries[0]!.calls.filter((c) => c.method === "in")
+    expect(inCalls).toEqual([{ method: "in", args: ["analyzer_code", ["WBC", "HGB", "XYZ"]] }])
+    const rows = staging[0]!.calls.find((c) => c.method === "insert")!.args[0] as Array<Record<string, unknown>>
+    expect(rows.map((r) => [r.analyzer_code, r.mapped_loinc, r.status])).toEqual([
+      ["WBC", "6690-2", "READY_FOR_REVIEW"],
+      ["HGB", "718-7", "READY_FOR_REVIEW"],
+      ["XYZ", null, "UNMAPPED"],
+    ])
+  })
 })

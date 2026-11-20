@@ -1,29 +1,33 @@
 import { NextRequest, NextResponse } from "next/server"
+import { LAB_SENIOR_ROLES } from "@/lib/lab/roles"
 import { supabaseAdmin } from "@synapse/db/admin"
-import { LabWorkflow } from "@synapse/db/lab-workflow"
-import { rowToLabOrder, persistLabOrderBestEffort } from "@synapse/db/lab-order-persist"
-import { persistLabResultBestEffort, rowToLabResult } from "@synapse/db/lab-result-persist"
-import { isContextError, requireHospitalCapability, gateHospitalModule, logHospitalAudit } from "@/lib/hospital-shared"
-import { requireHospitalStaffContext } from "@/lib/hospital-dept"
+import { isLabContextError, requireLabAccess } from "@/lib/lab/access"
+import { LabActionError, runLabAction } from "@/lib/lab/engine"
 
 export const dynamic = "force-dynamic"
 
+/**
+ * A scientist accepts an analyser result into the order it was matched to.
+ * The result is entered through the same engine as a manual result (one
+ * commit with the audit row) and still needs verification; nothing here
+ * releases. Previously the staging row update wrote columns that did not
+ * exist, so acceptance saved the result and then failed, and any analyte under
+ * the accession could land on the order.
+ */
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const ctx = await requireHospitalStaffContext()
-  if (isContextError(ctx)) return ctx
-  if (ctx.role !== "lab_scientist" && ctx.role !== "lab_manager" && ctx.role !== "hospital_admin") {
+  const ctx = await requireLabAccess("result.enter")
+  if (isLabContextError(ctx)) return ctx
+  if (!LAB_SENIOR_ROLES.has(ctx.role)) {
     return NextResponse.json({ error: "Lab scientist review required" }, { status: 403 })
   }
-  const cap = await requireHospitalCapability(ctx, "result", "enter", "lab")
-  if (cap) return cap
-  const moduleBlock = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, "lab")
-  if (moduleBlock) return moduleBlock
 
   const { id } = await params
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return NextResponse.json({ error: "Staging result not found" }, { status: 404 })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = supabaseAdmin as any
   const { data: staging, error } = await db
     .from("lab_result_staging")
-    .select("*")
+    .select("id, status, lab_order_id, mapped_loinc, value, device_id, clinical_result_id")
     .eq("id", id)
     .eq("tenant_id", ctx.tenantId)
     .maybeSingle()
@@ -35,32 +39,31 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (staging.status !== "READY_FOR_REVIEW") return NextResponse.json({ error: "Staging result must be mapped and accession-matched before acceptance" }, { status: 409 })
   if (!staging.lab_order_id || !staging.mapped_loinc || !staging.value) return NextResponse.json({ error: "Staging result is incomplete" }, { status: 409 })
 
-  const { data: orderRow } = await db
-    .from("lab_orders")
-    .select("*")
-    .eq("id", staging.lab_order_id)
-    .eq("tenant_id", ctx.tenantId)
-    .maybeSingle()
-  if (!orderRow) return NextResponse.json({ error: "Lab order not found" }, { status: 404 })
-  const order = rowToLabOrder(orderRow)
-  const { data: encounter } = await db.from("encounters").select("id, hospital_id, patient_id").eq("id", order.encounterId).eq("tenant_id", ctx.tenantId).maybeSingle()
-  if (!encounter || encounter.hospital_id !== ctx.hospitalId || encounter.patient_id !== order.patientId) return NextResponse.json({ error: "Lab order not found" }, { status: 404 })
-  if (!["RECEIVED", "PROCESSING"].includes(order.status)) return NextResponse.json({ error: `Lab order must be received before analyzer acceptance; current state is ${order.status}` }, { status: 409 })
-
-  const lab = new LabWorkflow([order])
-  const entered = lab.enterResult({ resultId: crypto.randomUUID(), orderId: order.id, value: String(staging.value), analyzer: String(staging.device_id ?? "analyzer") })
-  const resultPersist = await persistLabResultBestEffort(db, entered.result, {
-    enteredBy: ctx.userId,
-    source: "ANALYZER",
-    encounterId: order.encounterId,
-  })
-  if (!resultPersist.ok) return NextResponse.json({ error: resultPersist.error }, { status: 500 })
-  const orderPersist = await persistLabOrderBestEffort(db, entered.order)
-  if (!orderPersist.ok) return NextResponse.json({ error: orderPersist.error }, { status: 500 })
+  let outcome
+  try {
+    outcome = await runLabAction({
+      ctx,
+      orderId: String(staging.lab_order_id),
+      action: "enter_result",
+      extra: { value: String(staging.value), source: "ANALYZER", analyzer: String(staging.device_id ?? "analyzer"), expectLoinc: String(staging.mapped_loinc) },
+    })
+  } catch (err) {
+    if (err instanceof LabActionError) {
+      const status = err.code === "LAB_ORDER_NOT_FOUND" ? 404 : err.status
+      return NextResponse.json({ error: err.message, code: err.code }, { status })
+    }
+    return NextResponse.json({ error: err instanceof Error ? err.message : "accept_failed" }, { status: 500 })
+  }
 
   const reviewedAt = new Date().toISOString()
-  const { error: stageError } = await db.from("lab_result_staging").update({ status: "ACCEPTED", reviewed_by: ctx.userId, reviewed_at: reviewedAt, clinical_result_id: entered.result.id, updated_at: reviewedAt }).eq("id", id).eq("tenant_id", ctx.tenantId).eq("status", "READY_FOR_REVIEW")
-  if (stageError) return NextResponse.json({ error: stageError.message }, { status: 500 })
-  await logHospitalAudit({ ctx, action: "ANALYZER_RESULT_ACCEPTED", tableName: "lab_result_staging", recordId: id, newValue: { clinical_result_id: entered.result.id, lab_order_id: order.id } })
-  return NextResponse.json({ stagingId: id, accepted: true, clinicalResultId: entered.result.id, orderId: order.id, workflowStatus: entered.order.status })
+  const { error: stageError } = await db
+    .from("lab_result_staging")
+    .update({ status: "ACCEPTED", reviewed_by: ctx.userId, reviewed_at: reviewedAt, clinical_result_id: outcome.result?.id ?? null, updated_at: reviewedAt })
+    .eq("id", id)
+    .eq("tenant_id", ctx.tenantId)
+    .eq("status", "READY_FOR_REVIEW")
+  if (stageError) {
+    return NextResponse.json({ error: stageError.message, clinicalResultId: outcome.result?.id ?? null, note: "Result entered; staging row not marked" }, { status: 500 })
+  }
+  return NextResponse.json({ stagingId: id, accepted: true, clinicalResultId: outcome.result?.id ?? null, orderId: outcome.order.id, workflowStatus: outcome.order.status, critical: outcome.critical })
 }

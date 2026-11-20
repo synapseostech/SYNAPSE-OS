@@ -2,30 +2,26 @@ import { NextResponse } from "next/server"
 import { getCurrentUser } from "@/lib/auth/getCurrentUser"
 import { hasPlatformAdminAccess } from "@/lib/platform/auth"
 import { getSimulationEngine } from "@/lib/platform/simulation-runtime"
-import { requireHospitalStaffContext } from "@/lib/hospital-dept"
-import { isContextError, requireHospitalCapability, gateHospitalModule, requireHospitalAudit, HospitalAuditRequiredError } from "@/lib/hospital-shared"
-import { executeHospitalLabAction } from "@/lib/hospital-lab-db"
+import { capabilityForLabAction, isLabContextError, peekLabSessionClaims, requireLabAccess } from "@/lib/lab/access"
+import { isLabAction, LabActionError, runLabAction } from "@/lib/lab/engine"
 
 export const dynamic = "force-dynamic"
 
-function canUseLab(role: string | undefined, email: string | null) {
-  return hasPlatformAdminAccess(role, email) || ["lab_tech", "lab_technician", "lab_scientist", "lab_admin"].includes(role ?? "") || role === "doctor"
-}
-
 export async function POST(request: Request) {
-  const user = await getCurrentUser()
-  if (!user) {
+  const claims = await peekLabSessionClaims()
+  if (!claims) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
-  if (!canUseLab(user.role, user.email)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
   const orderId = String(body.orderId ?? "")
   const action = String(body.action ?? "")
 
-  if (hasPlatformAdminAccess(user.role, user.email)) {
+  // Platform operators drive the simulation engine; the session is validated
+  // here because the lab_access() check below is skipped for them.
+  const operator = hasPlatformAdminAccess(claims.role, claims.email) ? await getCurrentUser() : null
+  if (operator && hasPlatformAdminAccess(operator.role, operator.email)) {
+    const user = operator
     const engine = getSimulationEngine()
     try {
       if (action === "collect") {
@@ -68,86 +64,32 @@ export async function POST(request: Request) {
     }
   }
 
-  const ctx = await requireHospitalStaffContext()
-  if (isContextError(ctx)) return ctx
-
-  // Role-appropriate capabilities — collect ≠ enter ≠ verify
-  let cap
-  if (action === "collect" || action === "receive" || action === "reject") {
-    cap = await requireHospitalCapability(ctx, "specimen", "collect", "lab")
-    if (cap) {
-      // Fall back to result.enter for facilities that only seeded enter caps
-      const enterFallback = await requireHospitalCapability(ctx, "result", "enter", "lab")
-      if (enterFallback) return enterFallback
-      cap = null
-    }
-  } else if (action === "verify" || action === "release" || action === "amend") {
-    if (["lab_tech", "lab_technician"].includes(user.role ?? "")) {
-      return NextResponse.json(
-        { error: "lab_tech cannot verify, release, or amend; lab_scientist required" },
-        { status: 403 },
-      )
-    }
-    cap = await requireHospitalCapability(ctx, "result", "verify", "lab")
-  } else if (action === "acknowledge") {
-    cap = await requireHospitalCapability(ctx, "result", "verify", "lab")
-  } else {
-    cap = await requireHospitalCapability(ctx, "result", "enter", "lab")
-  }
-  if (cap) return cap
-
-  const moduleBlock = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, "lab")
-  if (moduleBlock) return moduleBlock
-
-  const REQUIRED_AUDIT_ACTIONS = new Set(["verify", "release", "amend"])
+  if (!isLabAction(action)) return NextResponse.json({ error: "Unknown action" }, { status: 400 })
+  const ctx = await requireLabAccess(capabilityForLabAction(action))
+  if (isLabContextError(ctx)) return ctx
 
   try {
-    const outcome = await executeHospitalLabAction({
-      ctx,
-      orderId,
-      action,
-      actorId: ctx.userId,
-      extra: body,
-    })
-
-    if (REQUIRED_AUDIT_ACTIONS.has(action) && !outcome.idempotent) {
-      try {
-        await requireHospitalAudit({
-          ctx,
-          action: action === "verify" ? "LAB_RESULT_VERIFIED" : action === "release" ? "LAB_REPORT_RELEASED" : "LAB_RESULT_AMENDED",
-          tableName: "lab_orders",
-          recordId: orderId,
-          newValue: {
-            action,
-            orderStatus: outcome.order?.status ?? null,
-            resultId: outcome.result?.id ?? null,
-            resultStatus: outcome.result?.status ?? null,
-          },
-        })
-      } catch (err) {
-        // Domain write may already be committed; refuse client-visible success so
-        // the caller retries. LabWorkflow transitions are idempotent for verify/
-        // release; amend creates a new result row only when values change.
-        const message = err instanceof HospitalAuditRequiredError ? err.message : "AUDIT_REQUIRED_FAILED"
-        return NextResponse.json(
-          { error: message, code: "AUDIT_REQUIRED_FAILED", outcome: "retry" },
-          { status: 503 },
-        )
-      }
+    // Order, specimen, result, report and the audit row commit together in
+    // lab_commit_action, so there is no separate audit step that can fail
+    // after the change is saved.
+    const outcome = await runLabAction({ ctx, orderId, action, extra: body })
+    const response: Record<string, unknown> = {
+      order: outcome.order,
+      result: outcome.result,
+      source: "database",
+      idempotent: outcome.idempotent,
+      reportId: outcome.reportId,
+      critical: outcome.critical,
     }
-
-    const response: {
-      order: typeof outcome.order
-      result: typeof outcome.result
-      source: string
-      warnings?: string[]
-    } = { order: outcome.order, result: outcome.result, source: "database" }
+    if (action === "collect" && outcome.order.accessionNumber) {
+      response.labelUrl = `/api/lab/orders/${outcome.order.id}/label`
+    }
     if (outcome.warnings.length) response.warnings = outcome.warnings
     return NextResponse.json(response)
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "lab_action_failed" },
-      { status: 400 },
-    )
+    if (err instanceof LabActionError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: err.status })
+    }
+    return NextResponse.json({ error: err instanceof Error ? err.message : "lab_action_failed" }, { status: 500 })
   }
 }

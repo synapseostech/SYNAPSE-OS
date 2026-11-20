@@ -1,296 +1,84 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { NextResponse } from "next/server"
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { accessState, resetAccess } from '../../../../lib/lab/testing/access-double'
 
-const {
-  getCurrentUser,
-  hasPlatformAdminAccess,
-  requireHospitalStaffContext,
-  requireHospitalCapability,
-  gateHospitalModule,
-  requireHospitalAudit,
-  executeHospitalLabAction,
-  getSimulationEngine,
-} = vi.hoisted(() => ({
-  getCurrentUser: vi.fn(),
-  hasPlatformAdminAccess: vi.fn(),
-  requireHospitalStaffContext: vi.fn(),
-  requireHospitalCapability: vi.fn(),
-  gateHospitalModule: vi.fn(),
-  requireHospitalAudit: vi.fn(),
-  executeHospitalLabAction: vi.fn(),
-  getSimulationEngine: vi.fn(),
-}))
-
-vi.mock("@/lib/auth/getCurrentUser", () => ({
-  getCurrentUser: (...args: unknown[]) => getCurrentUser(...args),
-}))
-
-vi.mock("@/lib/platform/auth", () => ({
-  hasPlatformAdminAccess: (...args: unknown[]) => hasPlatformAdminAccess(...args),
-}))
-
-vi.mock("@/lib/hospital-dept", () => ({
-  requireHospitalStaffContext: (...args: unknown[]) => requireHospitalStaffContext(...args),
-}))
-
-vi.mock("@/lib/hospital-shared", async () => {
-  const { NextResponse } = await import("next/server")
-  class HospitalAuditRequiredError extends Error {
-    constructor(message: string) {
-      super(message)
-      this.name = "HospitalAuditRequiredError"
-    }
-  }
+vi.mock('server-only', () => ({}))
+vi.mock('@/lib/lab/access', () => import('../../../../lib/lab/testing/access-double').then((m) => m.accessModule()))
+const h = vi.hoisted(() => ({ run: vi.fn(), getCurrentUser: vi.fn(), engine: null as unknown }))
+vi.mock('@/lib/lab/engine', async () => {
+  class LabActionError extends Error { constructor(readonly code: string, readonly status: number, message?: string) { super(message ?? code) } }
   return {
-    isContextError: (value: unknown): value is InstanceType<typeof NextResponse> =>
-      value instanceof NextResponse,
-    requireHospitalCapability: (...args: unknown[]) => requireHospitalCapability(...args),
-    gateHospitalModule: (...args: unknown[]) => gateHospitalModule(...args),
-    requireHospitalAudit: (...args: unknown[]) => requireHospitalAudit(...args),
-    HospitalAuditRequiredError,
+    LabActionError,
+    isLabAction: (a: string) => ['collect', 'receive', 'reject', 'enter_result', 'verify', 'release', 'authorise', 'amend', 'acknowledge'].includes(a),
+    runLabAction: h.run,
   }
 })
+vi.mock('@/lib/auth/getCurrentUser', () => ({ getCurrentUser: h.getCurrentUser }))
+vi.mock('@/lib/platform/auth', () => ({ hasPlatformAdminAccess: (role: string | null) => role === 'platform_admin' }))
+vi.mock('@/lib/platform/simulation-runtime', () => ({ getSimulationEngine: () => h.engine }))
 
-vi.mock("@/lib/hospital-lab-db", () => ({
-  executeHospitalLabAction: (...args: unknown[]) => executeHospitalLabAction(...args),
-}))
+import { POST } from './route'
+import { LabActionError } from '@/lib/lab/engine'
 
-vi.mock("@/lib/platform/simulation-runtime", () => ({
-  getSimulationEngine: (...args: unknown[]) => getSimulationEngine(...args),
-}))
+const ORDER = 'e76497a1-3a54-4984-827c-f6c339edbf99'
+const post = (body: unknown) => POST(new Request('http://x/api/lab/actions', { method: 'POST', body: JSON.stringify(body) }))
 
-const TENANT_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-const TENANT_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-const HOSPITAL = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
-const ORDER = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
-const USER = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+beforeEach(() => { vi.clearAllMocks(); resetAccess() })
 
-function staff(role: string, tenantId = TENANT_A) {
-  return {
-    userId: USER,
-    email: `${role}@example.test`,
-    role,
-    tenantId,
-    hospitalId: HOSPITAL,
-    facilityType: "hospital",
-    fullName: role,
-  }
-}
-
-describe("POST /api/lab/actions", () => {
-  beforeEach(() => {
-    hasPlatformAdminAccess.mockReturnValue(false)
-    requireHospitalCapability.mockResolvedValue(null)
-    gateHospitalModule.mockResolvedValue(null)
-    requireHospitalAudit.mockResolvedValue(undefined)
-    executeHospitalLabAction.mockResolvedValue({
-      order: { id: ORDER, tenantId: TENANT_A, status: "COLLECTED" },
-      result: null,
-      warnings: [],
-    })
+describe('POST /api/lab/actions', () => {
+  it('401 without a session', async () => {
+    accessState.claims = null
+    expect((await post({ orderId: ORDER, action: 'verify' })).status).toBe(401)
+    expect(h.run).not.toHaveBeenCalled()
   })
 
-  afterEach(() => {
-    vi.clearAllMocks()
-    vi.resetModules()
+  it('400 for an unknown action before any access check', async () => {
+    const res = await post({ orderId: ORDER, action: 'drop' })
+    expect(res.status).toBe(400)
+    expect(accessState.calls).toEqual([])
   })
 
-  it("rejects unauthenticated callers", async () => {
-    getCurrentUser.mockResolvedValue(null)
-    const { POST } = await import("./route")
-    const res = await POST(
-      new Request("https://synapseos.tech/api/lab/actions", {
-        method: "POST",
-        body: JSON.stringify({ orderId: ORDER, action: "collect" }),
-      }),
-    )
-    expect(res.status).toBe(401)
-    expect(executeHospitalLabAction).not.toHaveBeenCalled()
+  it.each([
+    ['collect', 'specimen.collect'], ['receive', 'specimen.collect'], ['reject', 'specimen.collect'],
+    ['enter_result', 'result.enter'], ['verify', 'result.verify'], ['authorise', 'result.verify'],
+    ['release', 'result.verify'], ['amend', 'result.verify'], ['acknowledge', 'result.verify'],
+  ])('%s requires lab.%s', async (action, capability) => {
+    h.run.mockResolvedValue({ order: { id: ORDER, status: 'X' }, result: null, warnings: [], idempotent: false, reportId: null, critical: false })
+    await post({ orderId: ORDER, action })
+    expect(accessState.calls).toEqual([capability])
   })
 
-  it("returns 403 (not 401) for authenticated non-lab roles such as reception", async () => {
-    getCurrentUser.mockResolvedValue({ id: USER, role: "receptionist", email: "r@example.test" })
-    const { POST } = await import("./route")
-    const res = await POST(
-      new Request("https://synapseos.tech/api/lab/actions", {
-        method: "POST",
-        body: JSON.stringify({ orderId: ORDER, action: "verify" }),
-      }),
-    )
+  it('refuses a bench technician verifying (the capability check denies it) and never runs the action', async () => {
+    accessState.ctx.role = 'lab_tech'
+    accessState.deny = (cap) => (cap === 'result.verify' ? 403 : null)
+    const res = await post({ orderId: ORDER, action: 'verify' })
     expect(res.status).toBe(403)
-    expect(executeHospitalLabAction).not.toHaveBeenCalled()
+    expect(h.run).not.toHaveBeenCalled()
   })
 
-  it("blocks lab_tech from verify/release/amend", async () => {
-    getCurrentUser.mockResolvedValue({ id: USER, role: "lab_tech", email: "t@example.test" })
-    requireHospitalStaffContext.mockResolvedValue(staff("lab_tech"))
-    const { POST } = await import("./route")
-    const res = await POST(
-      new Request("https://synapseos.tech/api/lab/actions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orderId: ORDER, action: "verify" }),
-      }),
-    )
-    expect(res.status).toBe(403)
-    expect(executeHospitalLabAction).not.toHaveBeenCalled()
-  })
-
-  it("allows lab_scientist to release after capability check", async () => {
-    getCurrentUser.mockResolvedValue({ id: USER, role: "lab_scientist", email: "s@example.test" })
-    requireHospitalStaffContext.mockResolvedValue(staff("lab_scientist"))
-    const { POST } = await import("./route")
-    const res = await POST(
-      new Request("https://synapseos.tech/api/lab/actions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orderId: ORDER, action: "release" }),
-      }),
-    )
+  it('runs the action as the session user and returns the label link after collection', async () => {
+    h.run.mockResolvedValue({ order: { id: ORDER, status: 'COLLECTED', accessionNumber: 'LAB-1' }, result: null, warnings: ['W'], idempotent: false, reportId: null, critical: false, specimenId: 's' })
+    const res = await post({ orderId: ORDER, action: 'collect', actorId: 'someone-else' })
     expect(res.status).toBe(200)
-    expect(requireHospitalCapability).toHaveBeenCalledWith(
-      expect.objectContaining({ tenantId: TENANT_A }),
-      "result",
-      "verify",
-      "lab",
-    )
-    expect(executeHospitalLabAction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: "release",
-        orderId: ORDER,
-        actorId: USER,
-        ctx: expect.objectContaining({ tenantId: TENANT_A }),
-      }),
-    )
-  })
-
-  it("does not execute when staff context is for a different auth denial", async () => {
-    getCurrentUser.mockResolvedValue({ id: USER, role: "lab_scientist", email: "s@example.test" })
-    requireHospitalStaffContext.mockResolvedValue(
-      NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
-    )
-    const { POST } = await import("./route")
-    const res = await POST(
-      new Request("https://synapseos.tech/api/lab/actions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orderId: ORDER, action: "collect" }),
-      }),
-    )
-    expect(res.status).toBe(401)
-    expect(executeHospitalLabAction).not.toHaveBeenCalled()
-  })
-
-  it("passes reject reason through to hospital lab action", async () => {
-    getCurrentUser.mockResolvedValue({ id: USER, role: "lab_tech", email: "t@example.test" })
-    requireHospitalStaffContext.mockResolvedValue(staff("lab_tech"))
-    const { POST } = await import("./route")
-    const res = await POST(
-      new Request("https://synapseos.tech/api/lab/actions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          orderId: ORDER,
-          action: "reject",
-          reason: "hemolyzed",
-          note: "Gross hemolysis",
-        }),
-      }),
-    )
-    expect(res.status).toBe(200)
-    expect(executeHospitalLabAction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: "reject",
-        extra: expect.objectContaining({ reason: "hemolyzed", note: "Gross hemolysis" }),
-      }),
-    )
-  })
-
-  it("records tenant scope from authenticated context (not body tenantId)", async () => {
-    getCurrentUser.mockResolvedValue({ id: USER, role: "lab_scientist", email: "s@example.test" })
-    requireHospitalStaffContext.mockResolvedValue(staff("lab_scientist", TENANT_A))
-    const { POST } = await import("./route")
-    await POST(
-      new Request("https://synapseos.tech/api/lab/actions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          orderId: ORDER,
-          action: "enter_result",
-          value: "Negative",
-          tenantId: TENANT_B,
-        }),
-      }),
-    )
-    expect(executeHospitalLabAction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ctx: expect.objectContaining({ tenantId: TENANT_A }),
-      }),
-    )
-  })
-
-  it("verify uses session tenant, not body tenantId", async () => {
-    getCurrentUser.mockResolvedValue({ id: USER, role: "lab_scientist", email: "s@example.test" })
-    requireHospitalStaffContext.mockResolvedValue(staff("lab_scientist", TENANT_A))
-    const { POST } = await import("./route")
-    await POST(
-      new Request("https://synapseos.tech/api/lab/actions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          orderId: ORDER,
-          action: "verify",
-          tenantId: TENANT_B,
-        }),
-      }),
-    )
-    expect(executeHospitalLabAction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: "verify",
-        ctx: expect.objectContaining({ tenantId: TENANT_A }),
-      }),
-    )
-  })
-  it("requires durable audit before verify success", async () => {
-    getCurrentUser.mockResolvedValue({ id: USER, role: "lab_scientist", email: "s@example.test" })
-    requireHospitalStaffContext.mockResolvedValue(staff("lab_scientist"))
-    executeHospitalLabAction.mockResolvedValue({
-      order: { id: ORDER, tenantId: TENANT_A, status: "VERIFIED" },
-      result: { id: "result-1", status: "VERIFIED" },
-      warnings: [],
-    })
-    const { POST } = await import("./route")
-    const res = await POST(
-      new Request("https://synapseos.tech/api/lab/actions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orderId: ORDER, action: "verify" }),
-      }),
-    )
-    expect(res.status).toBe(200)
-    expect(requireHospitalAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "LAB_RESULT_VERIFIED", recordId: ORDER }),
-    )
-  })
-
-  it("refuses verify success when required audit fails (retry)", async () => {
-    getCurrentUser.mockResolvedValue({ id: USER, role: "lab_scientist", email: "s@example.test" })
-    requireHospitalStaffContext.mockResolvedValue(staff("lab_scientist"))
-    const { HospitalAuditRequiredError } = await import("@/lib/hospital-shared")
-    requireHospitalAudit.mockRejectedValue(new HospitalAuditRequiredError("audit insert failed"))
-    const { POST } = await import("./route")
-    const res = await POST(
-      new Request("https://synapseos.tech/api/lab/actions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orderId: ORDER, action: "verify" }),
-      }),
-    )
-    expect(res.status).toBe(503)
     const body = await res.json()
-    expect(body.code).toBe("AUDIT_REQUIRED_FAILED")
-    expect(body.outcome).toBe("retry")
-    expect(executeHospitalLabAction).toHaveBeenCalled()
+    expect(body).toMatchObject({ source: 'database', labelUrl: `/api/lab/orders/${ORDER}/label`, warnings: ['W'] })
+    expect(h.run).toHaveBeenCalledWith(expect.objectContaining({ ctx: accessState.ctx, orderId: ORDER, action: 'collect' }))
   })
 
+  it('maps engine errors to their status', async () => {
+    h.run.mockRejectedValue(new LabActionError('LAB_STALE_ORDER', 409, 'changed'))
+    const res = await post({ orderId: ORDER, action: 'enter_result', value: '1' })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: 'LAB_STALE_ORDER' })
+  })
+
+  it('platform operators still drive the simulation engine, with a validated session', async () => {
+    accessState.claims = { sub: 'op', role: 'platform_admin', email: null }
+    h.getCurrentUser.mockResolvedValue({ id: 'op', role: 'platform_admin', email: null })
+    const lab = { verify: vi.fn(), getOrder: vi.fn(() => ({ id: ORDER })), snapshot: () => ({ results: [] }) }
+    h.engine = { lab }
+    const res = await post({ orderId: ORDER, action: 'verify' })
+    expect(res.status).toBe(200)
+    expect(lab.verify).toHaveBeenCalledWith(ORDER, 'op')
+    expect(h.run).not.toHaveBeenCalled()
+  })
 })

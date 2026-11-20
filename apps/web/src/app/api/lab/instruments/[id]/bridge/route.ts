@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { LAB_MANAGER_ROLES } from "@/lib/lab/roles"
 import { supabaseAdmin } from "@synapse/db/admin"
 import { LabBridgeHashSecretMissingError, issueBridgeSecret } from "@synapse/db/lab-device-intelligence"
 import { isContextError, gateHospitalModule, logHospitalAudit } from "@/lib/hospital-shared"
@@ -9,7 +10,7 @@ export const dynamic = "force-dynamic"
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const ctx = await requireHospitalStaffContext()
   if (isContextError(ctx)) return ctx
-  if (ctx.role !== "lab_manager" && ctx.role !== "hospital_admin") {
+  if (!LAB_MANAGER_ROLES.has(ctx.role)) {
     return NextResponse.json({ error: "Credential rotation requires Lab Manager or Hospital Admin" }, { status: 403 })
   }
   const blocked = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, "lab")

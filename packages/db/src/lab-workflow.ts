@@ -139,7 +139,8 @@ const ALLOWED: Record<LabOrderStatus, LabOrderStatus[]> = {
   VERIFICATION_PENDING: ["VERIFIED", "CANCELLED"],
   VERIFIED: ["RELEASED", "AMENDED"],
   RELEASED: ["AMENDED"],
-  AMENDED: ["RELEASED"],
+  // A released report can be amended again (version 3, 4, ...).
+  AMENDED: ["RELEASED", "AMENDED"],
   CANCELLED: [],
 }
 
@@ -258,6 +259,16 @@ export function interpretResult(params: {
     }) ?? null
 
   if (!range) {
+    // Qualitative tests (RDTs, serology) rarely carry a numeric interval: read
+    // the wording so a "Positive" malaria RDT is flagged without a range row.
+    if (parseNumericResult(params.value) == null) {
+      if (/\b(positive|detected|reactive|seen)\b/i.test(params.value) && !/\b(non[- ]?reactive|not detected|not seen)\b/i.test(params.value)) {
+        return { flag: "A", isCritical: false, isAbnormal: true, range: null, referenceRange: "Negative" }
+      }
+      if (/\b(negative|not detected|non[- ]?reactive|not seen|nil)\b/i.test(params.value)) {
+        return { flag: "N", isCritical: false, isAbnormal: false, range: null, referenceRange: "Negative" }
+      }
+    }
     return { flag: "A", isCritical: false, isAbnormal: false, range: null, referenceRange: "not established" }
   }
 
@@ -385,6 +396,10 @@ export class LabWorkflow {
     analyzer?: string | null
     sex?: "M" | "F" | "I" | "U" | null
     ageYears?: number | null
+    /** Tenant / national reference ranges for this test; defaults to DEMO_REFERENCE_RANGES. */
+    ranges?: LabReferenceRange[]
+    /** Unit to report when no reference range matches (from the test catalogue). */
+    unit?: string | null
   }): { order: LabOrder; result: LabResult } {
     const order = this.getOrder(params.orderId)
     const existing = this.results.find((row) => row.labOrderId === params.orderId)
@@ -415,6 +430,7 @@ export class LabWorkflow {
       value: params.value,
       sex: params.sex,
       ageYears: params.ageYears,
+      ranges: params.ranges,
     })
     const result: LabResult = {
       id: params.resultId,
@@ -425,7 +441,7 @@ export class LabWorkflow {
       testName: order.testName,
       resultValue: params.value,
       numericValue: parseNumericResult(params.value),
-      unit: interp.range?.unit ?? "",
+      unit: interp.range?.unit ?? params.unit ?? "",
       referenceRange: interp.referenceRange,
       flag: interp.flag,
       isCritical: interp.isCritical,
@@ -503,6 +519,7 @@ export class LabWorkflow {
     amendedBy: string
     sex?: "M" | "F" | "I" | "U" | null
     ageYears?: number | null
+    ranges?: LabReferenceRange[]
   }): { result: LabResult; amendment: LabAmendment } {
     const result = this.results.find((row) => row.labOrderId === params.orderId)
     if (!result) throw new Error("LAB_RESULT_NOT_FOUND")
@@ -524,6 +541,7 @@ export class LabWorkflow {
       value: params.newValue,
       sex: params.sex,
       ageYears: params.ageYears,
+      ranges: params.ranges,
     })
     result.resultValue = params.newValue
     result.numericValue = parseNumericResult(params.newValue)

@@ -1,97 +1,79 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyToken, validateSession } from '@synapse/auth'
 import { supabaseAdmin } from '@synapse/db/admin'
+import { isLabContextError, requireLabAccessFromRequest } from '@/lib/lab/access'
+import { fetchLabWorklist, LAB_VIEWS } from '@/lib/lab/worklist'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const db = () => supabaseAdmin as any
+export const dynamic = 'force-dynamic'
 
+/**
+ * APK lab tab and result look-up.
+ *
+ *   GET /api/mobile/lab                 open orders, newest first, with counts
+ *   GET /api/mobile/lab?q=LAB-2026…     look a specimen up by accession, or a
+ *                                       patient by name / number
+ *   GET /api/mobile/lab?view=released   released results
+ *   &cursor=…                           next page
+ *
+ * This used to read the legacy encounter_orders table with no capability
+ * check, so any account with a tenant token could list patients' lab orders
+ * and none of the real lab flow showed. It now reads lab_orders behind
+ * lab.order.read (one access call) like the web console.
+ */
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get('authorization') ?? ''
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const ctx = await requireLabAccessFromRequest(req, 'order.read')
+  if (isLabContextError(ctx)) return ctx
 
-  const payload = await verifyToken(token).catch(() => null)
-  if (!payload) return NextResponse.json({ error: 'Invalid token' }, { status: 401 })
-
-  const { valid } = await validateSession(token)
-  if (!valid) return NextResponse.json({ error: 'Session expired' }, { status: 401 })
-
-  const tenantId = (payload.tenant_id as string) || ''
-  if (!tenantId) {
-    return NextResponse.json({ orders: [], stats: { pending: 0, inProgress: 0, collected: 0 } })
-  }
-
-  const { data: orders, error } = await db()
-    .from('encounter_orders')
-    .select('id, encounter_id, order_type, status, name, created_by, created_at')
-    .eq('tenant_id', tenantId)
-    .eq('order_type', 'lab')
-    .order('created_at', { ascending: false })
-    .limit(50)
-
-  if (error) {
-    return NextResponse.json({ error: 'Failed to load lab orders' }, { status: 500 })
-  }
-
-  const rows = (orders ?? []) as Array<{
-    id: string; encounter_id: string | null; status: string; name: string | null
-    created_by: string | null; created_at: string
-  }>
-
-  const encounterIds = [...new Set(rows.map((r) => r.encounter_id).filter(Boolean))] as string[]
-  const orderedByIds = [...new Set(rows.map((r) => r.created_by).filter(Boolean))] as string[]
-
-  const [encountersRes, profilesRes] = await Promise.all([
-    encounterIds.length
-      ? db().from('encounters').select('id, patient_id').in('id', encounterIds)
-      : Promise.resolve({ data: [] }),
-    orderedByIds.length
-      ? db().from('profiles').select('id, full_name, first_name, last_name').in('id', orderedByIds)
-      : Promise.resolve({ data: [] }),
-  ])
-
-  const encounterPatientMap = new Map<string, string | null>(
-    (encountersRes.data ?? []).map(
-      (e: { id: string; patient_id: string | null }): [string, string | null] => [e.id, e.patient_id]
-    )
-  )
-  const patientIds = [...new Set(Array.from(encounterPatientMap.values()).filter(Boolean))] as string[]
-
-  const patientsRes = patientIds.length
-    ? await db().from('patients').select('id, full_name, mrn').in('id', patientIds)
-    : { data: [] }
-
-  const patientMap = new Map<string, { full_name: string; mrn: string | null }>(
-    (patientsRes.data ?? []).map(
-      (p: { id: string; full_name: string; mrn: string | null }): [string, { full_name: string; mrn: string | null }] => [p.id, p]
-    )
-  )
-  const profileMap = new Map(
-    (profilesRes.data ?? []).map((p: Record<string, string | null>) => [
-      p.id,
-      p.full_name ?? ([p.first_name, p.last_name].filter(Boolean).join(' ') || null),
-    ])
-  )
-
-  const orderList = rows.map((r) => {
-    const patientId = r.encounter_id ? encounterPatientMap.get(r.encounter_id) : null
-    const patient = patientId ? patientMap.get(patientId) : undefined
-    return {
-      id: r.id,
-      patientName: patient?.full_name ?? 'Unknown patient',
-      patientMrn: patient?.mrn ?? null,
-      testName: r.name ?? 'Lab test',
-      status: r.status,
-      orderedAt: r.created_at,
-      orderedBy: r.created_by ? profileMap.get(r.created_by) ?? null : null,
-    }
+  const params = req.nextUrl.searchParams
+  const q = params.get('q')?.trim() || null
+  const view = params.get('view') ?? (q ? 'all' : 'open')
+  const cursor = params.get('cursor')
+  const { orders, nextCursor, error } = await fetchLabWorklist(ctx, {
+    view,
+    q,
+    cursor,
+    section: params.get('section'),
+    limit: Number(params.get('limit')) || 30,
   })
+  if (error) return NextResponse.json({ error: 'Failed to load lab orders' }, { status: 500 })
 
-  const stats = {
-    pending: rows.filter((r) => r.status === 'pending').length,
-    inProgress: rows.filter((r) => r.status === 'in_progress').length,
-    collected: rows.filter((r) => r.status === 'completed').length,
+  // Counts only on the first, unfiltered page: three head-only counts in parallel.
+  let stats: { pending: number; inProgress: number; collected: number } | null = null
+  if (!q && !cursor) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = supabaseAdmin as any
+    const count = (statuses: readonly string[]) =>
+      db.from('lab_orders').select('id', { count: 'exact', head: true })
+        .eq('tenant_id', ctx.tenantId).eq('is_synthetic', false).in('workflow_status', [...statuses])
+        .then((r: { count: number | null }) => r.count ?? 0)
+    const [pending, collected, inProgress] = await Promise.all([
+      count(LAB_VIEWS.collection),
+      count(LAB_VIEWS.reception),
+      count([...LAB_VIEWS.bench, ...LAB_VIEWS.verify]),
+    ])
+    stats = { pending, inProgress, collected }
   }
 
-  return NextResponse.json({ orders: orderList, stats })
+  return NextResponse.json(
+    {
+      orders: orders.map((o) => ({
+        id: o.id,
+        patientName: o.patientName ?? 'Unknown patient',
+        patientMrn: o.synapseId,
+        testName: o.testName,
+        section: o.section,
+        status: o.status,
+        urgency: o.urgency,
+        accessionNumber: o.accessionNumber,
+        orderedAt: o.orderedAt,
+        orderedBy: null,
+        // Values are shown only once a senior has released them.
+        result: ['RELEASED', 'AMENDED'].includes(o.status) && o.hasResult
+          ? { value: o.resultValue, unit: o.unit, referenceRange: o.referenceRange, flag: o.flag, isCritical: o.isCritical }
+          : null,
+      })),
+      stats: stats ?? { pending: 0, inProgress: 0, collected: 0 },
+      nextCursor,
+    },
+    { headers: { 'cache-control': 'private, no-store' } },
+  )
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { LAB_CLINICIAN_ROLES, LAB_SENIOR_ROLES } from "@/lib/lab/roles"
 import { supabaseAdmin } from "@synapse/db/admin"
 import {
   assertCallerCannotSupplyTenant,
@@ -17,7 +18,7 @@ const SAFETY = "AI decision support only. Does not verify or release results."
 export async function POST(req: NextRequest) {
   const ctx = await requireHospitalStaffContext()
   if (isContextError(ctx)) return ctx
-  if (!["lab_scientist", "lab_manager", "hospital_admin", "doctor", "clinical_officer"].includes(ctx.role)) {
+  if (!(LAB_SENIOR_ROLES.has(ctx.role) || LAB_CLINICIAN_ROLES.has(ctx.role))) {
     return NextResponse.json({ error: "Lab interpretation requires scientist, manager, or clinician access" }, { status: 403 })
   }
   const blocked = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, "lab")

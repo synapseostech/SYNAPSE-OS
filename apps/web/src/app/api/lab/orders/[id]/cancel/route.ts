@@ -4,20 +4,21 @@ import { LabWorkflow } from '@synapse/db/lab-workflow'
 import { rowToLabOrder, persistLabOrderBestEffort } from '@synapse/db/lab-order-persist'
 import { WorkQueue } from '@synapse/db/work-queue'
 import { rowToDepartmentTask, persistWorkQueueArtifactsBestEffort } from '@synapse/db/work-queue-persist'
-import { isContextError, requireHospitalCapability, gateHospitalModule, logHospitalAudit } from '@/lib/hospital-shared'
-import { requireHospitalStaffContext } from '@/lib/hospital-dept'
+import { logHospitalAudit } from '@/lib/hospital-shared/audit'
+import { isLabContextError, requireLabAccess } from '@/lib/lab/access'
 import { clinicalActionTimelineEvent, publishClinicalTimelineBestEffort } from '@synapse/db/clinical-timeline'
 import { publishTimelineEvent } from '@synapse/db/identity-persist'
 import { voidClinicalCharge } from '@synapse/db/clinical-charge'
 
 export const dynamic = 'force-dynamic'
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const ctx = await requireHospitalStaffContext(); if (isContextError(ctx)) return ctx
-  const cap = await requireHospitalCapability(ctx, 'order', 'cancel', 'lab'); if (cap) return cap
-  const moduleBlock = await gateHospitalModule(ctx.tenantId, ctx.hospitalId, 'lab'); if (moduleBlock) return moduleBlock
+  // lab.order.cancel did not exist before 20261121093700, so this route
+  // refused everyone; the migration grants it to scientists, lab admins and
+  // the ordering clinicians.
+  const ctx = await requireLabAccess('order.cancel'); if (isLabContextError(ctx)) return ctx
   const body = await req.json().catch(() => null) as { reason?: string } | null
   if (!body?.reason?.trim()) return NextResponse.json({ error: 'Cancellation reason is required' }, { status: 400 })
-  const { id } = await params; const db = supabaseAdmin as any
+  const { id } = await params; if (!/^[0-9a-f-]{36}$/i.test(id)) return NextResponse.json({ error: 'Lab order not found' }, { status: 404 }); const db = supabaseAdmin as any
   const { data: row, error } = await db.from('lab_orders').select('*').eq('id', id).eq('tenant_id', ctx.tenantId).maybeSingle()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   if (!row) return NextResponse.json({ error: 'Lab order not found' }, { status: 404 })

@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
-import { Beaker, ClipboardList, FlaskConical, Gauge, Link2, Microscope, ShieldCheck, Inbox } from "lucide-react"
+import { AlertTriangle, Beaker, BookOpen, ClipboardList, FileText, FlaskConical, Gauge, Link2, Microscope, ShieldCheck, Inbox, UserPlus } from "lucide-react"
 import { SkipLink } from "@synapse/ui"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import { SynapseLogo } from "@/components/SynapseLogo"
@@ -11,12 +11,16 @@ import { signOutHospitalClinical } from "@/lib/clinical-offline/sign-out-hospita
 
 const links = [
   { href: "/lab/orders", label: "Worklist", icon: ClipboardList },
+  { href: "/lab/walk-in", label: "Walk-in", icon: UserPlus },
+  { href: "/lab/critical", label: "Critical values", icon: AlertTriangle },
+  { href: "/lab/reports", label: "Reports", icon: FileText },
   { href: "/lab/specimens", label: "Specimens", icon: FlaskConical },
   { href: "/lab/results", label: "Results", icon: Beaker },
   { href: "/lab/verify", label: "Verification", icon: ShieldCheck },
   { href: "/lab/instruments", label: "Instruments", icon: Microscope },
   { href: "/lab/staging", label: "Staging", icon: Inbox },
   { href: "/lab/mappings", label: "Mappings", icon: Link2 },
+  { href: "/lab/catalog", label: "Catalogue", icon: BookOpen },
 ]
 
 type LabIdentity = {

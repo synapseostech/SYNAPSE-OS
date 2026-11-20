@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { provisionFacility, resumeFacilityProvision } from './facility-provision'
 import { hashFacilityInviteToken } from './facility-invite-token'
 
@@ -132,6 +132,19 @@ describe('facility orchestration with persisted effects', () => {
     expect(db.tables.profiles).toHaveLength(1)
     expect(db.tables.profiles[0].role).toBe('lab_admin')
     expect(db.tables.facility_invitations[0].role).toBe('lab_admin')
+  })
+  it('a new laboratory gets the starter test catalogue; a hospital does not', async () => {
+    const lab = Object.assign(database(), { rpc: vi.fn(async () => ({ data: 18, error: null })) })
+    const result = await provisionFacility(lab, input('laboratory', 'cat'))
+    expect(result.ok).toBe(true)
+    expect(lab.rpc).toHaveBeenCalledWith('lab_seed_starter_catalog', { p_tenant_id: result.tenantId })
+    const hospital = Object.assign(database(), { rpc: vi.fn(async () => ({ data: null, error: null })) })
+    await provisionFacility(hospital, input('hospital', 'cat'))
+    expect(hospital.rpc).not.toHaveBeenCalledWith('lab_seed_starter_catalog', expect.anything())
+  })
+  it('laboratory provisioning still succeeds when the catalogue function is missing', async () => {
+    const lab = Object.assign(database(), { rpc: vi.fn(async () => { throw new Error('function lab_seed_starter_catalog does not exist') }) })
+    expect((await provisionFacility(lab, input('laboratory', 'nofn'))).ok).toBe(true)
   })
   it('two synthetic hospitals retain distinct names, slugs, departments, and staff', async () => {
     const db = database()

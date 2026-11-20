@@ -60,7 +60,11 @@ const ROLE_KIND: Record<string, DashboardKind> = {
   // Lab
   lab_tech: 'lab',
   lab_technician: 'lab',
+  lab_scientist: 'lab',
   lab_supervisor: 'lab',
+  lab_manager: 'lab',
+  // A standalone laboratory's administrator works the bench too.
+  lab_admin: 'lab',
 
   // Front desk
   receptionist: 'reception',
