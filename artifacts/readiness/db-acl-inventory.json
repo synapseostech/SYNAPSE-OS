@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-19T20:11:35.143Z",
-  "security_definer_count": 105,
+  "generated_at": "2026-11-20T00:35:38.963Z",
+  "security_definer_count": 108,
   "public_or_anon_execute_grants": [],
   "unexpected_public_execute": [],
   "possible_implicit_public_exec": [
@@ -536,6 +536,18 @@
     {
       "file": "20261119090000_pharmacy_tally_void_mirrors.sql",
       "fn": "public.pharmacy_tally_void_mirrors"
+    },
+    {
+      "file": "20261119150000_platform_control_centre.sql",
+      "fn": "public.platform_tenant_overview"
+    },
+    {
+      "file": "20261119150000_platform_control_centre.sql",
+      "fn": "public.platform_system_usage"
+    },
+    {
+      "file": "20261119150000_platform_control_centre.sql",
+      "fn": "public.platform_slow_queries"
     },
     {
       "file": "20261119160000_pharmacy_stock_take.sql",
