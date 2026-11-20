@@ -140,6 +140,40 @@ describe('opd encounter write-up route', () => {
     expect(res.status).toBe(409)
   })
 
+  it('PUT stores tapped findings (known ids only) and the differential snapshot', async () => {
+    let updated: Record<string, unknown> | null = null
+    dbFrom.mockImplementation(
+      tableMock({
+        encounters: {
+          data: { id: ENCOUNTER, patient_id: 'pat-1', is_signed: false, chief_complaint: 'Fever', status: 'in_progress', metadata: {} },
+          onUpdate: (payload) => {
+            updated = payload as Record<string, unknown>
+          },
+        },
+      }),
+    )
+    const { PUT } = await import('./route')
+    const res = await PUT(
+      new NextRequest('https://synapseos.tech/api/opd/encounters/x/write-up', {
+        method: 'PUT',
+        body: JSON.stringify({
+          hpi: 'Fever 3 days',
+          findings: { fever: 'present', cough: 'absent', not_a_finding: 'present' },
+          differential: [{ id: 'malaria', code: '1F40.Z', score: 11 }],
+        }),
+        headers: { 'content-type': 'application/json' },
+      }),
+      { params: Promise.resolve({ id: ENCOUNTER }) },
+    )
+    expect(res.status).toBe(200)
+    const meta = (updated as unknown as { metadata: Record<string, any> }).metadata
+    expect(meta.consultation.findings).toEqual({ fever: 'present', cough: 'absent' })
+    expect(meta.consultation.differential).toEqual([{ id: 'malaria', code: '1F40.Z', score: 11 }])
+    expect(meta.consultation.engine).toMatch(/^ug-opd\./)
+    expect(meta.writeup.hpi).toBe('Fever 3 days')
+    expect(meta.writeup).not.toHaveProperty('findings')
+  })
+
   it('PUT merges writeup into metadata and syncs clinical_note', async () => {
     let updated: Record<string, unknown> | null = null
     dbFrom.mockImplementation(

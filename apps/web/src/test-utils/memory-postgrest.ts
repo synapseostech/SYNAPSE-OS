@@ -120,6 +120,12 @@ export function createMemoryDb(seed: Record<string, Row[]> = {}) {
       if (mode === 'update') {
         matched.forEach(r => Object.assign(r, payload))
         log.push({ table, op: 'update', payload })
+        // PostgREST returns one object for update().select().single().
+        if (single !== 'none') {
+          const first = matched[0]
+          if (!first) return single === 'single' ? { data: null, error: { code: 'PGRST116', message: 'no rows' }, count: null } : { data: null, error: null, count: null }
+          return { data: { ...first }, error: null, count: null }
+        }
         return { data: matched, error: null, count: null }
       }
       if (mode === 'delete') {
