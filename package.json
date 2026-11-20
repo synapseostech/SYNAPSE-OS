@@ -93,7 +93,7 @@
     "test:signed-record": "tsx --test packages/db/src/signed-record.test.ts packages/db/src/facility-lifecycle.test.ts packages/db/src/clinical-charge.test.ts packages/db/src/mpi-facility.test.ts packages/db/src/timeline.test.ts",
     "test:fhir": "npx vitest run packages/interop/src/fhir/r4.test.ts",
     "test:icd11": "npx vitest run packages/interop/src/terminology/icd11.test.ts",
-    "test:dhis2": "tsx --test packages/interop/src/dhis2/hmis105.test.ts packages/interop/src/dhis2/privacy-export.test.ts packages/interop/src/dhis2/rollup.test.ts packages/interop/src/adapters/dhis2.test.ts && npx vitest run apps/web/src/app/api/hospital/reports/hmis105/route.test.ts",
+    "test:dhis2": "tsx --test packages/interop/src/dhis2/hmis105.test.ts packages/interop/src/dhis2/epi-surveillance.test.ts packages/interop/src/dhis2/privacy-export.test.ts packages/interop/src/dhis2/rollup.test.ts packages/interop/src/adapters/dhis2.test.ts && npx vitest run apps/web/src/app/api/hospital/reports",
     "test:consultation": "npx vitest run packages/interop/src/terminology/icd11-index.test.ts packages/interop/src/intelligence/differential-engine.test.ts \"apps/web/src/app/api/opd/encounters/[id]/workspace/route.test.ts\" \"apps/web/src/app/api/opd/encounters/[id]/diagnoses/route.test.ts\" \"apps/web/src/app/api/opd/encounters/[id]/write-up/route.test.ts\" && tsx --test packages/db/src/patient-continuity.test.ts",
     "test:a11y-smoke": "node scripts/check-a11y-smoke.mjs",
     "test:secrets": "node scripts/check-secrets.mjs",
