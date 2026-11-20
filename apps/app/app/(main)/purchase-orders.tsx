@@ -26,7 +26,7 @@ import {
   type PharmacyPurchaseOrder,
   type PharmacySupplier,
 } from '@/lib/api'
-import { colors, radii, spacing, tabBarHeight, typography, TONE_COLORS } from '@/lib/theme'
+import { radii, spacing, tabBarHeight, typography, TONE_COLORS, makeStyles, useTheme } from '@/lib/theme'
 
 type ReceiptDraft = Record<
   string,
@@ -34,6 +34,8 @@ type ReceiptDraft = Record<
 >
 
 export default function PurchaseOrdersScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const insets = useSafeAreaInsets()
   const [orders, setOrders] = useState<PharmacyPurchaseOrder[]>([])
@@ -389,7 +391,7 @@ export default function PurchaseOrdersScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   toolbar: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   toolBtn: {
@@ -466,4 +468,4 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.borderSubtle,
   },
   hitText: { color: colors.text, fontFamily: 'DMSans_500Medium' },
-})
+}))

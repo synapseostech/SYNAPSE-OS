@@ -10,9 +10,10 @@ import {
   fetchPharmacySettings,
   patchPharmacySettings,
 } from '@/lib/api'
-import { colors, radii, spacing, tabBarHeight, typography } from '@/lib/theme'
+import { radii, spacing, tabBarHeight, typography, makeStyles } from '@/lib/theme'
 
 export default function PharmacySettingsScreen() {
+  const styles = useStyles()
   const { token, user } = useAuth()
   const insets = useSafeAreaInsets()
   const [loading, setLoading] = useState(true)
@@ -116,7 +117,7 @@ export default function PharmacySettingsScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   card: {
     backgroundColor: colors.bgElevated,
@@ -136,4 +137,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     marginTop: spacing.sm,
   },
-})
+}))

@@ -12,7 +12,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface Medication {
   id: string
@@ -24,6 +24,8 @@ interface Medication {
 }
 
 export default function MedsScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const [medications, setMedications] = useState<Medication[]>([])
@@ -102,7 +104,7 @@ export default function MedsScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   listContent: { padding: spacing.lg, paddingBottom: spacing.xxxl },
   card: {
@@ -154,4 +156,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     marginTop: spacing.sm,
   },
-})
+}))

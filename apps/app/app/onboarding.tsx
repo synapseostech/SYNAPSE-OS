@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/Button'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, ApiError } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 const STEPS = [
   { number: 1, label: 'Pharmacy profile' },
@@ -49,6 +49,7 @@ interface ProductRow {
 }
 
 export default function OnboardingScreen() {
+  const styles = useStyles()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -265,6 +266,8 @@ function Field({
   onChangeText: (v: string) => void
   keyboardType?: 'default' | 'numeric' | 'phone-pad'
 }) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   return (
     <View style={{ gap: 4 }}>
       <Text style={styles.label}>{label}</Text>
@@ -281,6 +284,8 @@ function Field({
 }
 
 function ToggleRow({ label, value, onValueChange }: { label: string; value: boolean; onValueChange: (v: boolean) => void }) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   return (
     <View style={styles.toggleRow}>
       <Text style={styles.toggleLabel}>{label}</Text>
@@ -289,7 +294,7 @@ function ToggleRow({ label, value, onValueChange }: { label: string; value: bool
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: { paddingHorizontal: spacing.xl, paddingTop: spacing.md, gap: spacing.xs },
   title: { ...typography.h2, color: colors.text, fontFamily: 'BricolageGrotesque_700Bold' },
@@ -323,4 +328,4 @@ const styles = StyleSheet.create({
   doneTitle: { ...typography.h3, color: colors.text, fontFamily: 'DMSans_700Bold' },
   footer: { flexDirection: 'row', gap: spacing.sm, padding: spacing.lg, borderTopWidth: 1, borderTopColor: colors.border },
   footerBtn: { flex: 1 },
-})
+}))

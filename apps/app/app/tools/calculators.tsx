@@ -11,7 +11,7 @@ import {
   calcIbw,
   calcWeightDose,
 } from '@/lib/calculators'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles } from '@/lib/theme'
 
 type Tab = 'bmi' | 'crcl' | 'egfr' | 'dose' | 'drip'
 
@@ -24,6 +24,7 @@ const TABS: { key: Tab; label: string }[] = [
 ]
 
 export default function CalculatorsScreen() {
+  const styles = useStyles()
   const [tab, setTab] = useState<Tab>('bmi')
   const [weight, setWeight] = useState('')
   const [height, setHeight] = useState('')
@@ -229,7 +230,7 @@ export default function CalculatorsScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   version: {
     ...typography.caption,
     color: colors.textMuted,
@@ -295,4 +296,4 @@ const styles = StyleSheet.create({
     marginTop: spacing.lg,
     lineHeight: 18,
   },
-})
+}))

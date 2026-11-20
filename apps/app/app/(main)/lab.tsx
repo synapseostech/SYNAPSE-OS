@@ -11,7 +11,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface LabOrder {
   id: string
@@ -30,6 +30,8 @@ interface LabStats {
 }
 
 export default function LabScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const [orders, setOrders] = useState<LabOrder[]>([])
   const [stats, setStats] = useState<LabStats>({ pending: 0, inProgress: 0, collected: 0 })
@@ -116,6 +118,8 @@ export default function LabScreen() {
 }
 
 function StatPill({ label, value, tone }: { label: string; value: number; tone: 'warning' | 'info' | 'success' }) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const bg = tone === 'warning' ? colors.warningSoft : tone === 'info' ? colors.infoSoft : colors.successSoft
   const fg = tone === 'warning' ? colors.warning : tone === 'info' ? colors.info : colors.success
   return (
@@ -130,7 +134,7 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   statsRow: {
     flexDirection: 'row',
@@ -214,4 +218,4 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontFamily: 'DMSans_400Regular',
   },
-})
+}))

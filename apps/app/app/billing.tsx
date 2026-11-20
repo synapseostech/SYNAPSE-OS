@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/Button'
 import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
+import { radii, spacing, typography, TONE_COLORS, makeStyles, useTheme } from '@/lib/theme'
 
 interface Subscription {
   status: string
@@ -44,6 +44,8 @@ const PHARM_BILLING = 'https://pharm.synapseos.tech/portal/billing'
 const ACTIVE = new Set(['active', 'trial', 'trialing'])
 
 export default function BillingScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -141,6 +143,7 @@ export default function BillingScreen() {
 }
 
 function Row({ k, v }: { k: string; v: string }) {
+  const styles = useStyles()
   return (
     <View style={styles.kv}>
       <Text style={styles.kvKey}>{k}</Text>
@@ -149,7 +152,7 @@ function Row({ k, v }: { k: string; v: string }) {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   backBtn: { width: 48 },
@@ -170,4 +173,4 @@ const styles = StyleSheet.create({
   rowLeft: { ...typography.bodySm, color: colors.text, flex: 1 },
   rowRight: { ...typography.bodySm, color: colors.textSecondary, fontFamily: 'IBMPlexMono_400Regular' },
   help: { ...typography.bodySm, color: colors.textMuted },
-})
+}))

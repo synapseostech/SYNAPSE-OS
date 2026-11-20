@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Button } from '@/components/ui/Button'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, ApiError } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface Product {
   id: string
@@ -33,6 +33,8 @@ interface Line {
 }
 
 export default function ReceiveStockScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -178,7 +180,7 @@ export default function ReceiveStockScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   backBtn: { width: 48 },
@@ -196,4 +198,4 @@ const styles = StyleSheet.create({
   section: { ...typography.bodyMedium, color: colors.primary, fontFamily: 'DMSans_700Bold', marginTop: spacing.md },
   lineCard: { backgroundColor: colors.surface, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginTop: spacing.xs },
   lineName: { ...typography.bodySm, color: colors.text, fontFamily: 'DMSans_500Medium' },
-})
+}))

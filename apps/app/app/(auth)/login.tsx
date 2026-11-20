@@ -17,11 +17,13 @@ import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { TextField } from '@/components/ui/TextField'
 import { useAuth, type WorkspaceOption } from '@/lib/auth'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 type Step = 'credentials' | 'workspace' | 'otp'
 
 export default function LoginScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const [step, setStep] = useState<Step>('credentials')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -223,7 +225,7 @@ export default function LoginScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   flex: { flex: 1 },
   scroll: {
     flexGrow: 1,
@@ -321,4 +323,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     letterSpacing: 0.5,
   },
-})
+}))

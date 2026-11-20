@@ -16,7 +16,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { useAuth } from '@/lib/auth'
 import { apiRequest, ApiError } from '@/lib/api'
-import { colors, radii, spacing, typography, TONE_COLORS } from '@/lib/theme'
+import { radii, spacing, typography, TONE_COLORS, makeStyles, useTheme } from '@/lib/theme'
 
 interface StaffUser {
   id: string
@@ -29,6 +29,8 @@ interface StaffUser {
 const ROLES = ['pharmacy_staff', 'pharmacy_cashier', 'pharmacist', 'pharmacy_admin']
 
 export default function UsersScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -182,7 +184,7 @@ export default function UsersScreen() {
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   backBtn: { width: 48 },
@@ -202,4 +204,4 @@ const styles = StyleSheet.create({
   chipText: { ...typography.caption, color: colors.textSecondary, textTransform: 'capitalize' },
   chipTextActive: { color: colors.primaryForeground, fontFamily: 'DMSans_700Bold' },
   inviteActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
-})
+}))

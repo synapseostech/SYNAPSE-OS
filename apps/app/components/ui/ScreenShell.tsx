@@ -13,7 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons'
 import { useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { colors, spacing, typography } from '@/lib/theme'
+import { spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 type Props = {
   title: string
@@ -39,6 +39,8 @@ export function ScreenShell({
   contentStyle,
   onBack,
 }: Props) {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const bottomPad = Math.max(insets.bottom, spacing.md) + spacing.lg
@@ -92,7 +94,7 @@ export function ScreenShell({
   )
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   flex: { flex: 1 },
   header: {
@@ -125,4 +127,4 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
   },
-})
+}))

@@ -11,7 +11,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface Claim {
   id: string
@@ -33,6 +33,8 @@ interface ClaimsSummary {
 }
 
 export default function ClaimsScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { token } = useAuth()
   const [claims, setClaims] = useState<Claim[]>([])
   const [summary, setSummary] = useState<ClaimsSummary | null>(null)
@@ -129,6 +131,7 @@ export default function ClaimsScreen() {
 }
 
 function SummaryItem({ label, value, color }: { label: string; value: number; color: string }) {
+  const styles = useStyles()
   return (
     <View style={styles.summaryItem}>
       <Text style={[styles.summaryValue, { color }]}>{value}</Text>
@@ -141,7 +144,7 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   summaryCard: {
     margin: spacing.lg,
@@ -218,4 +221,4 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     marginTop: 4,
   },
-})
+}))

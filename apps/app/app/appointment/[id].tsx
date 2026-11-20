@@ -14,7 +14,7 @@ import { LoadingBlock } from '@/components/ui/LoadingBlock'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { useAuth } from '@/lib/auth'
 import { apiRequest } from '@/lib/api'
-import { colors, radii, spacing, typography } from '@/lib/theme'
+import { radii, spacing, typography, makeStyles, useTheme } from '@/lib/theme'
 
 interface AppointmentDetail {
   id: string
@@ -29,6 +29,8 @@ interface AppointmentDetail {
 }
 
 export default function AppointmentDetailScreen() {
+  const styles = useStyles()
+  const { colors } = useTheme()
   const { id } = useLocalSearchParams<{ id: string }>()
   const { token } = useAuth()
   const router = useRouter()
@@ -139,6 +141,7 @@ export default function AppointmentDetailScreen() {
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
+  const styles = useStyles()
   return (
     <View style={styles.infoRow}>
       <Text style={styles.infoLabel}>{label}</Text>
@@ -155,7 +158,7 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   container: { flex: 1, backgroundColor: colors.bg },
   content: { padding: spacing.xl, paddingBottom: spacing.xxxl * 2 },
   center: { flex: 1, backgroundColor: colors.bg, justifyContent: 'center', alignItems: 'center', padding: spacing.xxl, gap: spacing.lg },
@@ -178,4 +181,4 @@ const styles = StyleSheet.create({
   infoLabel: { ...typography.bodySm, color: colors.textSecondary, fontFamily: 'DMSans_400Regular' },
   infoValue: { ...typography.bodySm, color: colors.text, fontFamily: 'DMSans_500Medium', flex: 1, textAlign: 'right' },
   cancelBtn: { marginTop: spacing.lg, borderColor: colors.danger },
-})
+}))
