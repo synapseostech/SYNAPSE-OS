@@ -93,6 +93,7 @@
     "test:signed-record": "tsx --test packages/db/src/signed-record.test.ts packages/db/src/facility-lifecycle.test.ts packages/db/src/clinical-charge.test.ts packages/db/src/mpi-facility.test.ts packages/db/src/timeline.test.ts",
     "test:fhir": "npx vitest run packages/interop/src/fhir/r4.test.ts",
     "test:icd11": "npx vitest run packages/interop/src/terminology/icd11.test.ts",
+    "test:finance": "npx vitest run apps/web/src/lib/hospital-reports/finance.test.ts apps/web/src/app/api/hospital/reports/finance",
     "test:a11y-smoke": "node scripts/check-a11y-smoke.mjs",
     "test:secrets": "node scripts/check-secrets.mjs",
     "test:email-credential-safety": "vitest run apps/web/src/lib/email-credential-safety.test.ts packages/email/src/templates.credentials.test.ts apps/web/src/lib/platform/facility-invitations.server.test.ts && cd apps/pharmacy && vitest run lib/email.credentials.test.ts lib/secure-invite.test.ts app/api/admin/users/route.test.ts",

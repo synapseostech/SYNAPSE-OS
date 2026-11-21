@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-20T20:06:12.383Z",
+  "generated_at": "2026-11-21T17:08:49.976Z",
   "routes": [
     {
       "route": "/",
@@ -569,6 +569,11 @@
     {
       "route": "/hospital/admin/departments",
       "source_file": "apps/web/src/app/hospital/admin/departments/page.tsx",
+      "classification": "ACTIVE"
+    },
+    {
+      "route": "/hospital/admin/finance",
+      "source_file": "apps/web/src/app/hospital/admin/finance/page.tsx",
       "classification": "ACTIVE"
     },
     {

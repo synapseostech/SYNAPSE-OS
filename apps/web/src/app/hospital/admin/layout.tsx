@@ -12,6 +12,7 @@ import {
   Settings,
   ToggleLeft,
   Users,
+  Wallet,
 } from 'lucide-react'
 import { SynapseLogo } from '../../../components/SynapseLogo'
 import { ThemeToggle } from '../../../components/ThemeToggle'
@@ -26,6 +27,7 @@ const NAV = [
   { href: '/hospital/admin/staff', label: 'Staff', icon: Users },
   { href: '/hospital/admin/modules', label: 'Modules', icon: ToggleLeft },
   { href: '/hospital/admin/services', label: 'Services', icon: Package },
+  { href: '/hospital/admin/finance', label: 'Finance', icon: Wallet },
   { href: '/hospital/admin/audit', label: 'Audit Log', icon: FileText },
 ]
 
