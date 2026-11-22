@@ -231,6 +231,11 @@ export default function LabWorklistPage() {
                         Reject sample
                       </button>
                     ) : null}
+                    {isPanel && order.accessionNumber && ["PROCESSING", "RELEASED", "AMENDED"].includes(s) ? (
+                      <button type="button" onClick={() => openAndPrint(`/api/lab/orders/${order.id}/panel-report`)} className="rounded-lg border border-sky-500/50 px-3 py-1.5 text-xs text-sky-700 dark:text-sky-300">
+                        {s === "PROCESSING" ? "Interim panel report" : "Panel report"}
+                      </button>
+                    ) : null}
                     {!isPanel && ["RESULT_ENTERED", "VERIFICATION_PENDING"].includes(s) ? (
                       <button type="button" disabled={disabled} onClick={() => act(order, "authorise")} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
                         Authorise &amp; release
