@@ -14,7 +14,7 @@ export function queryMock(result: Result | (() => Result) = { data: null, error:
     return { data: r.data ?? null, error: r.error ?? null, count: r.count ?? null }
   }
   const builder: Record<string, unknown> = {}
-  const chain = ['select', 'insert', 'update', 'upsert', 'delete', 'eq', 'neq', 'in', 'is', 'not', 'or', 'lt', 'gt', 'lte', 'gte', 'ilike', 'order', 'limit', 'range']
+  const chain = ['select', 'insert', 'update', 'upsert', 'delete', 'eq', 'neq', 'in', 'is', 'not', 'or', 'lt', 'gt', 'lte', 'gte', 'ilike', 'contains', 'order', 'limit', 'range']
   for (const method of chain) {
     builder[method] = vi.fn((...args: unknown[]) => { calls.push({ method, args }); return builder })
   }

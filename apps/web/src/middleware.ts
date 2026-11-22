@@ -444,6 +444,7 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/nurse/") ||
     pathname.startsWith("/encounter/") ||
     pathname.startsWith("/lab/") ||
+    pathname.startsWith("/radiology/") ||
     pathname.startsWith("/pharmacy/") ||
     pathname.startsWith("/admin/") ||
     pathname.startsWith("/hospital/") ||

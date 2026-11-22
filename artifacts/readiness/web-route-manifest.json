@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-22T05:06:06.715Z",
+  "generated_at": "2026-11-22T15:21:29.336Z",
   "routes": [
     {
       "route": "/",
@@ -1354,17 +1354,17 @@
     {
       "route": "/radiology/orders",
       "source_file": "apps/web/src/app/radiology/orders/page.tsx",
-      "classification": "ROADMAP"
+      "classification": "ACTIVE"
     },
     {
       "route": "/radiology/reports",
       "source_file": "apps/web/src/app/radiology/reports/page.tsx",
-      "classification": "ROADMAP"
+      "classification": "ACTIVE"
     },
     {
       "route": "/radiology/results",
       "source_file": "apps/web/src/app/radiology/results/page.tsx",
-      "classification": "ROADMAP"
+      "classification": "REDIRECT"
     },
     {
       "route": "/referrals",

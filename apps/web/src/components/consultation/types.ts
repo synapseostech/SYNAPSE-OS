@@ -35,6 +35,19 @@ export type WorkspaceLabOrder = {
   results: WorkspaceLabResult[]
 }
 
+export type WorkspaceImaging = {
+  id: string
+  accession_number: string | null
+  study_description: string | null
+  modality: string
+  priority: string
+  worklist_status: 'pending' | 'in_progress' | 'reported' | 'verified' | string
+  metadata: { exam_code?: string } | null
+  created_at: string
+  /** Only verified reports are sent to the clinician. */
+  radiology_reports?: { impression: string | null; findings: string | null; is_critical: boolean | null; reported_at: string | null }[]
+}
+
 export type WorkspaceVitals = {
   bp_systolic?: number | null
   bp_diastolic?: number | null
@@ -73,6 +86,7 @@ export type WorkspaceResponse = {
     vitals: WorkspaceVitals | null
     diagnoses: WorkspaceDiagnosis[]
     labOrders: WorkspaceLabOrder[]
+    imaging: WorkspaceImaging[]
     prescriptions: { medication_display: string | null; dose: string | null; status: string | null }[]
   }
   summary: ContinuitySummary

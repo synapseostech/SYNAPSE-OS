@@ -122,6 +122,20 @@ export async function GET(
       .limit(300),
   ])
 
+  // Imaging for this visit; report text only once a radiologist has verified it.
+  const { data: imagingRows } = await db
+    .from('imaging_studies')
+    .select('id, accession_number, study_description, modality, priority, worklist_status, metadata, created_at, radiology_reports(impression, findings, is_critical, reported_at)')
+    .eq('tenant_id', ctx.tenantId)
+    .eq('encounter_id', encounterId)
+    .eq('is_deleted', false)
+    .order('created_at', { ascending: false })
+    .limit(50)
+  const imaging = ((imagingRows ?? []) as Array<{ worklist_status: string; radiology_reports?: unknown }>).map((s) => ({
+    ...s,
+    radiology_reports: s.worklist_status === 'verified' ? (Array.isArray(s.radiology_reports) ? s.radiology_reports : s.radiology_reports ? [s.radiology_reports] : []) : [],
+  }))
+
   const diagnoses = dxRes.data ?? []
   const prescriptions = rxRes.data ?? []
   const vitals = vitalsRes.data ?? []
@@ -171,6 +185,7 @@ export async function GET(
         labOrders: labOrders
           .filter((o: { encounter_id: string }) => o.encounter_id === encounterId)
           .map((o: { id: string }) => ({ ...o, results: resultsByOrder.get(o.id) ?? [] })),
+        imaging,
         prescriptions: prescriptions.filter((p: { encounter_id: string }) => p.encounter_id === encounterId),
       },
       summary,

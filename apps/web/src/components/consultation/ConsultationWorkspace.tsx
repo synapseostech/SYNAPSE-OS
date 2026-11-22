@@ -256,6 +256,25 @@ export function ConsultationWorkspace({ encounterId }: { encounterId: string }) 
 
   const orderTest = async (t: OrderableTest, urgent: boolean) => {
     if (!data) return
+    if (t.kind === 'imaging') {
+      // The indication goes with the request: complaint plus the diagnoses being considered.
+      const considering = result.differentials.slice(0, 2).map((d) => `?${d.name}`).join(', ')
+      const indication = [data.encounter.chiefComplaint, considering].filter(Boolean).join('. ') || t.name
+      const res = await fetch('/api/hospital/radiology/orders', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ encounter_id: encounterId, exam_code: t.examCode, clinical_indication: indication.slice(0, 2000), priority: urgent ? 'urgent' : 'routine' }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        flash('error', body.error === 'module_disabled' ? 'Radiology is not switched on for this hospital' : typeof body.error === 'string' ? body.error : `${t.name} not requested`)
+        return
+      }
+      flash('ok', `${t.name} requested from radiology`)
+      await load({ keepEdits: true })
+      return
+    }
     const res = await fetch('/api/opd/lab-orders', {
       method: 'POST',
       credentials: 'include',
@@ -488,6 +507,7 @@ export function ConsultationWorkspace({ encounterId }: { encounterId: string }) 
                 result={result}
                 catalog={data.labCatalog}
                 orders={enc.labOrders}
+                imaging={enc.imaging ?? []}
                 diagnoses={enc.diagnoses}
                 onAddDiagnosis={addDiagnosis}
                 onOrder={orderTest}
@@ -499,7 +519,7 @@ export function ConsultationWorkspace({ encounterId }: { encounterId: string }) 
               <h2 className="flex items-center gap-2 text-sm font-semibold text-primary-color">
                 <FlaskConical className="h-4 w-4 text-orange" aria-hidden /> Ordered today
               </h2>
-              {enc.labOrders.length === 0 ? (
+              {enc.labOrders.length === 0 && (enc.imaging ?? []).length === 0 ? (
                 <p className="mt-1 text-xs text-muted-color">Nothing yet. Order from a diagnosis above.</p>
               ) : (
                 <ul className="mt-2 space-y-1.5">
@@ -517,6 +537,23 @@ export function ConsultationWorkspace({ encounterId }: { encounterId: string }) 
                           )}
                         </span>
                         <span className="shrink-0 rounded-full bg-elevated px-2 py-0.5 text-[11px] text-secondary-color">{(o.workflow_status ?? o.status ?? 'ordered').replace(/_/g, ' ')}</span>
+                      </li>
+                    )
+                  })}
+                  {(enc.imaging ?? []).map((st) => {
+                    const rep = st.worklist_status === 'verified' ? st.radiology_reports?.[0] : undefined
+                    return (
+                      <li key={st.id} className="flex items-start justify-between gap-2 text-sm">
+                        <span className="min-w-0">
+                          <span className="text-primary-color">{st.study_description ?? st.modality}</span>
+                          {st.accession_number && <span className="ml-1.5 font-mono text-[11px] text-muted-color">{st.accession_number}</span>}
+                          {rep && (
+                            <a href={`/api/hospital/radiology/studies/${st.id}/report`} target="_blank" rel="noopener" className={`block text-xs underline decoration-dotted ${rep.is_critical ? 'font-semibold text-red-500' : 'text-primary-color'}`}>
+                              {rep.impression}
+                            </a>
+                          )}
+                        </span>
+                        <span className="shrink-0 rounded-full bg-elevated px-2 py-0.5 text-[11px] text-secondary-color">{st.worklist_status === 'verified' ? 'reported' : st.worklist_status.replace(/_/g, ' ')}</span>
                       </li>
                     )
                   })}
