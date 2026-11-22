@@ -1,8 +1,11 @@
+'use client'
+
+import { Hmis105Report } from '@/components/reports/Hmis105Report'
+
 export default function DoctorReportsPage() {
   return (
-    <main className="min-h-screen bg-base text-primary-color p-8">
-      <h1 className="font-display text-2xl">Reports</h1>
-      <p className="text-muted-color mt-2">Coming soon.</p>
+    <main className="clinical-page mx-auto max-w-6xl px-4 py-6">
+      <Hmis105Report />
     </main>
-  );
+  )
 }

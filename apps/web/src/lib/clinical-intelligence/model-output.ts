@@ -1,4 +1,4 @@
-import { lookupStem } from "@synapse/interop"
+import { lookupIcd11Code as lookupStem } from "@synapse/interop/icd11-index"
 import { PATHWAY_CATALOG } from "@synapse/db/pathways"
 
 /**

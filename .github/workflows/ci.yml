@@ -181,6 +181,12 @@ jobs:
       - name: ICD-11 outage survival
         run: npm run test:icd11
 
+      - name: Consultation (WHO ICD-11 index, differential engine, patient continuity)
+        run: npm run test:consultation
+
+      - name: DHIS2 export and HMIS 105 (ancestor rollup, small-cell suppression, privacy)
+        run: npm run test:dhis2
+
       - name: CodeQL high-severity remediation regressions (XSS, ReDoS, randomness, bridge hashing)
         run: npm run test:security-remediation
 

@@ -10,6 +10,7 @@ import {
 } from '@synapse/db/clinical-writeup'
 import { isContextError, requireHospitalCapability, gateHospitalModule, logHospitalAudit, hospitalOutboxWrapMaterial } from '@/lib/hospital-shared'
 import { requireHospitalStaffContext } from '@/lib/hospital-dept'
+import { DIFFERENTIAL_ENGINE_VERSION, FINDINGS } from '@synapse/interop/differential-engine'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,11 +25,26 @@ const writeupBodySchema = z.object({
   assessment: z.string().max(8000).optional(),
   plan: z.string().max(8000).optional(),
   syncClinicalNote: z.boolean().optional().default(true),
+  /** Findings tapped on the consultation screen: id -> present | absent. */
+  findings: z.record(z.string().max(60), z.enum(['present', 'absent'])).optional(),
+  /** What the differential showed when the clinician saved (audit of decision support). */
+  differential: z
+    .array(z.object({ id: z.string().max(60), code: z.string().max(20), score: z.number() }))
+    .max(10)
+    .optional(),
 })
+
+function cleanFindings(input: Record<string, 'present' | 'absent'> | undefined) {
+  if (!input) return undefined
+  const out: Record<string, 'present' | 'absent'> = {}
+  for (const [k, v] of Object.entries(input)) if (k in FINDINGS) out[k] = v
+  return out
+}
 
 type EncounterMeta = {
   clinical_note?: string
   writeup?: unknown
+  consultation?: unknown
 } & Record<string, unknown>
 
 async function loadEncounter(db: any, tenantId: string, encounterId: string) {
@@ -69,6 +85,7 @@ export async function GET(
     chiefComplaint: encounter.chief_complaint,
     clinicalNote: meta.clinical_note ?? composeClinicalNote(writeup, encounter.chief_complaint),
     writeup,
+    consultation: meta.consultation ?? null,
     completeness: writeupCompleteness(writeup),
     // Auth identity for offline SyncCommand construction — never trust client-supplied tenant/actor on apply.
     syncContext: {
@@ -113,9 +130,10 @@ export async function PUT(
   }
 
   const existing = writeupFromEncounterMetadata(encounter.metadata)
+  const { findings: rawFindings, differential, syncClinicalNote: _sync, ...writeupFields } = parsed.data
   const nextWriteup = normalizeClinicalWriteup({
     ...existing,
-    ...parsed.data,
+    ...writeupFields,
     updatedAt: new Date().toISOString(),
     updatedBy: ctx.userId,
   })
@@ -125,6 +143,20 @@ export async function PUT(
     : (metadata.clinical_note ?? '')
   if (parsed.data.syncClinicalNote) {
     metadata = { ...metadata, clinical_note: clinicalNote }
+  }
+  const findings = cleanFindings(rawFindings)
+  if (findings || differential) {
+    const prev = (metadata.consultation ?? {}) as Record<string, unknown>
+    metadata = {
+      ...metadata,
+      consultation: {
+        ...prev,
+        ...(findings ? { findings } : {}),
+        ...(differential ? { differential, engine: DIFFERENTIAL_ENGINE_VERSION } : {}),
+        updatedAt: new Date().toISOString(),
+        updatedBy: ctx.userId,
+      },
+    }
   }
 
   const { error: updateError } = await db
@@ -145,7 +177,7 @@ export async function PUT(
     action: 'UPDATE',
     tableName: 'encounters',
     recordId: encounterId,
-    newValue: { writeup: nextWriteup },
+    newValue: { writeup: nextWriteup, ...(findings || differential ? { consultation: metadata.consultation } : {}) },
   })
 
   return NextResponse.json({

@@ -3,7 +3,7 @@
  * Reads verified stem codes only — never patient/encounter identifiers in output.
  */
 
-import { isKnownIcd11Stem } from "../terminology/icd11"
+import { isIcd11Code as isKnownIcd11Stem } from "../terminology/icd11-index"
 import type { AggregateCaseFact } from "./privacy-export"
 
 export type DiagnosisRollupRow = {
