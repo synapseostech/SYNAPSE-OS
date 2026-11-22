@@ -133,6 +133,11 @@ async function commit(db: Db, ctx: LabEngineContext, orderId: string, expectedSt
     if (error.code === 'LB409' || /LAB_STALE_ORDER/.test(message)) {
       throw new LabActionError('LAB_STALE_ORDER', 409, 'This order was changed by someone else. Reload it and try again.')
     }
+    // Westgard rejection on this analyte (lab_orders_qc_guard): nothing was written.
+    if (error.code === 'LB423' || /LAB_QC_LOCKED/.test(message)) {
+      const detail = message.replace(/^.*?LAB_QC_LOCKED:\s*/, '')
+      throw new LabActionError('LAB_QC_LOCKED', 423, detail ? detail.charAt(0).toUpperCase() + detail.slice(1) : 'Quality control failed for this test. Rerun the control before authorising.')
+    }
     throw new LabActionError('LAB_COMMIT_FAILED', 500, message || 'lab_commit_action failed')
   }
   return { reportId: (data as { reportId?: string | null } | null)?.reportId ?? null }

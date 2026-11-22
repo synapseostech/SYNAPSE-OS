@@ -10,4 +10,4 @@ trap '"$BIN/pg_ctl" -D "$WORK/data" -m immediate stop >/dev/null 2>&1 || true; r
 "$BIN/pg_ctl" -D "$WORK/data" -o "-p $PORT -k $SOCK -c listen_addresses=''" -l "$WORK/log" -w start >/dev/null
 run() { psql -h "$SOCK" -p "$PORT" -U postgres -v ON_ERROR_STOP=1 -q -X "$@"; }
 run -f "$DIR/00-preamble.sql" -f "$DIR/01-stub-schema.sql"
-(cd "$DIR" && run -f 03-scenario.sql -f 04-panels.sql)
+(cd "$DIR" && run -f 03-scenario.sql -f 04-panels.sql -f 05-qc.sql)

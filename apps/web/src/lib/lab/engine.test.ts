@@ -142,6 +142,16 @@ describe('runLabAction: one read, one write', () => {
     expect(err).toMatchObject({ code: 'LAB_STALE_ORDER', status: 409 })
   })
 
+  it('turns a Westgard lock into 423 LAB_QC_LOCKED with the failed controls named', async () => {
+    const m = setup(bundle('VERIFICATION_PENDING', { results: [resultRow()] }), {
+      error: { message: 'LAB_QC_LOCKED: quality control failed for Haemoglobin L1 — fix the cause and rerun the control before authorising', code: 'LB423' },
+    })
+    const err = await runLabAction({ ctx: ctx(), orderId: ORDER, action: 'authorise', db: m.db }).catch((e) => e)
+    expect(err).toBeInstanceOf(LabActionError)
+    expect(err).toMatchObject({ code: 'LAB_QC_LOCKED', status: 423 })
+    expect(err.message).toMatch(/^Quality control failed for Haemoglobin L1/)
+  })
+
   it('refuses an empty result', async () => {
     const m = setup(bundle('RECEIVED'))
     await expect(runLabAction({ ctx: ctx(TECH, 'lab_tech'), orderId: ORDER, action: 'enter_result', extra: { value: '  ' }, db: m.db })).rejects.toMatchObject({ status: 400 })
