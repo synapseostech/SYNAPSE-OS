@@ -55,6 +55,11 @@ function seed() {
       { encounter_id: 'enc-today', tenant_id: 'tenant-a', recorded_at: '2026-11-20T08:05:00Z', bp_systolic: 150, temperature_c: 38.4, is_deleted: false },
     ],
     lab_results: [],
+    imaging_studies: [
+      { id: 'img-draft', tenant_id: 'tenant-a', encounter_id: 'enc-today', is_deleted: false, study_description: 'Chest X-ray', modality: 'XR', priority: 'routine', worklist_status: 'reported', metadata: { exam_code: 'CXR' }, created_at: '2026-11-20T08:30:00Z', radiology_reports: [{ impression: 'DRAFT-IMPRESSION' }] },
+      { id: 'img-final', tenant_id: 'tenant-a', encounter_id: 'enc-today', is_deleted: false, study_description: 'Abdominal ultrasound', modality: 'US', priority: 'routine', worklist_status: 'verified', metadata: { exam_code: 'ABD_US' }, created_at: '2026-11-20T08:20:00Z', radiology_reports: [{ impression: 'Normal abdomen' }] },
+      { id: 'img-other', tenant_id: 'tenant-b', encounter_id: 'enc-today', is_deleted: false, study_description: 'Leak', modality: 'XR', priority: 'routine', worklist_status: 'verified', metadata: {}, created_at: '2026-11-20T08:10:00Z', radiology_reports: [] },
+    ],
     lab_orders: [
       { id: 'o1', encounter_id: 'enc-today', tenant_id: 'tenant-a', test_name: 'Malaria RDT', loinc_code: '58413-6', workflow_status: 'ordered', ordered_at: '2026-11-20T08:10:00Z' },
     ],
@@ -84,6 +89,15 @@ describe('consultation workspace', () => {
     expect(body.summary.allergies.map((a: { allergen: string }) => a.allergen)).toEqual(['Penicillin'])
     expect(JSON.stringify(body)).not.toContain('Secret')
     expect(JSON.stringify(body)).not.toContain('Leaked allergy')
+  })
+
+  it('lists this visit’s imaging, with report text only once verified', async () => {
+    const body = await (await call('enc-today')).json()
+    const ids = body.encounter.imaging.map((i: { id: string }) => i.id)
+    expect(ids).toEqual(expect.arrayContaining(['img-draft', 'img-final']))
+    expect(ids).not.toContain('img-other')
+    expect(JSON.stringify(body)).not.toContain('DRAFT-IMPRESSION')
+    expect(body.encounter.imaging.find((i: { id: string }) => i.id === 'img-final').radiology_reports[0].impression).toBe('Normal abdomen')
   })
 
   it('answers 404 for another tenant’s encounter', async () => {

@@ -190,6 +190,9 @@ jobs:
       - name: Hospital finance dashboard
         run: npm run test:finance
 
+      - name: Radiology (request, worklist, report, verification)
+        run: npm run test:radiology
+
       - name: CodeQL high-severity remediation regressions (XSS, ReDoS, randomness, bridge hashing)
         run: npm run test:security-remediation
 

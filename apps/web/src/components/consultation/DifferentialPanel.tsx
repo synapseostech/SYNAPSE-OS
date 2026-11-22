@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import type { Differential, DifferentialInvestigation, DifferentialResult } from '@synapse/interop/differential-engine'
 import { Brain, CheckCircle2, ChevronDown, FlaskConical, Loader2, Plus, ScanLine, Stethoscope, TriangleAlert } from 'lucide-react'
-import type { LabCatalogEntry, WorkspaceDiagnosis, WorkspaceLabOrder } from './types'
+import type { LabCatalogEntry, WorkspaceDiagnosis, WorkspaceImaging, WorkspaceLabOrder } from './types'
 
 const LIKELIHOOD = {
   high: { label: 'High', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' },
@@ -11,10 +11,24 @@ const LIKELIHOOD = {
   low: { label: 'Low', bar: 'bg-slate-400', text: 'text-muted-color' },
 } as const
 
-export type OrderableTest = { loinc: string; name: string; catalog: LabCatalogEntry | null }
+export type OrderableTest =
+  | { kind: 'lab'; loinc: string; name: string; catalog: LabCatalogEntry | null }
+  | { kind: 'imaging'; examCode: string; name: string }
 
-/** Match a suggested investigation to the tenant's catalogue by code, LOINC or name. */
+/** Engine investigation codes that map to a radiology exam (packages/db/src/radiology.ts). */
+const IMAGING_EXAM_FOR: Record<string, { examCode: string; name: string }> = {
+  CXR: { examCode: 'CXR', name: 'Chest X-ray' },
+  ABD_US: { examCode: 'ABD_US', name: 'Abdominal ultrasound' },
+  PELVIC_US: { examCode: 'PELVIC_US', name: 'Pelvic ultrasound' },
+  ECHO: { examCode: 'ECHO', name: 'Echocardiogram' },
+}
+
+/** Match a suggested investigation to the lab catalogue (by code, LOINC or name) or to a radiology exam. */
 export function resolveTest(inv: DifferentialInvestigation, catalog: LabCatalogEntry[]): OrderableTest | null {
+  if (inv.kind === 'imaging') {
+    const exam = IMAGING_EXAM_FOR[inv.code.toUpperCase()]
+    return exam ? { kind: 'imaging', ...exam } : null
+  }
   if (inv.kind !== 'lab') return null
   const byCode = catalog.find((c) => c.code.toUpperCase() === inv.code.toUpperCase())
   const byLoinc = inv.loinc ? catalog.find((c) => c.loinc_code === inv.loinc) : undefined
@@ -22,28 +36,33 @@ export function resolveTest(inv: DifferentialInvestigation, catalog: LabCatalogE
   const entry = byCode ?? byLoinc ?? byName ?? null
   const loinc = entry?.loinc_code ?? inv.loinc ?? null
   if (!loinc) return null
-  return { loinc, name: entry?.name ?? inv.name, catalog: entry }
+  return { kind: 'lab', loinc, name: entry?.name ?? inv.name, catalog: entry }
 }
 
 function InvestigationRow({
   inv,
   catalog,
   orders,
+  imaging,
   onOrder,
   disabled,
 }: {
   inv: DifferentialInvestigation
   catalog: LabCatalogEntry[]
   orders: WorkspaceLabOrder[]
+  imaging: WorkspaceImaging[]
   onOrder: (t: OrderableTest, urgent: boolean) => Promise<void>
   disabled?: boolean
 }) {
   const [busy, setBusy] = useState(false)
   const test = resolveTest(inv, catalog)
-  const existing = test ? orders.find((o) => o.loinc_code === test.loinc) : undefined
+  const study = test?.kind === 'imaging' ? imaging.find((s) => s.metadata?.exam_code === test.examCode) : undefined
+  const labOrder = test?.kind === 'lab' ? orders.find((o) => o.loinc_code === test.loinc) : undefined
+  const existing = labOrder ?? (study ? { workflow_status: study.worklist_status === 'verified' ? 'reported' : study.worklist_status, status: null } : undefined)
+  const imagingReport = study?.worklist_status === 'verified' ? study.radiology_reports?.[0] : undefined
   const Icon = inv.kind === 'imaging' ? ScanLine : inv.kind === 'bedside' ? Stethoscope : FlaskConical
   const purpose = inv.purpose === 'confirm' ? 'Confirms' : inv.purpose === 'exclude' ? 'Excludes' : 'Severity'
-  const result = existing?.results[0]
+  const result = labOrder?.results[0]
 
   return (
     <li className="flex items-start gap-2 py-1.5">
@@ -54,6 +73,11 @@ function InvestigationRow({
           <span className="ml-1.5 text-[10px] uppercase tracking-wide text-muted-color">{purpose}</span>
         </div>
         <div className="text-xs text-muted-color">{inv.why}</div>
+        {imagingReport && (
+          <div className={`mt-0.5 text-xs font-medium ${imagingReport.is_critical ? 'text-red-500' : 'text-primary-color'}`}>
+            Report: {imagingReport.impression}
+          </div>
+        )}
         {result && (
           <div className={`mt-0.5 text-xs font-medium ${result.is_critical ? 'text-red-500' : result.is_abnormal ? 'text-orange' : 'text-emerald-600 dark:text-emerald-400'}`}>
             Result: {String(result.result_value ?? result.value ?? result.numeric_value ?? '')} {result.unit ?? ''}
@@ -77,12 +101,12 @@ function InvestigationRow({
             }
           }}
           className="shrink-0 rounded-lg border border-orange px-2 py-0.5 text-xs font-medium text-orange transition hover:bg-orange-500 hover:text-white disabled:opacity-50"
-          title={test.catalog?.price != null ? `${test.catalog.currency ?? 'UGX'} ${Number(test.catalog.price).toLocaleString()}` : 'Order from the lab'}
+          title={test.kind === 'lab' ? (test.catalog?.price != null ? `${test.catalog.currency ?? 'UGX'} ${Number(test.catalog.price).toLocaleString()}` : 'Order from the lab') : 'Request from radiology'}
         >
           {busy ? <Loader2 className="h-3 w-3 animate-spin" aria-label="Ordering" /> : 'Order'}
         </button>
       ) : (
-        <span className="shrink-0 text-[11px] text-muted-color" title={inv.kind === 'lab' ? 'Not in this facility’s lab catalogue' : 'Request outside the lab'}>
+        <span className="shrink-0 text-[11px] text-muted-color" title={inv.kind === 'lab' ? 'Not in this facility’s lab catalogue' : 'Request it in the plan'}>
           {inv.kind === 'lab' ? 'not offered' : inv.kind}
         </span>
       )}
@@ -95,6 +119,7 @@ function DifferentialCard({
   rank,
   catalog,
   orders,
+  imaging,
   diagnoses,
   onAddDiagnosis,
   onOrder,
@@ -104,6 +129,7 @@ function DifferentialCard({
   rank: number
   catalog: LabCatalogEntry[]
   orders: WorkspaceLabOrder[]
+  imaging: WorkspaceImaging[]
   diagnoses: WorkspaceDiagnosis[]
   onAddDiagnosis: (code: string, certainty: 'suspected' | 'confirmed', fromEngine: boolean) => Promise<void>
   onOrder: (t: OrderableTest, urgent: boolean) => Promise<void>
@@ -184,7 +210,7 @@ function DifferentialCard({
               <div className="text-[11px] font-medium uppercase tracking-wide text-muted-color">To confirm</div>
               <ul className="divide-y divide-[var(--border-subtle)]">
                 {d.investigations.map((inv) => (
-                  <InvestigationRow key={inv.code} inv={inv} catalog={catalog} orders={orders} onOrder={onOrder} disabled={disabled} />
+                  <InvestigationRow key={inv.code} inv={inv} catalog={catalog} orders={orders} imaging={imaging} onOrder={onOrder} disabled={disabled} />
                 ))}
               </ul>
             </div>
@@ -230,6 +256,7 @@ export function DifferentialPanel({
   result,
   catalog,
   orders,
+  imaging,
   diagnoses,
   onAddDiagnosis,
   onOrder,
@@ -238,6 +265,7 @@ export function DifferentialPanel({
   result: DifferentialResult
   catalog: LabCatalogEntry[]
   orders: WorkspaceLabOrder[]
+  imaging: WorkspaceImaging[]
   diagnoses: WorkspaceDiagnosis[]
   onAddDiagnosis: (code: string, certainty: 'suspected' | 'confirmed', fromEngine: boolean) => Promise<void>
   onOrder: (t: OrderableTest, urgent: boolean) => Promise<void>
@@ -264,6 +292,7 @@ export function DifferentialPanel({
               rank={i}
               catalog={catalog}
               orders={orders}
+              imaging={imaging}
               diagnoses={diagnoses}
               onAddDiagnosis={onAddDiagnosis}
               onOrder={onOrder}
