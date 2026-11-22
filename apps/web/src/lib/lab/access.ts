@@ -26,6 +26,7 @@ export type LabCapability =
   | 'report.read' | 'report.notify'
   | 'catalog.manage'
   | 'billing.charge'
+  | 'qc.record' | 'qc.manage'
 
 export interface LabContext extends HospitalContext {
   facilityName: string | null

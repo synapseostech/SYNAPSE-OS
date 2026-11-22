@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
-import { AlertTriangle, Beaker, BookOpen, ClipboardList, FileText, FlaskConical, Gauge, Link2, Microscope, ShieldCheck, Inbox, UserPlus } from "lucide-react"
+import { Activity, AlertTriangle, Beaker, BookOpen, ClipboardList, FileText, FlaskConical, Gauge, Link2, Microscope, ShieldCheck, Inbox, UserPlus } from "lucide-react"
 import { SkipLink } from "@synapse/ui"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import { SynapseLogo } from "@/components/SynapseLogo"
@@ -18,6 +18,7 @@ const links = [
   { href: "/lab/specimens", label: "Specimens", icon: FlaskConical },
   { href: "/lab/results", label: "Results", icon: Beaker },
   { href: "/lab/verify", label: "Verification", icon: ShieldCheck },
+  { href: "/lab/qc", label: "Quality control", icon: Activity },
   { href: "/lab/instruments", label: "Instruments", icon: Microscope },
   { href: "/lab/staging", label: "Staging", icon: Inbox },
   { href: "/lab/mappings", label: "Mappings", icon: Link2 },
@@ -82,15 +83,6 @@ export default function LabLayout({ children }: { children: React.ReactNode }) {
               </Link>
             )
           })}
-          <span
-            className="flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-color"
-            aria-disabled="true"
-            title="Quality control is not configured in this release"
-          >
-            <Gauge className="h-4 w-4" aria-hidden />
-            Quality control
-            <span className="sr-only">not configured</span>
-          </span>
         </nav>
       </header>
       <main id="lab-main" tabIndex={-1} className="outline-none">
