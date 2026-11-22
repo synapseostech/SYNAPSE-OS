@@ -4,7 +4,16 @@ import { useCallback, useEffect, useState } from "react"
 import { formatMoney, labApi } from "../_components/client"
 import { LAB_SECTIONS, LAB_SECTION_LABEL } from "@/lib/lab/sections"
 
-type Test = { id: string; code: string; loinc_code: string | null; name: string; section: string; specimen_type: string; container: string | null; unit: string | null; price: number | null; currency: string; turnaround_minutes: number | null; is_active: boolean }
+type Test = { id: string; code: string; loinc_code: string | null; name: string; section: string; specimen_type: string; container: string | null; unit: string | null; price: number | null; currency: string; turnaround_minutes: number | null; is_active: boolean; components?: Component[] }
+type Component = { loinc: string; name: string; unit?: string | null }
+
+/** One component per line: LOINC, name, unit. */
+function parseComponents(text: string): Component[] {
+  return text.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [loinc = "", name = "", unit = ""] = l.split(",").map((x) => x.trim())
+    return { loinc, name, unit: unit || null }
+  })
+}
 type Range = { id: string; scope: "laboratory" | "national"; loinc_code: string; test_name: string; unit: string; sex: string | null; age_min_years: number | null; age_max_years: number | null; low: number; high: number; critical_low: number | null; critical_high: number | null }
 
 const num = (v: FormDataEntryValue | null) => (v === null || String(v).trim() === "" ? null : Number(v))
@@ -57,7 +66,25 @@ export default function LabCatalogPage() {
           <tbody>
             {tests.map((t) => (
               <tr key={t.id} className="border-t border-subtle">
-                <td className="p-3">{t.name}<div className="text-xs text-muted-color">{t.code}{t.loinc_code ? ` · LOINC ${t.loinc_code}` : ""}</div></td>
+                <td className="p-3">
+                  {t.name}
+                  <div className="text-xs text-muted-color">{t.code}{t.loinc_code ? ` · LOINC ${t.loinc_code}` : ""}</div>
+                  <details className="mt-1 text-xs">
+                    <summary className="cursor-pointer text-sky-700 dark:text-sky-300">{t.components?.length ? `Panel: ${t.components.length} tests` : "Make it a panel"}</summary>
+                    <p className="mt-1 text-muted-color">One test per line: LOINC, name, unit. Ordering this test then creates one order per line on one sample.</p>
+                    <textarea
+                      defaultValue={(t.components ?? []).map((c) => [c.loinc, c.name, c.unit ?? ""].join(", ")).join("\n")}
+                      rows={Math.max(3, (t.components?.length ?? 0) + 1)}
+                      aria-label={`${t.name} panel tests`}
+                      className="mt-1 w-72 rounded border border-edge bg-elevated px-2 py-1 font-mono text-xs text-primary-color"
+                      onBlur={(e) => {
+                        const next = parseComponents(e.target.value)
+                        const same = JSON.stringify(next) === JSON.stringify((t.components ?? []).map((c) => ({ loinc: c.loinc, name: c.name, unit: c.unit ?? null })))
+                        if (!same) void run(() => labApi(`/api/lab/catalog/${t.id}`, { method: "PATCH", body: { components: next } }), next.length ? `${t.name}: panel of ${next.length} tests` : `${t.name}: no longer a panel`)
+                      }}
+                    />
+                  </details>
+                </td>
                 <td>{LAB_SECTION_LABEL[t.section as keyof typeof LAB_SECTION_LABEL] ?? t.section}</td>
                 <td className="text-xs">{t.container ?? t.specimen_type}</td>
                 <td>

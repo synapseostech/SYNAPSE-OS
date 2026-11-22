@@ -271,3 +271,35 @@ describe('runLabAction: one read, one write', () => {
     expect(callsOf(undefined, 'x')).toEqual([])
   })
 })
+
+describe('runLabAction: panels', () => {
+  const PANEL = 'c0ffee00-1111-4aaa-8aaa-000000000001'
+
+  it('refuses to collect a component on its own: the panel carries the sample', async () => {
+    const m = setup(bundle('ORDERED', { order: { panel_order_id: PANEL, panel_code: 'FBC', loinc_code: '718-7', test_name: 'Haemoglobin' } }))
+    const err = await runLabAction({ ctx: ctx(TECH, 'lab_tech'), orderId: ORDER, action: 'collect', db: m.db as never }).catch((e) => e)
+    expect(err).toBeInstanceOf(LabActionError)
+    expect(err).toMatchObject({ code: 'LAB_PANEL_COMPONENT', status: 409 })
+    expect(m.commits).toHaveLength(0)
+  })
+
+  it('refuses results on the panel order itself', async () => {
+    const m = setup(bundle('RECEIVED', { order: { panel_code: 'FBC', loinc_code: '58410-2', test_name: 'Full blood count' } }))
+    const err = await runLabAction({ ctx: ctx(TECH, 'lab_tech'), orderId: ORDER, action: 'enter_result', extra: { value: '12' }, db: m.db as never }).catch((e) => e)
+    expect(err).toMatchObject({ code: 'LAB_PANEL_HEADER', status: 409 })
+    expect(m.commits).toHaveLength(0)
+  })
+
+  it('collects the panel order as usual', async () => {
+    const m = setup(bundle('ORDERED', { order: { panel_code: 'FBC', loinc_code: '58410-2', test_name: 'Full blood count' } }))
+    await runLabAction({ ctx: ctx(TECH, 'lab_tech'), orderId: ORDER, action: 'collect', db: m.db as never })
+    expect(m.commits).toHaveLength(1)
+    expect((m.commits[0]!.order as Record<string, unknown>).workflow_status).toBe('COLLECTED')
+  })
+
+  it('enters a result on a component like any other test', async () => {
+    const m = setup(bundle('RECEIVED', { order: { panel_order_id: PANEL, panel_code: 'FBC' } }))
+    await runLabAction({ ctx: ctx(TECH, 'lab_tech'), orderId: ORDER, action: 'enter_result', extra: { value: '6.5' }, db: m.db as never })
+    expect(m.commits).toHaveLength(1)
+  })
+})

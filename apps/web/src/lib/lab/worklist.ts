@@ -62,6 +62,10 @@ export type LabWorklistItem = {
   flag: string | null
   isCritical: boolean
   criticalAcknowledged: boolean
+  /** Set on a component of a panel (FBC, LFT…): the panel order carries the sample. */
+  panelOrderId: string | null
+  /** Panel code on both the panel order and its components. */
+  panelCode: string | null
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -97,7 +101,7 @@ export async function fetchLabWorklist(
   let request = db
     .from('lab_orders')
     .select(
-      `id, tenant_id, encounter_id, patient_id, loinc_code, test_name, section, urgency, workflow_status, order_source, accession_number, specimen_id, ordered_at, ${patientEmbed}, lab_results(id, result_value, unit, reference_range, abnormal_flag, is_critical, critical_scientist_ack_at)`,
+      `id, tenant_id, encounter_id, patient_id, loinc_code, test_name, section, urgency, workflow_status, order_source, accession_number, specimen_id, ordered_at, panel_order_id, panel_code, ${patientEmbed}, lab_results(id, result_value, unit, reference_range, abnormal_flag, is_critical, critical_scientist_ack_at)`,
     )
     .eq('tenant_id', ctx.tenantId)
     .eq('is_synthetic', false)
@@ -172,6 +176,8 @@ export async function fetchLabWorklist(
       flag: (result?.abnormal_flag as string | null) ?? null,
       isCritical: Boolean(result?.is_critical),
       criticalAcknowledged: Boolean(result?.critical_scientist_ack_at),
+      panelOrderId: (row.panel_order_id as string | null) ?? null,
+      panelCode: (row.panel_code as string | null) ?? null,
     }
   })
   const last = page[page.length - 1]

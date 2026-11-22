@@ -73,7 +73,7 @@ source: artifacts/readiness/evidence.json
 timestamp: 2026-11-16T03:31:33.283Z
 git.branch: claude/tally-import-history
 git.head: c2e73582b82d688abc8576bda6599166c981d0d7
-migrationCount: 230
+migrationCount: 231
 suites.rls-tenant-isolation.tests: 21
 suites.security-gates.banner: SECURITY GATES PASS cutoff=20261003160000 migrations=31 failures=0
 suites.security-gates.exitCode: 0
