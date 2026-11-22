@@ -12,6 +12,8 @@ import {
   Settings,
   ToggleLeft,
   Users,
+  BarChart3,
+  Wallet,
 } from 'lucide-react'
 import { SynapseLogo } from '../../../components/SynapseLogo'
 import { ThemeToggle } from '../../../components/ThemeToggle'
@@ -26,6 +28,8 @@ const NAV = [
   { href: '/hospital/admin/staff', label: 'Staff', icon: Users },
   { href: '/hospital/admin/modules', label: 'Modules', icon: ToggleLeft },
   { href: '/hospital/admin/services', label: 'Services', icon: Package },
+  { href: '/hospital/admin/reports', label: 'HMIS reports', icon: BarChart3 },
+  { href: '/hospital/admin/finance', label: 'Finance', icon: Wallet },
   { href: '/hospital/admin/audit', label: 'Audit Log', icon: FileText },
 ]
 

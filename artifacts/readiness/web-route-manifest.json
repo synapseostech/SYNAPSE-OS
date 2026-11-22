@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-20T20:06:12.383Z",
+  "generated_at": "2026-11-22T01:04:40.398Z",
   "routes": [
     {
       "route": "/",
@@ -469,7 +469,7 @@
     {
       "route": "/epidemiology",
       "source_file": "apps/web/src/app/epidemiology/page.tsx",
-      "classification": "ROADMAP"
+      "classification": "ACTIVE"
     },
     {
       "route": "/epidemiology/alerts",
@@ -572,8 +572,18 @@
       "classification": "ACTIVE"
     },
     {
+      "route": "/hospital/admin/finance",
+      "source_file": "apps/web/src/app/hospital/admin/finance/page.tsx",
+      "classification": "ACTIVE"
+    },
+    {
       "route": "/hospital/admin/modules",
       "source_file": "apps/web/src/app/hospital/admin/modules/page.tsx",
+      "classification": "ACTIVE"
+    },
+    {
+      "route": "/hospital/admin/reports",
+      "source_file": "apps/web/src/app/hospital/admin/reports/page.tsx",
       "classification": "ACTIVE"
     },
     {
@@ -617,6 +627,11 @@
       "classification": "ACTIVE"
     },
     {
+      "route": "/lab",
+      "source_file": "apps/web/src/app/lab/page.tsx",
+      "classification": "ACTIVE"
+    },
+    {
       "route": "/lab/catalog",
       "source_file": "apps/web/src/app/lab/catalog/page.tsx",
       "classification": "ACTIVE"
@@ -639,6 +654,11 @@
     {
       "route": "/lab/orders",
       "source_file": "apps/web/src/app/lab/orders/page.tsx",
+      "classification": "ACTIVE"
+    },
+    {
+      "route": "/lab/patients/[id]",
+      "source_file": "apps/web/src/app/lab/patients/[id]/page.tsx",
       "classification": "ACTIVE"
     },
     {
