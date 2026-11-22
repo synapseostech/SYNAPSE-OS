@@ -64,6 +64,12 @@ describe("surveillance", () => {
     assert.equal(r.weeks.at(-1)?.label, "2026-W47")
   })
 
+  it("clamps the week count, including NaN and huge values", () => {
+    assert.equal(buildSurveillance([], { now: NOW, weeks: Number.NaN }).weeks.length, 12)
+    assert.equal(buildSurveillance([], { now: NOW, weeks: 1e9 }).weeks.length, 52)
+    assert.equal(buildSurveillance([], { now: NOW, weeks: 1 }).weeks.length, 4)
+  })
+
   it("ignores visits outside the window", () => {
     const r = buildSurveillance([dx("1F40.Z", 30)], { now: NOW, weeks: 12 })
     assert.equal(r.totals.cases, 0)

@@ -18,6 +18,9 @@ import { HMIS105_OPD_CATEGORIES, hmis105CategoryFor, type Hmis105DiagnosisRow } 
 const KAMPALA_OFFSET_MS = 3 * 3_600_000
 const DAY = 86_400_000
 
+export const MIN_WEEKS = 4
+export const MAX_WEEKS = 52
+
 const IMMEDIATE = new Set(["cholera", "measles", "meningitis", "vhf", "plague", "yellow_fever", "rabies", "tetanus", "covid"])
 
 /** Monday 00:00 Kampala of the week containing `iso`, as a YYYY-MM-DD key. */
@@ -53,7 +56,13 @@ export type SurveillanceReport = {
 }
 
 export function buildSurveillance(rows: SurveillanceRow[], opts: { weeks?: number; now?: Date } = {}): SurveillanceReport {
-  const nWeeks = Math.max(4, Math.min(opts.weeks ?? 12, 52))
+  // Bounded explicitly: the week count sizes arrays, so it must never come
+  // through as NaN or a huge number.
+  const requested = typeof opts.weeks === "number" && Number.isFinite(opts.weeks) ? Math.trunc(opts.weeks) : 12
+  let nWeeks = 12
+  if (requested >= MIN_WEEKS && requested <= MAX_WEEKS) nWeeks = requested
+  else if (requested > MAX_WEEKS) nWeeks = MAX_WEEKS
+  else nWeeks = MIN_WEEKS
   const now = opts.now ?? new Date()
   const current = epiWeekStart(now.toISOString())
   const weeks: { start: string; label: string }[] = []
@@ -75,7 +84,7 @@ export function buildSurveillance(rows: SurveillanceRow[], opts: { weeks?: numbe
     seen.add(k)
     const wi = index.get(epiWeekStart(r.visit_date))
     if (wi == null) continue
-    const arr = counts.get(cat.key) ?? new Array<number>(nWeeks).fill(0)
+    const arr = counts.get(cat.key) ?? weeks.map(() => 0)
     arr[wi] = (arr[wi] ?? 0) + 1
     counts.set(cat.key, arr)
     const district = (r.district ?? "").trim() || "Not recorded"

@@ -70,12 +70,12 @@ export function Hmis105Report() {
           <select
             id="hmis-period"
             value={period}
-            onChange={(e) => setPeriod(e.target.value)}
+            onChange={(e) => setPeriod(periods[e.target.selectedIndex]?.value ?? periods[0]!.value)}
             className="rounded-lg border border-subtle bg-surface px-2.5 py-1.5 text-sm text-primary-color"
           >
             {periods.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
           </select>
-          <a href={`/api/hospital/reports/hmis105?period=${period}&format=csv`} className="btn-secondary inline-flex items-center gap-1.5 !px-3 !py-1.5 text-xs">
+          <a href={`/api/hospital/reports/hmis105?${new URLSearchParams({ period: /^\d{6}$/.test(period) ? period : periods[0]!.value, format: 'csv' })}`} className="btn-secondary inline-flex items-center gap-1.5 !px-3 !py-1.5 text-xs">
             <Download className="h-3.5 w-3.5" aria-hidden /> CSV
           </a>
           <button type="button" onClick={() => window.print()} className="btn-secondary inline-flex items-center gap-1.5 !px-3 !py-1.5 text-xs">
