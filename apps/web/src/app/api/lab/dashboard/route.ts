@@ -26,6 +26,8 @@ export async function GET() {
       .from('lab_orders')
       .select('id, accession_number, test_name, section, workflow_status, urgency, ordered_at, collected_at, resulted_at, verified_at, rejection_reason, catalog_test_id, order_source, patients(full_name)')
       .eq('tenant_id', ctx.tenantId)
+      // One row per sample: a panel's component orders follow the panel order.
+      .is('panel_order_id', null)
       .gte('ordered_at', since)
       .order('ordered_at', { ascending: false })
       .limit(ROW_CAP),
@@ -34,6 +36,7 @@ export async function GET() {
       .from('lab_orders')
       .select('id, accession_number, test_name, section, workflow_status, urgency, ordered_at, collected_at, resulted_at, verified_at, rejection_reason, catalog_test_id, order_source, patients(full_name)')
       .eq('tenant_id', ctx.tenantId)
+      .is('panel_order_id', null)
       .lt('ordered_at', since)
       .in('workflow_status', ['ORDERED', 'COLLECTION_PENDING', 'COLLECTED', 'IN_TRANSIT', 'RECEIVED', 'PROCESSING', 'RESULT_ENTERED', 'VERIFICATION_PENDING', 'VERIFIED'])
       .limit(500),

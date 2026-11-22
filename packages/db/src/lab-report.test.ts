@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { buildLabReportArtifact } from "./lab-report.ts"
+import { buildLabReportArtifact, renderPanelReportHtml } from "./lab-report.ts"
 
 describe("Lab report artifacts", () => {
   it("renders escaped structured results with a reproducible content hash", () => {
@@ -65,5 +65,38 @@ describe("Lab report artifacts", () => {
     assert.match(report.htmlSnapshot, /Transcription &lt;error&gt;/)
     assert.doesNotMatch(report.htmlSnapshot, /9b1f0b8e-0000/)
     assert.doesNotMatch(report.htmlSnapshot, /<script/i)
+  })
+})
+
+describe("panel report", () => {
+  const base = {
+    panelOrderId: "ord-1", panelCode: "FBC", panelName: "Full blood count", accession: "LAB-20261122-000009",
+    facilityName: "Demo Lab", patientName: "Demo <Okello>", authorisedBy: ["Sarah Okello"], generatedAt: "2026-11-22T10:00:00Z",
+  }
+
+  it("prints authorised results and hides the values of pending ones", () => {
+    const html = renderPanelReportHtml({
+      ...base,
+      rows: [
+        { testName: "Haemoglobin", loincCode: "718-7", released: true, resultValue: "9.1", unit: "g/dL", referenceRange: "13.0–17.0", abnormalFlag: "L" },
+        { testName: "Platelet count", loincCode: "777-3", released: false, resultValue: "SHOULD-NOT-PRINT" },
+      ],
+    })
+    assert.match(html, /9\.1/)
+    assert.match(html, /Low/)
+    assert.match(html, /Pending authorisation/)
+    assert.match(html, /1 result pending/)
+    assert.doesNotMatch(html, /SHOULD-NOT-PRINT/)
+    assert.match(html, /Demo &lt;Okello&gt;/)
+  })
+
+  it("flags critical and amended results and says when complete", () => {
+    const html = renderPanelReportHtml({
+      ...base,
+      rows: [{ testName: "Potassium", loincCode: "2823-3", released: true, resultValue: "6.9", unit: "mmol/L", isCritical: true, amended: true }],
+    })
+    assert.match(html, /CRITICAL RESULT/)
+    assert.match(html, /amended after first release/)
+    assert.match(html, />Complete</)
   })
 })

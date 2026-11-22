@@ -24,7 +24,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     .update({ ...patch, updated_at: new Date().toISOString() })
     .eq('id', id)
     .eq('tenant_id', ctx.tenantId)
-    .select('id, code, name, section, price, currency, is_active')
+    .select('id, code, name, section, price, currency, is_active, components')
     .maybeSingle()
   if (error) return NextResponse.json({ error: error.message }, { status: /duplicate|unique/i.test(error.message ?? '') ? 409 : 500 })
   if (!data) return NextResponse.json({ error: 'Test not found' }, { status: 404 })

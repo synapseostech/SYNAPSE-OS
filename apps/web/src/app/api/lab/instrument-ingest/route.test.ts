@@ -140,4 +140,47 @@ describe("POST /api/lab/instrument-ingest", () => {
       ["XYZ", null, "UNMAPPED"],
     ])
   })
+  it("sends each analyte of a panel sample to its component order", async () => {
+    const { queryMock, callsOf } = await import("../../../../lib/lab/testing/db-mock")
+    let messageCalls = 0
+    const staging: ReturnType<typeof queryMock>[] = []
+    const family: ReturnType<typeof queryMock>[] = []
+    dbFrom.mockImplementation((table: string) => {
+      if (table === "lab_devices") return queryMock({ data: { id: DEVICE, tenant_id: TENANT, active: true, validation_status: "ACTIVE" } }).builder
+      if (table === "lab_device_messages") return queryMock({ data: messageCalls++ === 0 ? null : { id: "msg-new" } }).builder
+      if (table === "lab_specimens") return queryMock({ data: { id: "spec", lab_order_id: "fbc-panel", patient_id: "p" } }).builder
+      if (table === "lab_orders") {
+        const q = queryMock({ data: [{ id: "fbc-wbc", loinc_code: "6690-2" }, { id: "fbc-hb", loinc_code: "718-7" }] })
+        family.push(q)
+        return q.builder
+      }
+      if (table === "lab_device_test_mappings") {
+        return queryMock({ data: [
+          { analyzer_code: "WBC", loinc_code: "6690-2", analyzer_name: "WBC", unit: "10*9/L" },
+          { analyzer_code: "HGB", loinc_code: "718-7", analyzer_name: "Haemoglobin", unit: "g/dL" },
+          { analyzer_code: "RDW", loinc_code: "788-0", analyzer_name: "RDW", unit: "%" },
+        ] }).builder
+      }
+      if (table === "lab_result_staging") { const q = queryMock({ data: null }); staging.push(q); return q.builder }
+      return queryMock({ data: null }).builder
+    })
+    const { POST } = await import("./route")
+    const res = await POST(new Request("https://os.test/api/lab/instrument-ingest", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-lab-bridge-key": "secret" },
+      body: JSON.stringify({
+        deviceId: DEVICE, rawPayload: "OBX|1|NM|WBC||6.8", protocol: "hl7", accessionNumber: "LAB-20261122-000009",
+        observations: [
+          { analyzerCode: "WBC", value: "6.8", unit: "10*9/L" },
+          { analyzerCode: "HGB", value: "13.1", unit: "g/dL" },
+          { analyzerCode: "RDW", value: "14", unit: "%" },
+        ],
+      }),
+    }) as never)
+    expect(res.status).toBe(200)
+    expect(callsOf(family[0]!.calls, "eq")).toEqual(expect.arrayContaining([["tenant_id", TENANT], ["panel_order_id", "fbc-panel"]]))
+    const rows = staging[0]!.calls.find((c) => c.method === "insert")!.args[0] as Array<Record<string, unknown>>
+    // An analyte the panel did not order stays on the panel order, where acceptance refuses it.
+    expect(rows.map((r) => [r.analyzer_code, r.lab_order_id])).toEqual([["WBC", "fbc-wbc"], ["HGB", "fbc-hb"], ["RDW", "fbc-panel"]])
+  })
 })

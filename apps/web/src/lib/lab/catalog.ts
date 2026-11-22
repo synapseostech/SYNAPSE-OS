@@ -14,6 +14,16 @@ const catalogFields = {
   currency: z.string().trim().length(3),
   turnaroundMinutes: z.number().int().positive().max(60 * 24 * 60).nullable(),
   isActive: z.boolean(),
+  /** A panel's analytes (FBC, LFT…). Empty for an ordinary test. */
+  components: z
+    .array(z.object({
+      loinc: z.string().trim().regex(/^\d{1,7}-\d$/, 'LOINC looks like 718-7'),
+      name: z.string().trim().min(1).max(120),
+      unit: z.string().trim().max(30).nullable().optional(),
+      section: z.enum(LAB_SECTIONS).optional(),
+    }).strict())
+    .max(40)
+    .refine((list) => new Set(list.map((c) => c.loinc)).size === list.length, 'Each component needs its own LOINC'),
 }
 
 export const labCatalogEntrySchema = z.object({
@@ -26,6 +36,7 @@ export const labCatalogEntrySchema = z.object({
   currency: catalogFields.currency.default('UGX'),
   turnaroundMinutes: catalogFields.turnaroundMinutes.optional(),
   isActive: catalogFields.isActive.default(true),
+  components: catalogFields.components.default([]),
 })
 
 export const labCatalogPatchSchema = z.object(catalogFields).partial().strict()
@@ -45,6 +56,7 @@ export function catalogInputToRow(input: Partial<LabCatalogEntryInput>): Record<
   if (input.currency !== undefined) row.currency = input.currency.toUpperCase()
   if (input.turnaroundMinutes !== undefined) row.turnaround_minutes = input.turnaroundMinutes
   if (input.isActive !== undefined) row.is_active = input.isActive
+  if (input.components !== undefined) row.components = input.components
   return row
 }
 

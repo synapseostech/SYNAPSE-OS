@@ -6,7 +6,7 @@ import { catalogInputToRow, labCatalogEntrySchema } from '@/lib/lab/catalog'
 
 export const dynamic = 'force-dynamic'
 
-const COLUMNS = 'id, code, loinc_code, name, section, specimen_type, container, unit, price, currency, turnaround_minutes, is_active, updated_at'
+const COLUMNS = 'id, code, loinc_code, name, section, specimen_type, container, unit, price, currency, turnaround_minutes, is_active, components, updated_at'
 
 /** The tenant's test catalogue (anyone who can read orders can see what can be ordered). */
 export async function GET(request: Request) {

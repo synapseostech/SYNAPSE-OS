@@ -131,3 +131,86 @@ export function buildLabReportArtifact(input: LabReportInput): LabReportArtifact
     contentHash: createHash("sha256").update(htmlSnapshot).digest("hex"),
   }
 }
+// ---------------------------------------------------------------------------
+// Panel report (FBC, LFT, RFT…): one printable page for all of a panel's
+// analytes. A summary generated on request from the authorised component
+// results; each component's own report stays the immutable record.
+// ---------------------------------------------------------------------------
+
+export type PanelReportRow = {
+  testName: string
+  loincCode: string | null
+  /** Only authorised (released or amended) results are printed. */
+  released: boolean
+  resultValue?: string | null
+  unit?: string | null
+  referenceRange?: string | null
+  abnormalFlag?: string | null
+  isCritical?: boolean
+  amended?: boolean
+}
+
+export type PanelReportInput = {
+  panelOrderId: string
+  panelCode: string
+  panelName: string
+  accession: string
+  facilityName?: string | null
+  patientName?: string | null
+  patientMrn?: string | null
+  patientSex?: string | null
+  patientAge?: string | null
+  referralSource?: string | null
+  specimenType?: string | null
+  collectedAt?: string | null
+  receivedAt?: string | null
+  authorisedBy: string[]
+  generatedAt: string
+  rows: PanelReportRow[]
+}
+
+export function renderPanelReportHtml(input: PanelReportInput): string {
+  const pending = input.rows.filter((r) => !r.released).length
+  const critical = input.rows.some((r) => r.released && r.isCritical)
+  const amended = input.rows.some((r) => r.released && r.amended)
+  const rows = input.rows
+    .map((r) => {
+      if (!r.released) {
+        return `<tr class="pending"><td>${escapeHtml(r.testName)}${r.loincCode ? `<br><small>LOINC ${escapeHtml(r.loincCode)}</small>` : ""}</td><td colspan="4">Pending authorisation</td></tr>`
+      }
+      const flag = r.isCritical ? "CRIT" : String(r.abnormalFlag ?? "N")
+      const cls = r.isCritical ? "crit" : flag !== "N" ? "abn" : ""
+      return `<tr><td>${escapeHtml(r.testName)}${r.loincCode ? `<br><small>LOINC ${escapeHtml(r.loincCode)}</small>` : ""}${r.amended ? ' <small class="am">amended</small>' : ""}</td><td class="${cls}">${escapeHtml(r.resultValue)}</td><td>${escapeHtml(r.unit)}</td><td>${escapeHtml(r.referenceRange)}</td><td class="${cls}">${escapeHtml(FLAG_LABEL[flag] ?? flag)}</td></tr>`
+    })
+    .join("")
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.panelName)} ${escapeHtml(input.accession)}</title><style>
+@page{size:A4;margin:16mm}
+body{font-family:Arial,Helvetica,sans-serif;color:#17212b;margin:24px;font-size:13px;line-height:1.4}
+header{display:flex;justify-content:space-between;gap:16px;border-bottom:2px solid #17212b;padding-bottom:8px;margin-bottom:16px}
+h1{font-size:20px;margin:0}
+.meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 24px}
+.meta div span{color:#56636f}
+table{border-collapse:collapse;width:100%;margin-top:12px}td,th{border:1px solid #ccd3d9;padding:7px;text-align:left;vertical-align:top}th{background:#f1f4f6}
+.abn{font-weight:700}.crit{font-weight:700;color:#b00020}.pending td{color:#56636f;font-style:italic}.am{color:#8a5a00}
+.banner{border:2px solid #b00020;color:#b00020;padding:6px 10px;font-weight:700;margin:8px 0}
+.note{border:1px solid #8a5a00;color:#8a5a00;padding:6px 10px;margin:8px 0}
+footer{margin-top:24px;border-top:1px solid #ccd3d9;padding-top:8px;color:#56636f;font-size:11px}
+</style></head><body>
+<header><div><h1>${escapeHtml(input.facilityName ?? "Laboratory")}</h1><div>${escapeHtml(input.panelName)} (${escapeHtml(input.panelCode)})</div></div><div style="text-align:right"><div><strong>${escapeHtml(input.accession)}</strong></div><div>${pending ? `${pending} result${pending > 1 ? "s" : ""} pending` : "Complete"}</div></div></header>
+${critical ? '<div class="banner">CRITICAL RESULT: the requesting clinician must be informed.</div>' : ""}
+${pending ? '<div class="note">Interim report: results still pending authorisation are not shown.</div>' : ""}
+${amended ? '<div class="note">One or more results were amended after first release.</div>' : ""}
+<section class="meta">
+<div><span>Patient:</span> <strong>${escapeHtml(input.patientName ?? "—")}</strong></div>
+<div><span>Patient no.:</span> ${escapeHtml(input.patientMrn ?? "—")}</div>
+<div><span>Sex / age:</span> ${escapeHtml(input.patientSex ?? "—")} / ${escapeHtml(input.patientAge ?? "—")}</div>
+<div><span>Requested by:</span> ${escapeHtml(input.referralSource ?? "—")}</div>
+<div><span>Specimen:</span> ${escapeHtml(input.specimenType ?? "—")}</div>
+<div><span>Collected:</span> ${when(input.collectedAt)}</div>
+<div><span>Received:</span> ${when(input.receivedAt)}</div>
+<div><span>Authorised by:</span> <strong>${escapeHtml(input.authorisedBy.length ? input.authorisedBy.join(", ") : "—")}</strong></div>
+</section>
+<table><thead><tr><th>Test</th><th>Result</th><th>Unit</th><th>Reference interval</th><th>Flag</th></tr></thead><tbody>${rows}</tbody></table>
+<footer>Results relate only to the specimen received. Interpret with the clinical picture. Printed ${when(input.generatedAt)} from the authorised results of order ${escapeHtml(input.panelOrderId)}; each test's own report is the record of release.</footer>
+</body></html>`
+}

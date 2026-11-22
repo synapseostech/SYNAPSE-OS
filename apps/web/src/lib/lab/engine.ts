@@ -225,6 +225,17 @@ export async function runLabAction(params: {
   const bundle = await loadLabOrderBundle(db, ctx, orderId)
   if (!bundle) throw new LabActionError('LAB_ORDER_NOT_FOUND', 404, 'Lab order not found')
 
+  // Panels (FBC, LFT…): the panel order carries the sample, its component
+  // orders carry the results. Each action belongs to one of the two.
+  const panelOrderId = bundle.order.panel_order_id ? String(bundle.order.panel_order_id) : null
+  const panelCode = bundle.order.panel_code ? String(bundle.order.panel_code) : null
+  if (panelOrderId && (action === 'collect' || action === 'receive' || action === 'reject')) {
+    throw new LabActionError('LAB_PANEL_COMPONENT', 409, `This test is part of the ${panelCode ?? 'panel'} order: collect, receive or reject the panel, and its tests follow`)
+  }
+  if (!panelOrderId && panelCode && ['enter_result', 'verify', 'release', 'authorise', 'amend', 'acknowledge'].includes(action)) {
+    throw new LabActionError('LAB_PANEL_HEADER', 409, `Enter and authorise results on each test of the ${panelCode} panel`)
+  }
+
   const order = rowToLabOrder(bundle.order)
   const priorResults = bundle.results.map(rowToLabResult)
   for (const prior of priorResults) {

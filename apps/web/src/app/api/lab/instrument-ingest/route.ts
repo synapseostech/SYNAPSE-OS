@@ -154,6 +154,7 @@ export async function POST(request: Request) {
   // Stage unmatched if no accession — never invent patient match
   let stagingStatus = "RECEIVED"
   let labOrderId: string | null = null
+  const panelOrderByLoinc = new Map<string, string>()
   if (accession) {
     const { data: specimen } = await db
       .from("lab_specimens")
@@ -165,6 +166,16 @@ export async function POST(request: Request) {
     if (specimen?.lab_order_id) {
       labOrderId = specimen.lab_order_id
       stagingStatus = "MATCHED"
+      // A panel sample (FBC…) carries one order per analyte: each observation
+      // goes to the component order with its LOINC, not to the panel order.
+      const { data: family } = await db
+        .from("lab_orders")
+        .select("id, loinc_code")
+        .eq("tenant_id", bridge.tenant_id)
+        .eq("panel_order_id", specimen.lab_order_id)
+      for (const row of (family ?? []) as Array<{ id: string; loinc_code: string | null }>) {
+        if (row.loinc_code && !panelOrderByLoinc.has(row.loinc_code)) panelOrderByLoinc.set(row.loinc_code, row.id)
+      }
     } else {
       stagingStatus = "UNMATCHED"
     }
@@ -206,7 +217,7 @@ export async function POST(request: Request) {
       tenant_id: bridge.tenant_id,
       device_id: deviceId,
       device_message_id: messageId,
-      lab_order_id: labOrderId,
+      lab_order_id: (mapping?.loinc_code ? panelOrderByLoinc.get(mapping.loinc_code) : undefined) ?? labOrderId,
       accession_number: accession,
       analyzer_code: analyzerCode,
       mapped_loinc: mapping?.loinc_code ?? null,

@@ -8,6 +8,8 @@ import { LAB_SECTIONS, LAB_SECTION_LABEL } from "@/lib/lab/sections"
 type Order = {
   id: string
   patientId: string | null
+  panelOrderId: string | null
+  panelCode: string | null
   testName: string
   loincCode: string
   section: string
@@ -172,13 +174,18 @@ export default function LabWorklistPage() {
         <ul className="mt-6 space-y-3">
           {orders.map((order) => {
             const s = order.status
+            // Panels: the panel order carries the sample, its components carry the results.
+            const isComponent = Boolean(order.panelOrderId)
+            const isPanel = Boolean(order.panelCode) && !isComponent
             const disabled = busy === order.id
             return (
               <li key={order.id} className={`rounded-2xl border bg-surface p-4 ${order.isCritical ? "border-rose-500/60" : "border-subtle"}`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="font-medium">
+                      {isComponent ? <span className="mr-1.5 rounded bg-sky-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300">{order.panelCode}</span> : null}
                       {order.testName}
+                      {isPanel ? <span className="ml-2 rounded bg-sky-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300">Panel: results on each test</span> : null}
                       {order.urgency !== "ROUTINE" ? <span className={`ml-2 rounded px-1.5 py-0.5 text-[11px] font-semibold ${URGENCY_STYLE[order.urgency] ?? ""}`}>{order.urgency}</span> : null}
                       {order.isCritical ? <span className="ml-2 rounded bg-rose-600 px-1.5 py-0.5 text-[11px] font-semibold text-white">CRITICAL</span> : null}
                     </p>
@@ -201,7 +208,10 @@ export default function LabWorklistPage() {
                     ) : null}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {["ORDERED", "COLLECTION_PENDING"].includes(s) ? (
+                    {isComponent && ["ORDERED", "COLLECTION_PENDING", "COLLECTED", "IN_TRANSIT"].includes(s) ? (
+                      <span className="text-xs text-muted-color">{["ORDERED", "COLLECTION_PENDING"].includes(s) ? "Collect" : "Receive"} with the {order.panelCode} panel</span>
+                    ) : null}
+                    {!isComponent && ["ORDERED", "COLLECTION_PENDING"].includes(s) ? (
                       <button type="button" disabled={disabled} onClick={() => act(order, "collect")} className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-semibold text-black disabled:opacity-50">
                         Collect &amp; print label
                       </button>
@@ -211,22 +221,27 @@ export default function LabWorklistPage() {
                         Label
                       </button>
                     ) : null}
-                    {["COLLECTED", "IN_TRANSIT"].includes(s) ? (
+                    {!isComponent && ["COLLECTED", "IN_TRANSIT"].includes(s) ? (
                       <button type="button" disabled={disabled} onClick={() => act(order, "receive")} className="rounded-lg border border-edge px-3 py-1.5 text-xs disabled:opacity-50">
                         Receive in lab
                       </button>
                     ) : null}
-                    {["COLLECTED", "IN_TRANSIT", "RECEIVED", "PROCESSING"].includes(s) ? (
+                    {!isComponent && ["COLLECTED", "IN_TRANSIT", "RECEIVED", "PROCESSING"].includes(s) ? (
                       <button type="button" onClick={() => setRejecting(rejecting === order.id ? null : order.id)} className="rounded-lg border border-rose-500/40 px-3 py-1.5 text-xs text-rose-700 dark:text-rose-300">
                         Reject sample
                       </button>
                     ) : null}
-                    {["RESULT_ENTERED", "VERIFICATION_PENDING"].includes(s) ? (
+                    {isPanel && order.accessionNumber && ["PROCESSING", "RELEASED", "AMENDED"].includes(s) ? (
+                      <button type="button" onClick={() => openAndPrint(`/api/lab/orders/${order.id}/panel-report`)} className="rounded-lg border border-sky-500/50 px-3 py-1.5 text-xs text-sky-700 dark:text-sky-300">
+                        {s === "PROCESSING" ? "Interim panel report" : "Panel report"}
+                      </button>
+                    ) : null}
+                    {!isPanel && ["RESULT_ENTERED", "VERIFICATION_PENDING"].includes(s) ? (
                       <button type="button" disabled={disabled} onClick={() => act(order, "authorise")} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
                         Authorise &amp; release
                       </button>
                     ) : null}
-                    {s === "VERIFIED" ? (
+                    {!isPanel && s === "VERIFIED" ? (
                       <button type="button" disabled={disabled} onClick={() => act(order, "release")} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
                         Release
                       </button>
@@ -239,7 +254,7 @@ export default function LabWorklistPage() {
                   </div>
                 </div>
 
-                {["RECEIVED", "PROCESSING"].includes(s) ? (
+                {!isPanel && ["RECEIVED", "PROCESSING"].includes(s) ? (
                   <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); void act(order, "enter_result", { value: values[order.id] ?? "" }) }}>
                     <label className="text-xs text-muted-color">
                       Result
