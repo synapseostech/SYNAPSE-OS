@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-20T23:17:15.437Z",
+  "generated_at": "2026-11-22T01:02:35.530Z",
   "routes": [
     {
       "route": "/",
@@ -572,6 +572,11 @@
       "classification": "ACTIVE"
     },
     {
+      "route": "/hospital/admin/finance",
+      "source_file": "apps/web/src/app/hospital/admin/finance/page.tsx",
+      "classification": "ACTIVE"
+    },
+    {
       "route": "/hospital/admin/modules",
       "source_file": "apps/web/src/app/hospital/admin/modules/page.tsx",
       "classification": "ACTIVE"
@@ -622,6 +627,11 @@
       "classification": "ACTIVE"
     },
     {
+      "route": "/lab",
+      "source_file": "apps/web/src/app/lab/page.tsx",
+      "classification": "ACTIVE"
+    },
+    {
       "route": "/lab/catalog",
       "source_file": "apps/web/src/app/lab/catalog/page.tsx",
       "classification": "ACTIVE"
@@ -644,6 +654,11 @@
     {
       "route": "/lab/orders",
       "source_file": "apps/web/src/app/lab/orders/page.tsx",
+      "classification": "ACTIVE"
+    },
+    {
+      "route": "/lab/patients/[id]",
+      "source_file": "apps/web/src/app/lab/patients/[id]/page.tsx",
       "classification": "ACTIVE"
     },
     {
